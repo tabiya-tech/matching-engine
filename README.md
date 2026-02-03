@@ -1,5 +1,4 @@
-# Tabiya Matching Engine & Intelligence Portal
-
+# Tabiya Matching Engine 
 A real-time matching service that connects Youth (Supply) with Employment Opportunities (Demand) using Skills match, preference weightings, and market demand signals.
 
 ---
@@ -42,7 +41,7 @@ This project is built using a **Service-Oriented Architecture (SOA)**:
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```text
 ├── backend
@@ -63,13 +62,13 @@ This project is built using a **Service-Oriented Architecture (SOA)**:
 
 ---
 
-# The Scoring Logic ($S_{total}$)
+# The Scoring Logic (S_{total})
 
 The system calculates a dynamic match score by synthesizing three distinct analytical components:
 
 ---
 
-## 1. Skill Score ($S_{skill}$)
+## 1. Skill Score (S_{skill})
 
 This component represents the semantic alignment between a candidate's expertise and a job's requirements.
 
@@ -79,7 +78,7 @@ This component represents the semantic alignment between a candidate's expertise
 
 ---
 
-## 2. Preference Score ($S_{pref}$)
+## 2. Preference Score (S_{pref})
 
 A weighted utility function that measures how well a job's attributes satisfy a user's stated career desires.
 
@@ -88,7 +87,7 @@ A weighted utility function that measures how well a job's attributes satisfy a 
 
 ---
 
-## 3. Demand Score ($S_{demand}$)
+## 3. Demand Score (S_{demand})
 
 A market-intelligence adjustment that optimizes placement by considering labor market signals.
 
@@ -96,12 +95,12 @@ A market-intelligence adjustment that optimizes placement by considering labor m
 
 ---
 
-## 📊 Final Calculation
+## Final Calculation
 
 The system aggregates these components into a single, actionable score using a weighted linear combination:
 
-$$
-S_{total} = (w_{1} \cdot S_{skill}) + (w_{2} \cdot S_{pref}) + (w_{3} \cdot S_{demand})
-$$
+
+S_{total} = (w_{1} * S_{skill}) + (w_{2} * S_{pref}) + (w_{3} * S_{demand})
+
 
 **Note:** The weights (`w1`, `w2`, `w3`) are configurable in `backend/app/config.py`, allowing the system to prioritize skill alignment over preferences or market signals depending on policy requirements.
