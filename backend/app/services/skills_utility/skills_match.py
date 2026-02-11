@@ -91,6 +91,14 @@ class SimilarityEngine:
             return np.empty((0, self.W.shape[1]))
         return self.W[np.array(idx), :]
 
+    def _rows_with_ids(self, skill_ids):
+        """Retrieves vectors and aligned IDs for a list of skill IDs."""
+        valid_ids = [str(s) for s in skill_ids if str(s) in self.skill_to_row]
+        if not valid_ids:
+            return np.empty((0, self.W.shape[1])), []
+        idx = [self.skill_to_row[s] for s in valid_ids]
+        return self.W[np.array(idx), :], valid_ids
+
     def _mean_unit(self, M: np.ndarray) -> Optional[np.ndarray]:
         """Calculates the unit-normalised mean vector of a set."""
         if M.size == 0: return None
@@ -112,7 +120,14 @@ class SimilarityEngine:
 # 4) CORE UTILITY CALCULATION
 # =============================================================================
 
-def compute_U_complete(js: Jobseeker, op: Opportunity, engine: SimilarityEngine):
+def compute_U_complete(
+    js: Jobseeker,
+    op: Opportunity,
+    engine: SimilarityEngine,
+    skill_labels: Optional[Dict[str, str]] = None,
+    user_skill_labels: Optional[Dict[str, str]] = None,
+    skill_group_labels: Optional[Dict[str, str]] = None
+):
     """Calculates the final Utility score with components and penalties."""
     
     # Weights and Tunables from the original project settings
@@ -123,16 +138,20 @@ def compute_U_complete(js: Jobseeker, op: Opportunity, engine: SimilarityEngine)
     # 1. Location Utility
     loc_score = location_near_enough(js, op)
 
-    # 2. Skill Matrices and Vectors
-    js_mat = engine._rows(js.skills_origin_uuids)
-    ess_mat = engine._rows(op.essential_skills_origin_uuids)
+    # 2. Skill Matrices and Vectors (with aligned IDs)
+    js_ids = list(js.skills_origin_uuids)
+    ess_ids = list(op.essential_skills_origin_uuids)
+    opt_ids = list(op.optional_skills_origin_uuids)
+
+    js_mat, js_ids_valid = engine._rows_with_ids(js_ids)
+    ess_mat, ess_ids_valid = engine._rows_with_ids(ess_ids)
     
     # 3. Essential Skill Similarity (Best-of Cosine)
     ess_sim, ess_rowmax = engine.best_mean_cos(ess_mat, js_mat)
     
     # 4. Optional Skill Similarity (Centroid Cosine)
     js_mean = engine._mean_unit(js_mat)
-    opt_vec = engine._mean_unit(engine._rows(op.optional_skills_origin_uuids))
+    opt_vec = engine._mean_unit(engine._rows(opt_ids))
     opt_sim = max(0.0, float(js_mean @ opt_vec)) if js_mean is not None and opt_vec is not None else 0.0
 
     # 5. Skill Group Recall
@@ -157,6 +176,56 @@ def compute_U_complete(js: Jobseeker, op: Opportunity, engine: SimilarityEngine)
     # Apply Soft Penalty
     u_final = max(0.0, core_score - (W_GAP_PEN * gap_share))
 
+    # --- Match Details ---
+    skill_labels = skill_labels or {}
+    user_skill_labels = user_skill_labels or {}
+    skill_group_labels = skill_group_labels or {}
+
+    essential_skill_matches = []
+    if ess_mat.size > 0 and js_mat.size > 0:
+        S = ess_mat @ js_mat.T
+        np.maximum(S, 0.0, out=S)
+        rowmax = S.max(axis=1)
+        argmax = S.argmax(axis=1)
+        for i, ess_id in enumerate(ess_ids_valid):
+            best_idx = int(argmax[i])
+            best_js_id = js_ids_valid[best_idx] if js_ids_valid else None
+            sim = float(rowmax[i])
+            essential_skill_matches.append({
+                "job_skill_id": ess_id,
+                "job_skill_label": skill_labels.get(ess_id),
+                "best_user_skill_id": best_js_id,
+                "best_user_skill_label": user_skill_labels.get(best_js_id),
+                "similarity": round(sim, 4),
+                "meets_threshold": sim >= TAU_ELIG
+            })
+    elif ess_ids_valid:
+        for ess_id in ess_ids_valid:
+            essential_skill_matches.append({
+                "job_skill_id": ess_id,
+                "job_skill_label": skill_labels.get(ess_id),
+                "best_user_skill_id": None,
+                "best_user_skill_label": None,
+                "similarity": 0.0,
+                "meets_threshold": False
+            })
+
+    optional_exact_matches = []
+    opt_set = set(opt_ids)
+    js_set = set(js_ids)
+    for opt_id in sorted(opt_set & js_set):
+        optional_exact_matches.append({
+            "skill_id": opt_id,
+            "skill_label": skill_labels.get(opt_id) or user_skill_labels.get(opt_id)
+        })
+
+    skill_group_matches = []
+    for gid in sorted(op.skill_groups_origin_uuids & js.skill_groups_origin_uuids):
+        skill_group_matches.append({
+            "skill_group_id": gid,
+            "skill_group_label": skill_group_labels.get(gid)
+        })
+
     return {
         "U_final": round(u_final, 4),
         "is_eligible": eligible,
@@ -166,5 +235,10 @@ def compute_U_complete(js: Jobseeker, op: Opportunity, engine: SimilarityEngine)
             "opt": round(opt_sim, 4),
             "grp": round(grp_sim, 4)
         },
-        "penalty": round(W_GAP_PEN * gap_share, 4)
+        "penalty": round(W_GAP_PEN * gap_share, 4),
+        "match_details": {
+            "essential_skill_matches": essential_skill_matches,
+            "optional_exact_matches": optional_exact_matches,
+            "skill_group_matches": skill_group_matches
+        }
     }

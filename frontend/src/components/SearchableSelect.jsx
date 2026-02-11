@@ -4,9 +4,14 @@ export const SearchableSelect = ({ options, onSelect, placeholder, labelKey = "i
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
 
+  const getLabel = (option) => {
+    const v = option?.[labelKey];
+    return v === undefined || v === null ? "" : String(v);
+  };
+
   // Filter options based on typing
-  const filteredOptions = options.filter(option => 
-    option[labelKey].toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredOptions = options.filter((option) =>
+    getLabel(option).toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (
@@ -22,23 +27,26 @@ export const SearchableSelect = ({ options, onSelect, placeholder, labelKey = "i
         }}
         onFocus={() => setIsOpen(true)}
       />
-      
+
       {isOpen && searchTerm && (
         <div className="absolute z-50 w-full mt-2 bg-white border border-slate-200 rounded-xl shadow-xl max-h-60 overflow-y-auto">
           {filteredOptions.length > 0 ? (
-            filteredOptions.map((option, index) => (
-              <div
-                key={index}
-                className="p-3 hover:bg-indigo-50 cursor-pointer font-bold text-slate-600 border-b border-slate-50 last:border-none"
-                onClick={() => {
-                  onSelect(option);
-                  setSearchTerm(option[labelKey]);
-                  setIsOpen(false);
-                }}
-              >
-                {option[labelKey]}
-              </div>
-            ))
+            filteredOptions.map((option, index) => {
+              const label = getLabel(option);
+              return (
+                <div
+                  key={label || index}
+                  className="p-3 hover:bg-indigo-50 cursor-pointer font-bold text-slate-600 border-b border-slate-50 last:border-none"
+                  onClick={() => {
+                    onSelect(option);
+                    setSearchTerm(label);
+                    setIsOpen(false);
+                  }}
+                >
+                  {label}
+                </div>
+              );
+            })
           ) : (
             <div className="p-3 text-slate-400 italic">No matches found</div>
           )}

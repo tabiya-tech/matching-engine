@@ -8,6 +8,8 @@ export const MatchCard = ({ job }) => {
   const opportunity_title = job?.opportunity_title || "Untitled Opportunity";
   const location = job?.location || "Location not specified";
   const is_eligible = job?.is_eligible ?? false;
+  const justification = job?.justification || "";
+  const contract_type = job?.contract_type || "";
 
   return (
     <div className="bg-white rounded-3xl shadow-xl shadow-indigo-500/5 border border-white p-6 flex gap-8 mb-6 hover:translate-y-[-4px] transition-all duration-300">
@@ -32,8 +34,18 @@ export const MatchCard = ({ job }) => {
               <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${is_eligible ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>
                 {is_eligible ? 'Qualified' : 'Skill Gap'}
               </span>
+              {contract_type && (
+                <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-indigo-100 text-indigo-600">
+                  {contract_type}
+                </span>
+              )}
             </div>
             <span className="text-slate-400 font-bold text-sm">📍 {location}</span>
+            {justification && (
+              <p className="text-slate-600 text-sm mt-2 leading-relaxed">
+                {justification}
+              </p>
+            )}
           </div>
         </div>
 
