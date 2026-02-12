@@ -22,5 +22,10 @@ async def get_all_jobs():
     cursor = db["jobs"].find({})
     return await cursor.to_list(length=1000)
 
+async def get_all_occupations():
+    """Helper to fetch all occupations from the collection."""
+    cursor = db["occupations"].find({})
+    return await cursor.to_list(length=1000)
+
 async def close_mongo_connection():
     client.close()

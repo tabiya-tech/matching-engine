@@ -13,6 +13,7 @@ router = APIRouter()
 @router.post(
     "/match",
     tags=["matching"],
+    response_model=List[MatchResponse],
     responses={
         400: {
             "description": "Bad Request - invalid payload content",
@@ -24,7 +25,7 @@ router = APIRouter()
         },
     },
 )
-async def match(payload: Union[MatchRequest, List[MatchRequest]]):
+async def match(payload: List[MatchRequest]):
     """Match one user or many users (batch).
 
     - If you send a single user object, you get a single MatchResponse.
