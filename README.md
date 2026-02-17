@@ -41,6 +41,18 @@ This project is built using a **Service-Oriented Architecture (SOA)**:
 
 ---
 
+## Deployment (Google Cloud Run)
+
+1. Enable required APIs: `gcloud services enable run.googleapis.com cloudbuild.googleapis.com`
+2. Copy and customize the env template: `cp backend/configs/template.env.yaml backend/deployment.env.yaml`
+3. Build and deploy from the backend directory:
+   ```bash
+   cd backend
+   ./build-and-deploy.sh <project-id> deployment.env.yaml
+   ```
+
+---
+
 ## Project Structure
 
 ```text

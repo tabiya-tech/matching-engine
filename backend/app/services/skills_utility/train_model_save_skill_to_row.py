@@ -138,9 +138,9 @@ def train_and_save(graph, node_list, artifacts_path):
 # =============================================================================
 
 if __name__ == "__main__":
-    # Update these paths to match your local setup
-    TAXONOMY_DIR = "." 
-    OUTPUT_DIR = "Output"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    TAXONOMY_DIR = script_dir
+    OUTPUT_DIR = os.path.join(script_dir, "Output")
 
     # Execute training pipeline
     s_df, h_df, r_df = load_taxonomy(TAXONOMY_DIR)
