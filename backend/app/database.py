@@ -1,4 +1,6 @@
+
 import os
+import json
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 
@@ -23,9 +25,19 @@ async def get_all_jobs():
     return await cursor.to_list(length=1000)
 
 async def get_all_occupations():
-    """Helper to fetch all occupations from the collection."""
-    cursor = db["occupations"].find({})
-    return await cursor.to_list(length=1000)
+    """Helper to fetch all occupations from the collection, with fallback to local JSON if DB fails."""
+    try:
+        cursor = db["occupations"].find({})
+        return await cursor.to_list(length=1000)
+    except Exception as e:
+        # Fallback to local JSON file
+        json_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "combined_occupation_database_with_wa.json")
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                occupations = json.load(f)
+            return occupations
+        except Exception as file_e:
+            raise RuntimeError(f"Failed to fetch occupations from DB and fallback JSON: {e}, {file_e}")
 
 async def close_mongo_connection():
     client.close()
