@@ -10,7 +10,7 @@ GLOBAL_WEIGHTS = {
 
 # 2. Demand Score Mapping (PDF Page 2, Top Table)
 DEMAND_SCORE_MAPPING = {
-    "Very Low Expected Demand": 0.0,
+    "Very Low Expected Demand": 0.10,
     "Low Expected Demand": 0.25,
     "Moderate Expected Demand": 0.5,
     "High Expected Demand": 0.75,
@@ -25,7 +25,7 @@ PREFERENCE_CONFIG = {
             "type": "ordered_linear",
             "beta": 0.5, # From Schema & PDF Page 4
             "mapping": {
-                "earn_15k": 0.0, 
+                "earn_15k": 0.10, 
                 "earn_30k": 0.33, 
                 "earn_50k": 0.67, 
                 "earn_70k": 1.0
