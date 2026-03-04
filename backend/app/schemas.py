@@ -17,6 +17,8 @@ class PreferenceVector(BaseModel):
     social_interaction: float
     career_growth: float
     social_meaning: float
+    bws_scores: Optional[dict] = None
+    top_10_bws: Optional[List[str]] = None
 
 class MatchRequest(BaseModel):
     user_id: Optional[str] = None
