@@ -38,8 +38,7 @@ async def get_all_occupations():
 
     if _cached_occupations is None:
         try:
-            json_path = os.path.join(os.path.dirname(__file__), "..", "..", "data",
-                                     "combined_occupation_database_with_wa.json")
+            json_path = os.path.join(os.path.dirname(__file__), "..", "data", "combined_occupation_database_with_wa.json")
             with open(json_path, "r", encoding="utf-8") as f:
                 occupations = json.load(f)
             _cached_occupations = occupations
