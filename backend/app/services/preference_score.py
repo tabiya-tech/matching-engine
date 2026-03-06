@@ -4,8 +4,7 @@ from app.config import PREFERENCE_CONFIG
 
 
 class PreferenceScorer:
-
-    def detect_bws_score_type(bws_scores: dict) -> str:
+    def detect_bws_score_type(self, bws_scores: dict) -> str:
         """
         Detects if bws_scores keys are occupation IDs (2 digits) or Work Activity IDs (e.g., '4.A.2.a.4').
         Returns 'occupation_id', 'work_activity_id', or 'unknown'.
@@ -49,7 +48,7 @@ class PreferenceScorer:
         # Optional ONET Work Activities BWS scores
         bws_scores = user_profile.get("bws_scores", {})
         top_10_bws = user_profile.get("top_10_bws", [])
-        bws_score_type = detect_bws_score_type(bws_scores)
+        bws_score_type = self.detect_bws_score_type(bws_scores)
 
         # Standard preference scoring (attributes)
         for attr_key, settings in self.config["attributes"].items():
