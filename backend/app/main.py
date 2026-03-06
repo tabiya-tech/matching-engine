@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -8,6 +10,8 @@ load_dotenv()
 
 
 app = FastAPI(title="Matching Service")
+
+logging.basicConfig(level=logging.INFO)
 
 origins = [
     "http://localhost:5173",

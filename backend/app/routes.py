@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import List, Union
 
 from fastapi import APIRouter, HTTPException
@@ -8,7 +9,7 @@ from app.services.matching_service import match_single_user
 
 
 router = APIRouter()
-
+logger = logging.getLogger(__name__)
 
 @router.post(
     "/match",
@@ -40,9 +41,12 @@ async def match(payload: List[MatchRequest]):
 
         return await match_single_user(payload.model_dump())
     except ValueError as e:
+        logger.exception(e);
         # Matching service uses ValueError for invalid inputs
         raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
+    except HTTPException as e:
+        logger.exception(e);
+        raise e
     except Exception as e:
+        logger.exception(e);
         raise HTTPException(status_code=500, detail=f"Internal server error: {e.__class__.__name__}")
