@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 
 from app.config import GLOBAL_WEIGHTS
@@ -18,6 +19,7 @@ scorer_demand = DemandScorer()
 def _norm(v: Optional[str]) -> str:
     return str(v).strip().casefold() if v is not None else ""
 
+logger = logging.getLogger(__name__)
 
 def _job_matches_user_location(job: Dict[str, Any], user: Dict[str, Any]) -> bool:
     """Lenient location match.
@@ -219,7 +221,9 @@ async def match_single_user(user: dict):
 
     # Fetch all jobs and occupations from the database
     jobs = await get_all_jobs()
+    logger.info(f"fetched {len(jobs)} jobs to match against")
     occupations = await get_all_occupations()
+    logger.info(f"fetched {len(occupations)} occupations to match against")
 
     if not jobs and not occupations:
         return {
