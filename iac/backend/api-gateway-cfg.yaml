@@ -1,0 +1,101 @@
+swagger: '2.0'
+
+info:
+  description: Matching API __ENVIRONMENT__
+  title: Matching API __ENVIRONMENT__
+  version: 1.0.0
+
+x-google-backend:
+  address: __CLOUD_RUN_URL__
+  deadline: 300
+
+schemes:
+  - https
+
+produces:
+  - application/json
+
+consumes:
+  - application/json
+
+securityDefinitions:
+  gcp_api_key:
+    type: apiKey
+    name: "x-api-key"
+    in: "header"
+    description: "Google Cloud API key for authentication"
+
+x-google-management:
+  metrics:
+    - name: "request-metric"
+      displayName: "API Request Counter"
+      valueType: INT64
+      metricKind: DELTA
+      description: "Counts the number of API requests"
+  quota:
+    limits:
+      - name: "request-limit"
+        metric: "request-metric"
+        unit: "1/min/{project}"
+        values:
+          STANDARD: 120
+
+paths:
+  '/docs':
+    get:
+      summary: Docs endpoint
+      operationId: api_docs
+      responses:
+        '200':
+          description: Docs page
+          schema:
+            type: string
+  '/openapi.json':
+    get:
+      summary: OAS file
+      operationId: oas_file
+      responses:
+        '200':
+          description: OAS file
+          schema:
+            type: string
+  '/match':
+    post:
+      description: Match one or many users against jobs and occupations.
+      operationId: match
+      parameters:
+        - name: body
+          in: body
+          required: true
+          description: User(s) to match. Single object or array of MatchRequest.
+          schema:
+            type: object
+            description: MatchRequest or array of MatchRequest
+      responses:
+        '200':
+          description: Match recommendations
+        '400':
+          description: Bad Request - invalid payload
+        '429':
+          description: Too Many Requests - rate limit exceeded
+        '500':
+          description: Internal Server Error
+      summary: Match users to opportunities
+      tags:
+        - Matching
+      x-google-quota:
+        metricCosts:
+          request-metric: 1
+      security:
+        - gcp_api_key: []
+    options:
+      description: CORS preflight for /match
+      operationId: match_options
+      responses:
+        '200':
+          description: Success
+      tags:
+        - Matching
+      x-google-quota:
+        metricCosts:
+          request-metric: 1
