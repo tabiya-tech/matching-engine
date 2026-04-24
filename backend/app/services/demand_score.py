@@ -24,11 +24,13 @@ class DemandScorer:
         if demand_label and demand_label in self.mapping:
             return {
                 "score": self.mapping[demand_label],
-                "label": demand_label
+                "label": demand_label,
+                "present": True,
             }
-            
+
         # 4. Fallback / Default
         return {
             "score": 0.5,
-            "label": demand_label
+            "label": demand_label,
+            "present": False,
         }

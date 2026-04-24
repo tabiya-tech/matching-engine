@@ -1,15 +1,22 @@
 import asyncio
 import logging
-from typing import List, Union
+import time
+from typing import List
 
 from fastapi import APIRouter, HTTPException
 
 from app.schemas import MatchRequest, MatchResponse
-from app.services.matching_service import match_single_user
+from app.database import get_all_jobs_with_timing, get_all_occupations_with_timing
+from app.match_timing_log import log_match_step
+from app.services.matching_service import match_user_with_data
 
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _ms(t0: float) -> float:
+    return (time.perf_counter() - t0) * 1000.0
 
 @router.post(
     "/match",
@@ -27,26 +34,44 @@ logger = logging.getLogger(__name__)
     },
 )
 async def match(payload: List[MatchRequest]):
-    """Match one user or many users (batch).
-
-    - If you send a single user object, you get a single MatchResponse.
-    - If you send an array of user objects, you get a list of MatchResponse.
-    """
+    """Match one or more users. Body is a JSON array of MatchRequest (use length 1 for a single user)."""
 
     try:
-        if isinstance(payload, list):
-            # Process batch concurrently for better performance
-            tasks = [match_single_user(user.model_dump()) for user in payload]
-            return await asyncio.gather(*tasks)
+        # One Mongo + one occupation load per request; run each user in a thread pool
+        # (CPU-bound scoring) so concurrent requests are not stuck behind one GIL.
+        t_req = time.perf_counter()
+        users = [u.model_dump() for u in payload]
+        n_users = len(users)
 
-        return await match_single_user(payload.model_dump())
+        # Mongo ping runs at app startup (warmup_on_startup), not here — avoids multi-second noise per request.
+        t_fetch = time.perf_counter()
+        (jobs, _), (occ, _) = await asyncio.gather(
+            get_all_jobs_with_timing(users=users),
+            get_all_occupations_with_timing(),
+        )
+        fetch_parallel_wall_ms = _ms(t_fetch)
+        t_score = time.perf_counter()
+        tasks = [asyncio.to_thread(match_user_with_data, u, jobs, occ) for u in users]
+        results = await asyncio.gather(*tasks)
+        scoring_ms = _ms(t_score)
+
+        log_match_step(
+            "http /match",
+            "request (summary)",
+            n_users=n_users,
+            n_jobs=len(jobs),
+            n_occupation_rows=len(occ),
+            fetch_parallel_wall_ms=fetch_parallel_wall_ms,
+            scoring_thread_pool_ms=scoring_ms,
+            request_total_ms=_ms(t_req),
+        )
+        return results
     except ValueError as e:
-        logger.exception(e);
-        # Matching service uses ValueError for invalid inputs
+        logger.exception(e)
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException as e:
-        logger.exception(e);
+        logger.exception(e)
         raise e
     except Exception as e:
-        logger.exception(e);
+        logger.exception(e)
         raise HTTPException(status_code=500, detail=f"Internal server error: {e.__class__.__name__}")

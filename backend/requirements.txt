@@ -17,3 +17,4 @@ motor==3.7.0
 python-multipart==0.0.20
 python-dotenv==1.0.1
 requests==2.32.3
+pytest==8.3.4

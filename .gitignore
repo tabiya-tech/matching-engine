@@ -7,3 +7,5 @@ frontend/dist/
 .DS_Store
 .env
 .idea/
+backend/scripts/
+backend/tests/

@@ -11,12 +11,12 @@ class SkillsVector(BaseModel):
 
 class PreferenceVector(BaseModel):
     earnings_per_month: float
-    task_content: float
+    task_content: Optional[float] = 0.0
     physical_demand: float
-    work_flexibility: float
+    work_flexibility: Optional[float] = 0.0
     social_interaction: float
     career_growth: float
-    social_meaning: float
+    social_meaning: Optional[float] = 0.0
     bws_scores: Optional[dict] = None
     top_10_bws: Optional[List[str]] = None
 
@@ -34,13 +34,26 @@ class SkillComponents(BaseModel):
     opt: float
     grp: float
 
+class PHatComponents(BaseModel):
+    gate: float = 0.0
+    essential_fit: float = 0.0
+    recruiter_readiness: float = 0.0
+    market_opportunity: float = 0.0
+
 class ScoreBreakdown(BaseModel):
-    total_skill_utility: float
-    skill_components: SkillComponents
-    skill_penalty_applied: float
-    preference_score: float
-    demand_score: float
-    demand_label: str
+    # --- Multiplicative (paper-aligned) fields ---
+    u_hat: Optional[float] = None
+    p_hat: Optional[float] = None
+    p_hat_components: Optional[PHatComponents] = None
+    # --- Legacy additive fields ---
+    total_skill_utility: Optional[float] = None
+    skill_components: Optional[SkillComponents] = None
+    skill_diagnostics: Optional[SkillComponents] = None
+    skill_penalty_applied: Optional[float] = None
+    preference_score: Optional[float] = None
+    preference_score_legacy: Optional[float] = None
+    demand_score: Optional[float] = None
+    demand_label: Optional[str] = None
 
 class MatchedSkill(BaseModel):
     job_skill_id: str
@@ -73,12 +86,34 @@ class MatchedPreference(BaseModel):
     contribution: float
     matched: bool
 
+class MatchedWorkActivity(BaseModel):
+    wa_code: str
+    wa_label: Optional[str] = None
+    user_bws: float
+    wa_importance: float
+    wa_level: float
+    norm_importance: float
+    norm_level: float
+    wa_contribution: float
+
+class WorkActivityBWS(BaseModel):
+    wa_score_sum: float = 0.0
+    details: List[MatchedWorkActivity] = Field(default_factory=list)
+
 class OpportunityRecommendation(BaseModel):
     uuid: str
     URL: Optional[str] = None
     rank: int
     opportunity_title: str
+    opportunity_isco_occupation_group: Optional[str] = None
+    opportunity_isco_occupation_group_id: Optional[str] = None
     location: Optional[str] = None
+    employer: Optional[str] = None
+    employment_type: Optional[str] = None
+    salary_text: Optional[str] = None
+    required_education: Optional[str] = None
+    required_experience: Optional[str] = None
+    closing_date: Optional[str] = None
     is_eligible: bool
     justification: str
     opportunity_description: Optional[str] = None
@@ -87,6 +122,7 @@ class OpportunityRecommendation(BaseModel):
     score_breakdown: ScoreBreakdown
     matched_skills: MatchedSkills
     matched_preferences: List[MatchedPreference] = Field(default_factory=list)
+    matched_work_activities: Optional[WorkActivityBWS] = None
 
 class OccupationRecommendation(BaseModel):
     uuid: str
@@ -101,6 +137,7 @@ class OccupationRecommendation(BaseModel):
     score_breakdown: ScoreBreakdown
     matched_skills: MatchedSkills
     matched_preferences: List[MatchedPreference] = Field(default_factory=list)
+    matched_work_activities: Optional[WorkActivityBWS] = None
 
 class SkillGapRecommendation(BaseModel):
     skill_id: str

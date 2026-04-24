@@ -30,11 +30,21 @@ subjected to a Soft Penalty. This penalty reduces the score based on the
 threshold of 0.35.
 """
 
-import torch
-import json
 import numpy as np
 from typing import Set, Dict, Optional
 from dataclasses import dataclass
+
+from app.config import (
+    GATE_SIMILARITY_THRESHOLD,
+    SKILL_ESSENTIAL_GEO_FLOOR,
+    SKILL_MIN_ESSENTIAL_MATCH_SHARE,
+    SKILL_U_GAP_PENALTY,
+    SKILL_U_TAU_ELIG,
+    SKILL_U_W_ESS,
+    SKILL_U_W_GRP,
+    SKILL_U_W_LOC,
+    SKILL_U_W_OPT,
+)
 
 # =============================================================================
 # 1) DATA STRUCTURES
@@ -106,15 +116,125 @@ class SimilarityEngine:
         norm = np.linalg.norm(v)
         return v / norm if norm > 0 else None
 
-    @staticmethod
-    def best_mean_cos(op_mat: np.ndarray, js_mat: np.ndarray):
-        """Essential skill matching: best-match per required skill."""
-        if op_mat.size == 0 or js_mat.size == 0:
-            return 0.0, None
-        S = op_mat @ js_mat.T
-        np.maximum(S, 0.0, out=S) # Clip negative similarities
-        rowmax = S.max(axis=1)    # Max similarity for each job skill
-        return float(rowmax.mean()), rowmax
+
+def _shared_pair_kernel(
+    js: Jobseeker,
+    op: Opportunity,
+    engine: SimilarityEngine,
+    geo_floor: Optional[float] = None,
+):
+    """Single essential similarity matmul and shared optional/location; used by U and p_hat.
+
+    Returns a dict of intermediates so compute_U and feasibility can share one
+    :math:`S = E @ J^\\top` and one match-detail list.
+    """
+    if geo_floor is None:
+        geo_floor = SKILL_ESSENTIAL_GEO_FLOOR
+
+    loc_score = location_near_enough(js, op)
+
+    js_ids = list(js.skills_origin_uuids)
+    ess_ids = list(op.essential_skills_origin_uuids)
+    opt_ids = list(op.optional_skills_origin_uuids)
+
+    js_mat, js_ids_valid = engine._rows_with_ids(js_ids)
+    ess_mat, ess_ids_valid = engine._rows_with_ids(ess_ids)
+
+    S = None
+    rowmax = None
+    argmax = None
+    ess_sim = 0.0
+    ess_geo = 0.0
+
+    if ess_mat.size > 0 and js_mat.size > 0:
+        S = ess_mat @ js_mat.T
+        np.maximum(S, 0.0, out=S)
+        rowmax = S.max(axis=1)
+        argmax = S.argmax(axis=1)
+        ess_sim = float(rowmax.mean())
+        floored = np.maximum(rowmax, geo_floor)
+        ess_geo = float(np.exp(np.mean(np.log(floored))))
+    elif ess_ids_valid and js_mat.size == 0:
+        rowmax = np.zeros(len(ess_ids_valid), dtype=np.float64)
+
+    js_mean = engine._mean_unit(js_mat)
+    opt_vec = engine._mean_unit(engine._rows(opt_ids))
+    opt_sim = max(0.0, float(js_mean @ opt_vec)) if js_mean is not None and opt_vec is not None else 0.0
+
+    if op.skill_groups_origin_uuids:
+        inter = len(op.skill_groups_origin_uuids & js.skill_groups_origin_uuids)
+        grp_sim = inter / len(op.skill_groups_origin_uuids)
+    else:
+        grp_sim = 0.0
+
+    return {
+        "loc_score": loc_score,
+        "js_ids": js_ids,
+        "ess_ids": ess_ids,
+        "opt_ids": opt_ids,
+        "js_mat": js_mat,
+        "ess_mat": ess_mat,
+        "js_ids_valid": js_ids_valid,
+        "ess_ids_valid": ess_ids_valid,
+        "S": S,
+        "rowmax": rowmax,
+        "argmax": argmax,
+        "ess_sim": ess_sim,
+        "ess_geo": ess_geo,
+        "opt_sim": opt_sim,
+        "grp_sim": grp_sim,
+    }
+
+
+def _build_essential_match_list(
+    ess_mat, js_mat, S, rowmax, argmax, ess_ids_valid, js_ids_valid,
+    skill_labels, user_skill_labels, threshold: float
+):
+    essential_skill_matches = []
+    if ess_mat.size > 0 and js_mat.size > 0 and rowmax is not None and argmax is not None:
+        for i, ess_id in enumerate(ess_ids_valid):
+            best_idx = int(argmax[i])
+            best_js_id = js_ids_valid[best_idx] if js_ids_valid else None
+            sim = float(rowmax[i])
+            essential_skill_matches.append({
+                "job_skill_id": ess_id,
+                "job_skill_label": skill_labels.get(ess_id),
+                "best_user_skill_id": best_js_id,
+                "best_user_skill_label": user_skill_labels.get(best_js_id),
+                "similarity": round(sim, 4),
+                "meets_threshold": sim >= threshold,
+            })
+    elif ess_ids_valid:
+        for ess_id in ess_ids_valid:
+            essential_skill_matches.append({
+                "job_skill_id": ess_id,
+                "job_skill_label": skill_labels.get(ess_id),
+                "best_user_skill_id": None,
+                "best_user_skill_label": None,
+                "similarity": 0.0,
+                "meets_threshold": False,
+            })
+    return essential_skill_matches
+
+
+def _optional_and_group_match_lists(
+    op: Opportunity, js: Jobseeker, opt_ids, js_ids, skill_labels, user_skill_labels, skill_group_labels,
+):
+    optional_exact_matches = [
+        {
+            "skill_id": opt_id,
+            "skill_label": skill_labels.get(opt_id) or user_skill_labels.get(opt_id),
+        }
+        for opt_id in sorted(set(opt_ids) & set(js_ids))
+    ]
+    skill_group_matches = []
+    for gid in sorted(op.skill_groups_origin_uuids & js.skill_groups_origin_uuids):
+        skill_group_matches.append({
+            "skill_group_id": gid,
+            "skill_group_label": skill_group_labels.get(gid)
+        })
+    return optional_exact_matches, skill_group_matches
+
 
 # =============================================================================
 # 4) CORE UTILITY CALCULATION
@@ -128,103 +248,51 @@ def compute_U_complete(
     user_skill_labels: Optional[Dict[str, str]] = None,
     skill_group_labels: Optional[Dict[str, str]] = None
 ):
-    """Calculates the final Utility score with components and penalties."""
-    
-    # Weights and Tunables from the original project settings
-    W_LOC, W_ESS, W_OPT, W_GRP, W_GAP_PEN = 0.20, 0.50, 0.20, 0.10, 0.50
-    TAU_ELIG = 0.35      # Similarity threshold for 'matching'
-    MIN_ESS_SHARE = 1.0  # Fraction of essentials required for eligibility
+    """Calculates the final Utility score with components and penalties.
 
-    # 1. Location Utility
-    loc_score = location_near_enough(js, op)
+    Uses a single essential similarity matmul via :func:`_shared_pair_kernel`.
+    """
+    W_LOC, W_ESS, W_OPT, W_GRP, W_GAP_PEN = (
+        SKILL_U_W_LOC, SKILL_U_W_ESS, SKILL_U_W_OPT, SKILL_U_W_GRP, SKILL_U_GAP_PENALTY,
+    )
+    TAU_ELIG = SKILL_U_TAU_ELIG
+    MIN_ESS_SHARE = SKILL_MIN_ESSENTIAL_MATCH_SHARE
 
-    # 2. Skill Matrices and Vectors (with aligned IDs)
-    js_ids = list(js.skills_origin_uuids)
-    ess_ids = list(op.essential_skills_origin_uuids)
-    opt_ids = list(op.optional_skills_origin_uuids)
+    skill_labels = skill_labels or {}
+    user_skill_labels = user_skill_labels or {}
+    skill_group_labels = skill_group_labels or {}
 
-    js_mat, js_ids_valid = engine._rows_with_ids(js_ids)
-    ess_mat, ess_ids_valid = engine._rows_with_ids(ess_ids)
-    
-    # 3. Essential Skill Similarity (Best-of Cosine)
-    ess_sim, ess_rowmax = engine.best_mean_cos(ess_mat, js_mat)
-    
-    # 4. Optional Skill Similarity (Centroid Cosine)
-    js_mean = engine._mean_unit(js_mat)
-    opt_vec = engine._mean_unit(engine._rows(opt_ids))
-    opt_sim = max(0.0, float(js_mean @ opt_vec)) if js_mean is not None and opt_vec is not None else 0.0
+    k = _shared_pair_kernel(js, op, engine)
+    loc_score = k["loc_score"]
+    ess_sim = k["ess_sim"]
+    opt_sim = k["opt_sim"]
+    grp_sim = k["grp_sim"]
+    ess_rowmax = k["rowmax"]
+    ess_mat, js_mat = k["ess_mat"], k["js_mat"]
+    js_ids, opt_ids = k["js_ids"], k["opt_ids"]
+    ess_ids_valid, js_ids_valid = k["ess_ids_valid"], k["js_ids_valid"]
+    S, argmax = k["S"], k["argmax"]
 
-    # 5. Skill Group Recall
-    grp_sim = 0.0
-    if op.skill_groups_origin_uuids:
-        inter = len(op.skill_groups_origin_uuids & js.skill_groups_origin_uuids)
-        grp_sim = inter / len(op.skill_groups_origin_uuids)
-
-    # --- Aggregation ---
     core_score = (
         W_LOC * loc_score + W_ESS * ess_sim + W_OPT * opt_sim + W_GRP * grp_sim
     ) / (W_LOC + W_ESS + W_OPT + W_GRP)
 
-    # --- Penalty & Eligibility ---
-    if ess_rowmax is None or ess_rowmax.size == 0:
+    if ess_rowmax is None or (hasattr(ess_rowmax, "size") and ess_rowmax.size == 0):
         gap_share, eligible = 0.0, True
     else:
         meets = (ess_rowmax >= TAU_ELIG)
         gap_share = float((~meets).mean())
         eligible = (float(meets.mean()) >= MIN_ESS_SHARE)
 
-    # Apply Soft Penalty
     u_final = max(0.0, core_score - (W_GAP_PEN * gap_share))
 
-    # --- Match Details ---
-    skill_labels = skill_labels or {}
-    user_skill_labels = user_skill_labels or {}
-    skill_group_labels = skill_group_labels or {}
-
-    essential_skill_matches = []
-    if ess_mat.size > 0 and js_mat.size > 0:
-        S = ess_mat @ js_mat.T
-        np.maximum(S, 0.0, out=S)
-        rowmax = S.max(axis=1)
-        argmax = S.argmax(axis=1)
-        for i, ess_id in enumerate(ess_ids_valid):
-            best_idx = int(argmax[i])
-            best_js_id = js_ids_valid[best_idx] if js_ids_valid else None
-            sim = float(rowmax[i])
-            essential_skill_matches.append({
-                "job_skill_id": ess_id,
-                "job_skill_label": skill_labels.get(ess_id),
-                "best_user_skill_id": best_js_id,
-                "best_user_skill_label": user_skill_labels.get(best_js_id),
-                "similarity": round(sim, 4),
-                "meets_threshold": sim >= TAU_ELIG
-            })
-    elif ess_ids_valid:
-        for ess_id in ess_ids_valid:
-            essential_skill_matches.append({
-                "job_skill_id": ess_id,
-                "job_skill_label": skill_labels.get(ess_id),
-                "best_user_skill_id": None,
-                "best_user_skill_label": None,
-                "similarity": 0.0,
-                "meets_threshold": False
-            })
-
-    optional_exact_matches = []
-    opt_set = set(opt_ids)
-    js_set = set(js_ids)
-    for opt_id in sorted(opt_set & js_set):
-        optional_exact_matches.append({
-            "skill_id": opt_id,
-            "skill_label": skill_labels.get(opt_id) or user_skill_labels.get(opt_id)
-        })
-
-    skill_group_matches = []
-    for gid in sorted(op.skill_groups_origin_uuids & js.skill_groups_origin_uuids):
-        skill_group_matches.append({
-            "skill_group_id": gid,
-            "skill_group_label": skill_group_labels.get(gid)
-        })
+    essential_skill_matches = _build_essential_match_list(
+        ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
+        skill_labels, user_skill_labels, TAU_ELIG,
+    )
+    optional_exact_matches, skill_group_matches = _optional_and_group_match_lists(
+        op, js, opt_ids, js_ids, skill_labels, user_skill_labels, skill_group_labels,
+    )
 
     return {
         "U_final": round(u_final, 4),
@@ -242,3 +310,190 @@ def compute_U_complete(
             "skill_group_matches": skill_group_matches
         }
     }
+
+
+# =============================================================================
+# 5) FEASIBILITY SIGNALS  (recruiter-side, feeds into p_hat)
+# =============================================================================
+
+def compute_feasibility_signals(
+    js: Jobseeker,
+    op: Opportunity,
+    engine: SimilarityEngine,
+    gate_threshold: Optional[float] = None,
+    skill_labels: Optional[Dict[str, str]] = None,
+    user_skill_labels: Optional[Dict[str, str]] = None,
+    skill_group_labels: Optional[Dict[str, str]] = None,
+):
+    """Recruiter-side feasibility; shares :func:`_shared_pair_kernel` with U."""
+    if gate_threshold is None:
+        gate_threshold = GATE_SIMILARITY_THRESHOLD
+
+    skill_labels = skill_labels or {}
+    user_skill_labels = user_skill_labels or {}
+    skill_group_labels = skill_group_labels or {}
+
+    k = _shared_pair_kernel(js, op, engine)
+    ess_ids = k["ess_ids"]
+    opt_ids = k["opt_ids"]
+    js_ids = k["js_ids"]
+    ess_rowmax = k["rowmax"]
+    ess_geo = k["ess_geo"]
+    opt_sim = k["opt_sim"]
+    grp_recall = k["grp_sim"]
+    ess_mat, js_mat = k["ess_mat"], k["js_mat"]
+    ess_ids_valid, js_ids_valid = k["ess_ids_valid"], k["js_ids_valid"]
+    S, argmax = k["S"], k["argmax"]
+
+    has_essential_reqs = len(ess_ids) > 0
+    if not has_essential_reqs:
+        gap_share = 1.0
+        gate_passed = False
+        ess_geo = 0.0
+    elif ess_rowmax is None or ess_rowmax.size == 0:
+        gap_share = 1.0
+        gate_passed = False
+        ess_geo = 0.0
+    else:
+        meets = ess_rowmax >= gate_threshold
+        gap_share = float((~meets).mean())
+        gate_passed = bool(gap_share <= 0.5)
+
+    essential_skill_matches = _build_essential_match_list(
+        ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
+        skill_labels, user_skill_labels, gate_threshold,
+    )
+    optional_exact_matches, skill_group_matches = _optional_and_group_match_lists(
+        op, js, opt_ids, js_ids, skill_labels, user_skill_labels, skill_group_labels,
+    )
+
+    return {
+        "gate_passed": gate_passed,
+        "essential_fit": round(ess_geo, 4),
+        "optional_sim": round(opt_sim, 4),
+        "skill_group_recall": round(grp_recall, 4),
+        "gap_share": round(gap_share, 4),
+        "has_essential_skills": len(ess_ids) > 0,
+        "has_optional_skills": len(opt_ids) > 0,
+        "has_skill_groups": len(op.skill_groups_origin_uuids) > 0,
+        "match_details": {
+            "essential_skill_matches": essential_skill_matches,
+            "optional_exact_matches": optional_exact_matches,
+            "skill_group_matches": skill_group_matches,
+        },
+    }
+
+
+def compute_utility_and_feasibility_pair(
+    js: Jobseeker,
+    op: Opportunity,
+    engine: SimilarityEngine,
+    skill_labels: Optional[Dict[str, str]] = None,
+    user_skill_labels: Optional[Dict[str, str]] = None,
+    skill_group_labels: Optional[Dict[str, str]] = None,
+    gate_threshold: Optional[float] = None,
+) -> tuple:
+    """One essential matmul and one optional/group pass for the multiplicative pipeline."""
+    if gate_threshold is None:
+        gate_threshold = GATE_SIMILARITY_THRESHOLD
+    W_LOC, W_ESS, W_OPT, W_GRP, W_GAP_PEN = (
+        SKILL_U_W_LOC, SKILL_U_W_ESS, SKILL_U_W_OPT, SKILL_U_W_GRP, SKILL_U_GAP_PENALTY,
+    )
+    TAU_ELIG = SKILL_U_TAU_ELIG
+    MIN_ESS_SHARE = SKILL_MIN_ESSENTIAL_MATCH_SHARE
+
+    skill_labels = skill_labels or {}
+    user_skill_labels = user_skill_labels or {}
+    skill_group_labels = skill_group_labels or {}
+
+    k = _shared_pair_kernel(js, op, engine)
+    loc_score = k["loc_score"]
+    ess_sim = k["ess_sim"]
+    ess_geo = k["ess_geo"]
+    opt_sim = k["opt_sim"]
+    grp_sim = k["grp_sim"]
+    ess_rowmax = k["rowmax"]
+    ess_mat, js_mat = k["ess_mat"], k["js_mat"]
+    ess_ids, opt_ids, js_ids = k["ess_ids"], k["opt_ids"], k["js_ids"]
+    ess_ids_valid, js_ids_valid = k["ess_ids_valid"], k["js_ids_valid"]
+    S, argmax = k["S"], k["argmax"]
+
+    core_score = (
+        W_LOC * loc_score + W_ESS * ess_sim + W_OPT * opt_sim + W_GRP * grp_sim
+    ) / (W_LOC + W_ESS + W_OPT + W_GRP)
+
+    if ess_rowmax is None or (hasattr(ess_rowmax, "size") and ess_rowmax.size == 0):
+        u_gap, eligible = 0.0, True
+    else:
+        meets = (ess_rowmax >= TAU_ELIG)
+        u_gap = float((~meets).mean())
+        eligible = (float(meets.mean()) >= MIN_ESS_SHARE)
+
+    u_final = max(0.0, core_score - (W_GAP_PEN * u_gap))
+
+    if abs(TAU_ELIG - gate_threshold) >= 1e-9:
+        u_ess = _build_essential_match_list(
+            ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
+            skill_labels, user_skill_labels, TAU_ELIG,
+        )
+        f_ess = _build_essential_match_list(
+            ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
+            skill_labels, user_skill_labels, gate_threshold,
+        )
+    else:
+        u_ess = f_ess = _build_essential_match_list(
+            ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
+            skill_labels, user_skill_labels, TAU_ELIG,
+        )
+
+    opt_m, grp_m = _optional_and_group_match_lists(
+        op, js, opt_ids, js_ids, skill_labels, user_skill_labels, skill_group_labels,
+    )
+
+    utility = {
+        "U_final": round(u_final, 4),
+        "is_eligible": eligible,
+        "components": {
+            "loc": round(loc_score, 2),
+            "ess": round(ess_sim, 4),
+            "opt": round(opt_sim, 4),
+            "grp": round(grp_sim, 4),
+        },
+        "penalty": round(W_GAP_PEN * u_gap, 4),
+        "match_details": {
+            "essential_skill_matches": u_ess,
+            "optional_exact_matches": opt_m,
+            "skill_group_matches": grp_m,
+        },
+    }
+
+    if not (len(ess_ids) > 0):
+        f_gap = 1.0
+        gate_passed = False
+        f_ess_geo = 0.0
+    elif ess_rowmax is None or ess_rowmax.size == 0:
+        f_gap = 1.0
+        gate_passed = False
+        f_ess_geo = 0.0
+    else:
+        meets = ess_rowmax >= gate_threshold
+        f_gap = float((~meets).mean())
+        gate_passed = bool(f_gap <= 0.5)
+        f_ess_geo = ess_geo
+
+    feasibility = {
+        "gate_passed": gate_passed,
+        "essential_fit": round(f_ess_geo, 4),
+        "optional_sim": round(opt_sim, 4),
+        "skill_group_recall": round(grp_sim, 4),
+        "gap_share": round(f_gap, 4),
+        "has_essential_skills": len(ess_ids) > 0,
+        "has_optional_skills": len(opt_ids) > 0,
+        "has_skill_groups": len(op.skill_groups_origin_uuids) > 0,
+        "match_details": {
+            "essential_skill_matches": f_ess,
+            "optional_exact_matches": opt_m,
+            "skill_group_matches": grp_m,
+        },
+    }
+    return utility, feasibility

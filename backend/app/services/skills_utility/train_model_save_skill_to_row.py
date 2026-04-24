@@ -31,7 +31,12 @@ import torch
 import pandas as pd
 import networkx as nx
 import random
+from pathlib import Path
 from gensim.models import Word2Vec
+
+_BACKEND_ROOT = Path(__file__).resolve().parents[3]  # .../backend
+TAXONOMY_DIR = str(_BACKEND_ROOT / "resources" / "skill_taxonomy")
+MODELS_DIR = str(_BACKEND_ROOT / "resources" / "models")
 
 # =============================================================================
 # 1) DATA LOADING
@@ -138,15 +143,11 @@ def train_and_save(graph, node_list, artifacts_path):
 # =============================================================================
 
 if __name__ == "__main__":
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    TAXONOMY_DIR = script_dir
-    OUTPUT_DIR = os.path.join(script_dir, "Output")
-
     # Execute training pipeline
     s_df, h_df, r_df = load_taxonomy(TAXONOMY_DIR)
     G, n2idx, n_list = build_unweighted_skill_graph(s_df, h_df, r_df)
-    train_and_save(G, n_list, OUTPUT_DIR)
+    train_and_save(G, n_list, MODELS_DIR)
 
     # Export mapping for inference lookup
-    with open(os.path.join(OUTPUT_DIR, "skill_to_row.json"), "w") as f:
+    with open(os.path.join(MODELS_DIR, "skill_to_row.json"), "w") as f:
         json.dump(n2idx, f)
