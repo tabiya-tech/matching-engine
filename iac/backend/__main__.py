@@ -1,7 +1,9 @@
 import os
 import pulumi
-from deploy_backend import deploy_backend, EnvironmentVariables
+from deploy_backend import deploy_backend
 from dotenv import load_dotenv
+
+from env_vars import EnvVars
 
 def main():
     load_dotenv()
@@ -22,10 +24,7 @@ def main():
         gcp_project_region=region,
         docker_repository_id=docker_repository_name,
         environment_name=stack,
-        env_vars=EnvironmentVariables(
-            mongodb_uri=os.getenv("MONGO_URL", ""),
-            mongodb_name=os.getenv("MONGO_DB_NAME", ""),
-        )
+        env_vars=EnvVars.construct_from_env()
     )
 
 if __name__ == "__main__":

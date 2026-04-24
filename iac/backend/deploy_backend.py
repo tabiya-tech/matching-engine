@@ -6,20 +6,9 @@ import pulumi
 import pulumi_docker as docker
 import pulumi_gcp as gcp
 
+from env_vars import EnvVars
+
 API_GATEWAY_CONFIG_TEMPLATE_FILE = "api-gateway-cfg.yaml"
-
-
-@dataclass(frozen=True)
-class EnvironmentVariables:
-    mongodb_uri: str
-    mongodb_name: str
-
-    def get_env_vars(self) -> list[gcp.cloudrunv2.ServiceTemplateContainerEnvArgs]:
-        return [
-            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name="MONGO_URL", value=self.mongodb_uri),
-            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name="MONGO_DB_NAME", value=self.mongodb_name),
-        ]
-
 
 def _setup_api_gateway(
         *,
@@ -119,7 +108,7 @@ def deploy_backend(*,
                    gcp_project_region: str,
                    docker_repository_id: str,
                    environment_name: str,
-                   env_vars: EnvironmentVariables):
+                   env_vars: EnvVars):
     image_id = f"matching-algorithm-api"
     pulumi.log.info(f"Building image {image_id}")
 
