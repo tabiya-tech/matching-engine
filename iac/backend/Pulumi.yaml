@@ -1,0 +1,10 @@
+name: tabiya-matching-algorithm-api
+description: API for the matching algorithm
+runtime:
+  name: python
+  options:
+    toolchain: poetry
+config:
+  pulumi:tags:
+    value:
+      pulumi:template: python
