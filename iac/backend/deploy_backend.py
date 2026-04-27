@@ -134,7 +134,7 @@ def deploy_backend(*,
         template=gcp.cloudrunv2.ServiceTemplateArgs(
             containers=[
                 gcp.cloudrunv2.ServiceTemplateContainerArgs(
-                    image=image_name,
+                    image=image.repo_digest,
                     resources=gcp.cloudrunv2.ServiceTemplateContainerResourcesArgs(
                         limits={
                             'memory': "2Gi",
