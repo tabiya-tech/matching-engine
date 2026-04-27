@@ -59,6 +59,15 @@ paths:
           description: OAS file
           schema:
             type: string
+  '/health':
+    get:
+      summary: Get Health of the service
+      operationId: get_health
+      responses:
+        '200':
+          description: Status of the application
+          schema:
+            type: string
   '/match':
     post:
       description: Match one or many users against jobs and occupations.

@@ -1,22 +1,37 @@
 import asyncio
 import logging
 import time
+
+from pydantic import BaseModel
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from fastapi.security import APIKeyHeader
 
 from app.schemas import MatchRequest, MatchResponse
 from app.database import get_all_jobs_with_timing, get_all_occupations_with_timing
 from app.match_timing_log import log_match_step
 from app.services.matching_service import match_user_with_data
 
+api_key_auth = APIKeyHeader(
+    scheme_name="gcp_api_key",
+    name="x-api-key",
+    auto_error=True
+)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(api_key_auth)])
 logger = logging.getLogger(__name__)
 
 
 def _ms(t0: float) -> float:
     return (time.perf_counter() - t0) * 1000.0
+
+class Health(BaseModel):
+    status: str
+
+@router.get("/health")
+async def health() -> Health:
+    return Health(status="ok")
 
 @router.post(
     "/match",
