@@ -1,8 +1,7 @@
 import math
 import re
 
-# src/preference_scorer.py
-from app.config import PREFERENCE_CONFIG, PREFERENCE_LEGACY_SCORE_SCALE, PREFERENCE_SIGMOID_NUMERATOR
+import app.config as c
 
 
 class PreferenceScorer:
@@ -24,20 +23,7 @@ class PreferenceScorer:
             return "work_activity_id"
         return "unknown"
     def __init__(self):
-        self.config = PREFERENCE_CONFIG
-        self.base_constant = self.config["base_constant"]
-
-        self._enabled_attrs = {
-            k: v for k, v in self.config["attributes"].items()
-            if v.get("enabled", True)
-        }
-
-        # Dynamic sigmoid scaling: sigmoid(max_raw * factor) ≈ 0.98
-        # so a perfect match on all enabled attributes reaches ~0.98.
-        max_positive_sum = sum(abs(s["beta"]) for s in self._enabled_attrs.values())
-        self._sigmoid_factor = (
-            PREFERENCE_SIGMOID_NUMERATOR / max_positive_sum if max_positive_sum > 0 else 2.0
-        )
+        pass
 
     @staticmethod
     def _humanize_label(value: str):
@@ -54,6 +40,16 @@ class PreferenceScorer:
 
     def calculate_score(self, user_profile: dict, job_posting: dict) -> dict:
         """S_pref = base_constant + raw_sum * scaling_factor. Optionally includes ONET BWS scores for work activities."""
+        cfg = c.PREFERENCE_CONFIG
+        base_constant = float(cfg["base_constant"])
+        enabled_attrs = {
+            k: v for k, v in cfg["attributes"].items()
+            if v.get("enabled", True)
+        }
+        max_positive_sum = sum(abs(s["beta"]) for s in enabled_attrs.values())
+        sigmoid_factor = (
+            c.PREFERENCE_SIGMOID_NUMERATOR / max_positive_sum if max_positive_sum > 0 else 2.0
+        )
 
         raw_score_sum = 0.0
         details = []
@@ -61,7 +57,6 @@ class PreferenceScorer:
         user_weights = user_profile.get("preference_vector", {})
         job_attrs = job_posting.get("attributes", {})
 
-        # BWS scores may be at top level or nested inside preference_vector
         bws_scores = (
             user_profile.get("bws_scores")
             or user_weights.get("bws_scores")
@@ -75,7 +70,7 @@ class PreferenceScorer:
         bws_score_type = self.detect_bws_score_type(bws_scores)
 
         # Standard preference scoring (only enabled attributes)
-        for attr_key, settings in self._enabled_attrs.items():
+        for attr_key, settings in enabled_attrs.items():
             beta = settings["beta"]
             user_weight = user_weights.get(attr_key, 0.0)
             job_value_raw = job_attrs.get(attr_key)
@@ -104,19 +99,15 @@ class PreferenceScorer:
                 }
             )
 
-        # If bws_scores are work activity IDs and occupation has onet_work_activities, add WA matching logic
         wa_contributions = []
         wa_details = []
         if bws_score_type == "work_activity_id":
-            # job_posting should have 'onet_work_activities' as a list of dicts with WA_code, WA_Importance, WA_Level
             wa_list = job_posting.get("onet_work_activities", [])
             for wa in wa_list:
                 wa_code = wa.get("WA_code")
                 wa_importance = float(wa.get("WA_Importance", 0))
                 wa_level = float(wa.get("WA_Level", 0))
                 user_bws = float(bws_scores.get(wa_code, 0.0))
-                # Example logic: contribution = user_bws * (importance/5) * (level/7)
-                # (normalize importance and level to [0,1])
                 norm_importance = wa_importance / 5.0 if wa_importance else 0.0
                 norm_level = wa_level / 7.0 if wa_level else 0.0
                 wa_contribution = user_bws * norm_importance * norm_level
@@ -130,29 +121,21 @@ class PreferenceScorer:
                     "norm_level": round(norm_level, 4),
                     "wa_contribution": round(wa_contribution, 4),
                 })
-            # Aggregate WA contributions (mean or sum, here sum)
             wa_score_sum = sum(wa_contributions)
             raw_score_sum += wa_score_sum
-            # Add WA details to output
             details.append({
                 "attribute": "work_activity_bws",
                 "wa_details": wa_details,
                 "wa_score_sum": round(wa_score_sum, 4),
             })
 
-        scaled_sum_legacy = raw_score_sum * PREFERENCE_LEGACY_SCORE_SCALE
+        scaled_sum_legacy = raw_score_sum * c.PREFERENCE_LEGACY_SCORE_SCALE
 
-        # --- u_hat: sigmoid-normalised utility in (0, 1) ---
-        # Scaling factor is computed at init from enabled attributes so that
-        # a perfect match always reaches ~0.98 regardless of how many
-        # attributes are active.
-        sigmoid_input = raw_score_sum * self._sigmoid_factor
+        sigmoid_input = raw_score_sum * sigmoid_factor
         u_hat = 1.0 / (1.0 + math.exp(-sigmoid_input)) if abs(sigmoid_input) < 500 else (1.0 if sigmoid_input > 0 else 0.0)
 
-        # Legacy score kept for backward compatibility during migration
-        legacy_score = max(0.0, min(1.0, self.base_constant + scaled_sum_legacy))
+        legacy_score = max(0.0, min(1.0, base_constant + scaled_sum_legacy))
 
-        # Return BWS scores, type, and top_10_bws as part of the details for downstream use
         return {
             "u_hat": round(u_hat, 4),
             "score": legacy_score,

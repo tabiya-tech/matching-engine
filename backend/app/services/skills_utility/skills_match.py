@@ -34,17 +34,7 @@ import numpy as np
 from typing import Set, Dict, Optional
 from dataclasses import dataclass
 
-from app.config import (
-    GATE_SIMILARITY_THRESHOLD,
-    SKILL_ESSENTIAL_GEO_FLOOR,
-    SKILL_MIN_ESSENTIAL_MATCH_SHARE,
-    SKILL_U_GAP_PENALTY,
-    SKILL_U_TAU_ELIG,
-    SKILL_U_W_ESS,
-    SKILL_U_W_GRP,
-    SKILL_U_W_LOC,
-    SKILL_U_W_OPT,
-)
+import app.config as c
 
 # =============================================================================
 # 1) DATA STRUCTURES
@@ -129,7 +119,7 @@ def _shared_pair_kernel(
     :math:`S = E @ J^\\top` and one match-detail list.
     """
     if geo_floor is None:
-        geo_floor = SKILL_ESSENTIAL_GEO_FLOOR
+        geo_floor = c.SKILL_ESSENTIAL_GEO_FLOOR
 
     loc_score = location_near_enough(js, op)
 
@@ -253,10 +243,10 @@ def compute_U_complete(
     Uses a single essential similarity matmul via :func:`_shared_pair_kernel`.
     """
     W_LOC, W_ESS, W_OPT, W_GRP, W_GAP_PEN = (
-        SKILL_U_W_LOC, SKILL_U_W_ESS, SKILL_U_W_OPT, SKILL_U_W_GRP, SKILL_U_GAP_PENALTY,
+        c.SKILL_U_W_LOC, c.SKILL_U_W_ESS, c.SKILL_U_W_OPT, c.SKILL_U_W_GRP, c.SKILL_U_GAP_PENALTY,
     )
-    TAU_ELIG = SKILL_U_TAU_ELIG
-    MIN_ESS_SHARE = SKILL_MIN_ESSENTIAL_MATCH_SHARE
+    TAU_ELIG = c.SKILL_U_TAU_ELIG
+    MIN_ESS_SHARE = c.SKILL_MIN_ESSENTIAL_MATCH_SHARE
 
     skill_labels = skill_labels or {}
     user_skill_labels = user_skill_labels or {}
@@ -327,7 +317,7 @@ def compute_feasibility_signals(
 ):
     """Recruiter-side feasibility; shares :func:`_shared_pair_kernel` with U."""
     if gate_threshold is None:
-        gate_threshold = GATE_SIMILARITY_THRESHOLD
+        gate_threshold = c.GATE_SIMILARITY_THRESHOLD
 
     skill_labels = skill_labels or {}
     user_skill_labels = user_skill_labels or {}
@@ -395,12 +385,12 @@ def compute_utility_and_feasibility_pair(
 ) -> tuple:
     """One essential matmul and one optional/group pass for the multiplicative pipeline."""
     if gate_threshold is None:
-        gate_threshold = GATE_SIMILARITY_THRESHOLD
+        gate_threshold = c.GATE_SIMILARITY_THRESHOLD
     W_LOC, W_ESS, W_OPT, W_GRP, W_GAP_PEN = (
-        SKILL_U_W_LOC, SKILL_U_W_ESS, SKILL_U_W_OPT, SKILL_U_W_GRP, SKILL_U_GAP_PENALTY,
+        c.SKILL_U_W_LOC, c.SKILL_U_W_ESS, c.SKILL_U_W_OPT, c.SKILL_U_W_GRP, c.SKILL_U_GAP_PENALTY,
     )
-    TAU_ELIG = SKILL_U_TAU_ELIG
-    MIN_ESS_SHARE = SKILL_MIN_ESSENTIAL_MATCH_SHARE
+    TAU_ELIG = c.SKILL_U_TAU_ELIG
+    MIN_ESS_SHARE = c.SKILL_MIN_ESSENTIAL_MATCH_SHARE
 
     skill_labels = skill_labels or {}
     user_skill_labels = user_skill_labels or {}

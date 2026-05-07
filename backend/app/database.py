@@ -21,6 +21,8 @@ load_dotenv()
 # Load from environment
 MONGO_URL = os.getenv("MONGO_URL")
 DATABASE_NAME = os.getenv("MONGO_DB_NAME")
+MONGO_TEST_USERS_DB_NAME = os.getenv("MONGO_TEST_USERS_DB_NAME") or DATABASE_NAME
+MONGO_TEST_USERS_COLLECTION = os.getenv("MONGO_TEST_USERS_COLLECTION", "test_users")
 
 if not MONGO_URL:
     raise ValueError("MONGO_URL environment variable is not set")
@@ -134,6 +136,13 @@ def _enrich_work_activities(wa_items: list, classified_occupations: list) -> lis
 
 def get_database():
     return db
+
+
+async def get_test_users(limit: int = 500) -> List[Dict[str, Any]]:
+    """Load dynamic test users from Mongo (separate DB/collection supported)."""
+    col = client[MONGO_TEST_USERS_DB_NAME][MONGO_TEST_USERS_COLLECTION]
+    cursor = col.find({}, {"_id": 0}).sort("user_id", 1).limit(max(1, int(limit)))
+    return [doc async for doc in cursor]
 
 
 # Only jobs intended to be shown / matched; keeps Mongo transfers and Python work small.

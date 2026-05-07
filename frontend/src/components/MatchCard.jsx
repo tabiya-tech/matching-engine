@@ -1,5 +1,6 @@
 // src/components/MatchCard.jsx
 import React from 'react';
+import { ScoreBreakdownDetails } from './ScoreBreakdownDetails';
 
 export const MatchCard = ({ job }) => {
   // Use optional chaining and default values to prevent "undefined" errors
@@ -49,37 +50,8 @@ export const MatchCard = ({ job }) => {
           </div>
         </div>
 
-        {/* Skill Indicators - Updated to match the new API schema */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
-          <SkillIndicator 
-            label="Skill Alignment" 
-            val={score_breakdown.total_skill_utility || 0} 
-          />
-          <SkillIndicator 
-            label="User Preference" 
-            val={score_breakdown.preference_score || 0} 
-          />
-          <SkillIndicator 
-            label="Market Demand" 
-            val={score_breakdown.demand_score || 0} 
-          />
-        </div>
+        <ScoreBreakdownDetails score_breakdown={score_breakdown} variant="indigo" />
       </div>
     </div>
   );
 };
-
-const SkillIndicator = ({ label, val }) => (
-  <div>
-    <div className="flex justify-between text-[10px] font-black text-slate-400 uppercase mb-2">
-      <span>{label}</span>
-      <span>{(val * 100).toFixed(0)}%</span>
-    </div>
-    <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
-      <div 
-        className="h-full bg-indigo-500 rounded-full transition-all duration-500" 
-        style={{ width: `${Math.min(val * 100, 100)}%` }} 
-      />
-    </div>
-  </div>
-);

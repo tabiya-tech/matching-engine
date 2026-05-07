@@ -6,9 +6,9 @@ import json
 import csv
 import numpy as np
 
+import app.config as c
 from app.config import (
     EMBEDDING_MODEL_PATH,
-    GATE_SIMILARITY_THRESHOLD,
     SKILL_GROUPS_CSV_PATH,
     SKILLS_CSV_PATH,
     SKILL_HIERARCHY_CSV_PATH,
@@ -210,7 +210,7 @@ class SkillScorer:
             js,
             op,
             self.engine,
-            gate_threshold=GATE_SIMILARITY_THRESHOLD,
+            gate_threshold=c.GATE_SIMILARITY_THRESHOLD,
             skill_labels=self.skill_labels,
             user_skill_labels=user_skill_labels,
             skill_group_labels=self.skill_group_labels,
@@ -226,6 +226,6 @@ class SkillScorer:
             skill_labels=self.skill_labels,
             user_skill_labels=user_skill_labels,
             skill_group_labels=self.skill_group_labels,
-            gate_threshold=GATE_SIMILARITY_THRESHOLD,
+            gate_threshold=c.GATE_SIMILARITY_THRESHOLD,
         )
         return u, f

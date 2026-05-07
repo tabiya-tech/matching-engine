@@ -3,14 +3,20 @@ import logging
 import time
 
 from pydantic import BaseModel
-from typing import List
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.security import APIKeyHeader
 
 from app.schemas import MatchRequest, MatchResponse
-from app.database import get_all_jobs_with_timing, get_all_occupations_with_timing
+from app.database import get_all_jobs_with_timing, get_all_occupations_with_timing, get_test_users
 from app.match_timing_log import log_match_step
+from app.matching_config_store import (
+    fetch_config_document,
+    load_effective_matching_settings,
+    save_override_flat,
+)
+from app.matching_runtime import DEFAULT_TUNABLE_FLAT, TUNABLE_KEYS, build_effective_settings
 from app.services.matching_service import match_user_with_data
 
 api_key_auth = APIKeyHeader(
@@ -32,6 +38,48 @@ class Health(BaseModel):
 @router.get("/health")
 async def health() -> Health:
     return Health(status="ok")
+
+
+@router.get("/config", tags=["config"])
+async def get_matching_config():
+    settings = await load_effective_matching_settings()
+    doc = await fetch_config_document()
+    out: Dict[str, Any] = {
+        "effective": settings.to_effective_flat(),
+        "sources": settings.sources,
+    }
+    if doc and doc.get("updated_at") is not None:
+        out["updated_at"] = doc["updated_at"].isoformat()
+    return out
+
+
+@router.get("/test-users", tags=["testing"])
+async def get_dynamic_test_users(limit: int = 500):
+    try:
+        users = await get_test_users(limit=limit)
+        return {"users": users, "count": len(users)}
+    except Exception as e:
+        logger.exception(e)
+        raise HTTPException(status_code=500, detail=f"Failed to load test users: {e.__class__.__name__}")
+
+
+@router.post("/config", tags=["config"])
+async def post_matching_config(body: Dict[str, Any]):
+    user_flat = {str(k): str(v).strip() for k, v in body.items() if k in TUNABLE_KEYS}
+    try:
+        build_effective_settings(user_flat)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    merged = {**DEFAULT_TUNABLE_FLAT, **user_flat}
+    updated_at = await save_override_flat(merged)
+    settings = await load_effective_matching_settings()
+    return {
+        "ok": True,
+        "updated_at": updated_at.isoformat(),
+        "effective": settings.to_effective_flat(),
+        "sources": settings.sources,
+    }
+
 
 @router.post(
     "/match",
@@ -60,9 +108,10 @@ async def match(payload: List[MatchRequest]):
 
         # Mongo ping runs at app startup (warmup_on_startup), not here — avoids multi-second noise per request.
         t_fetch = time.perf_counter()
-        (jobs, _), (occ, _) = await asyncio.gather(
+        (jobs, _), (occ, _), _ = await asyncio.gather(
             get_all_jobs_with_timing(users=users),
             get_all_occupations_with_timing(),
+            load_effective_matching_settings(),
         )
         fetch_parallel_wall_ms = _ms(t_fetch)
         t_score = time.perf_counter()

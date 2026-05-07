@@ -62,6 +62,16 @@ SCORING_MODE: str = _s("SCORING_MODE", "multiplicative")
 if SCORING_MODE not in ("multiplicative", "additive"):
     raise ValueError("SCORING_MODE must be 'multiplicative' or 'additive'")
 
+# Runtime source for tunable matching config used by /match and /config:
+# - mongodb: use Mongo overrides merged on code defaults
+# - env:     use env/.env values from this module
+# - auto:    use Mongo when available; fallback to env values on empty/failure
+MATCHING_CONFIG_SOURCE: str = _s("MATCHING_CONFIG_SOURCE", "auto").lower()
+if MATCHING_CONFIG_SOURCE not in ("mongodb", "env", "auto"):
+    raise ValueError(
+        "MATCHING_CONFIG_SOURCE must be one of: 'mongodb', 'env', 'auto'"
+    )
+
 # Additive (legacy) weights
 GLOBAL_WEIGHTS: Dict[str, float] = {
     "w1_skills": _f("ADDITIVE_W1_SKILLS", 0.40),

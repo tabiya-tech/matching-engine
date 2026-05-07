@@ -19,14 +19,13 @@ All per-skill similarities are Node2Vec graph-based cosine distances computed
 via SimilarityEngine — identical to the existing skill matching pipeline.
 """
 
-from app.config import DEMAND_SCORE_MAPPING, SUCCESS_PROPENSITY_CONFIG
+import app.config as c
 
 
 class SuccessPropensityScorer:
 
     def __init__(self):
-        self.cfg = SUCCESS_PROPENSITY_CONFIG
-        self.demand_mapping = DEMAND_SCORE_MAPPING
+        self.demand_mapping = c.DEMAND_SCORE_MAPPING
 
     # ------------------------------------------------------------------
     # M_ij: market opportunity
@@ -104,9 +103,10 @@ class SuccessPropensityScorer:
             components       – dict of G, E, R, M values
             demand_label     – str, the raw demand label (for display)
         """
-        alpha = self.cfg["alpha_essential"]
-        beta = self.cfg["beta_readiness"]
-        gamma = self.cfg["gamma_market"]
+        cfg = c.SUCCESS_PROPENSITY_CONFIG
+        alpha = cfg["alpha_essential"]
+        beta = cfg["beta_readiness"]
+        gamma = cfg["gamma_market"]
 
         # --- components ---
         g_ij = 1.0 if feasibility["gate_passed"] else 0.0

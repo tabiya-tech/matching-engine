@@ -4,16 +4,7 @@ import asyncio
 import time
 from typing import Any, Dict, List, Optional
 
-from app.config import (
-    DEMAND_SCORE_MAPPING,
-    GLOBAL_WEIGHTS,
-    MATCH_APPLY_LOCATION_FILTER,
-    MATCH_RESPONSE_SKILL_MIN_SCORE,
-    MATCH_TOP_K_OCCUPATIONS,
-    MATCH_TOP_K_OPPORTUNITIES,
-    MATCH_TOP_K_SKILL_GAPS,
-    SCORING_MODE,
-)
+import app.config as c
 from app.database import get_all_jobs, get_all_occupations
 from app.match_timing_log import log_match_step
 from app.services.preference_score import PreferenceScorer
@@ -53,19 +44,22 @@ def _ms(t0: float) -> float:
 
 def _filter_essential_skill_matches(match_details: dict) -> list[dict]:
     """Keep only essential skill matches whose similarity passes response threshold."""
+    thr = c.MATCH_RESPONSE_SKILL_MIN_SCORE
     essential = match_details.get("essential_skill_matches", [])
     return [
         m for m in essential
-        if float(m.get("similarity", 0.0)) >= MATCH_RESPONSE_SKILL_MIN_SCORE
+        if float(m.get("similarity", 0.0)) >= thr
     ]
 
 
 def _filter_skill_gap_recommendations(skill_gaps: list[dict]) -> list[dict]:
     """Keep only skill-gap rows whose proximity passes response threshold."""
+    thr = c.MATCH_RESPONSE_SKILL_MIN_SCORE
+    top_k = c.MATCH_TOP_K_SKILL_GAPS
     return [
         g for g in skill_gaps
-        if float(g.get("proximity_score", 0.0)) >= MATCH_RESPONSE_SKILL_MIN_SCORE
-    ][:MATCH_TOP_K_SKILL_GAPS]
+        if float(g.get("proximity_score", 0.0)) >= thr
+    ][:top_k]
 
 
 def _job_matches_user_location(job: Dict[str, Any], user: Dict[str, Any]) -> bool:
@@ -154,7 +148,7 @@ def _create_score_breakdown_multiplicative(
     }
     if include_demand:
         demand_label = p_hat_result.get("demand_label")
-        breakdown["demand_score"] = round(float(DEMAND_SCORE_MAPPING.get(demand_label, 0.5)), 4) if demand_label else 0.5
+        breakdown["demand_score"] = round(float(c.DEMAND_SCORE_MAPPING.get(demand_label, 0.5)), 4) if demand_label else 0.5
         breakdown["demand_label"] = demand_label
     return breakdown
 
@@ -293,9 +287,8 @@ def _match_items(user: dict, items: list, item_type: str = "opportunity", top_k:
     """
     uid = str(user.get("user_id", "?"))
     n_in = len(items)
-
     t0 = time.perf_counter()
-    if MATCH_APPLY_LOCATION_FILTER:
+    if c.MATCH_APPLY_LOCATION_FILTER:
         items = [item for item in items if _job_matches_user_location(item, user)]
     filter_ms = _ms(t0)
 
@@ -305,7 +298,7 @@ def _match_items(user: dict, items: list, item_type: str = "opportunity", top_k:
         "n_after_filter": 0,
         "filter_ms": filter_ms,
         "n_scored": 0,
-        "scoring_mode": SCORING_MODE,
+        "scoring_mode": c.SCORING_MODE,
         "u_hat_ms": 0.0,
         "skill_feasibility_ms": 0.0,
         "p_hat_ms": 0.0,
@@ -327,7 +320,7 @@ def _match_items(user: dict, items: list, item_type: str = "opportunity", top_k:
         )
         return [], empty_timing
 
-    scoring_mode = SCORING_MODE
+    scoring_mode = c.SCORING_MODE
 
     # In legacy mode, import DemandScorer once (not per-item)
     _demand_scorer = None
@@ -384,9 +377,9 @@ def _match_items(user: dict, items: list, item_type: str = "opportunity", top_k:
             demand = _demand_scorer.calculate_score(item)
             sum_leg_d += _ms(t_d)
 
-            w1 = GLOBAL_WEIGHTS["w1_skills"]
-            w2 = GLOBAL_WEIGHTS["w2_preference"]
-            w3 = GLOBAL_WEIGHTS["w3_market"]
+            w1 = c.GLOBAL_WEIGHTS["w1_skills"]
+            w2 = c.GLOBAL_WEIGHTS["w2_preference"]
+            w3 = c.GLOBAL_WEIGHTS["w3_market"]
 
             if not demand.get("present", False):
                 # Demand absent — redistribute its weight to skills + prefs
@@ -470,7 +463,6 @@ def match_user_with_data(
 
     uid = str(user_id)
     t_total = time.perf_counter()
-
     if not jobs and not occupations:
         log_match_step(
             "matching_service",
@@ -489,13 +481,13 @@ def match_user_with_data(
 
     t0 = time.perf_counter()
     opportunity_recommendations, opp_timing = _match_items(
-        user, jobs, item_type="opportunity", top_k=MATCH_TOP_K_OPPORTUNITIES
+        user, jobs, item_type="opportunity", top_k=c.MATCH_TOP_K_OPPORTUNITIES
     )
     t_opp = _ms(t0)
 
     t0 = time.perf_counter()
     occupation_recommendations, occ_timing = _match_items(
-        user, occupations, item_type="occupation", top_k=MATCH_TOP_K_OCCUPATIONS
+        user, occupations, item_type="occupation", top_k=c.MATCH_TOP_K_OCCUPATIONS
     )
     t_occ = _ms(t0)
 
@@ -505,7 +497,7 @@ def match_user_with_data(
         jobs,
         scorer_skill.engine,
         scorer_skill.skill_labels,
-        top_k=MATCH_TOP_K_SKILL_GAPS,
+        top_k=c.MATCH_TOP_K_SKILL_GAPS,
         resolve_id=scorer_skill._resolve_id,
         timing_out=None,
     )

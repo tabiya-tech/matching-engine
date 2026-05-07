@@ -23,7 +23,7 @@ export const Layout = ({ children, currentView, setView }) => {
 
           {/* PERSONA SWITCHER */}
           <div className="flex bg-slate-100 p-1 rounded-full border border-slate-200 shadow-inner">
-            {['jobseeker', 'employer', 'policy'].map((mode) => (
+            {['jobseeker', 'employer', 'policy', 'config'].map((mode) => (
               <button
                 key={mode}
                 onClick={() => setView(mode)}

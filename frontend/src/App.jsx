@@ -3,28 +3,42 @@ import { Layout } from './components/Layout';
 import { JobseekerView } from './views/JobseekerView';
 import { EmployerView } from './views/EmployerView';
 import { PolicyView } from './views/PolicyView';
+import { MatchingConfigView } from './views/MatchingConfigView';
+import { fetchTestUsers, postMatch } from './api/client';
 
 function App() {
   const [view, setView] = useState('jobseeker');
   const [users, setUsers] = useState([]);
   const [liveRecommendations, setLiveRecommendations] = useState([]);
   const [loading, setLoading] = useState(false);
+  /** Persisted across tab switches — JobseekerView used to reset this on unmount. */
+  const [selectedJobseekerUserId, setSelectedJobseekerUserId] = useState('');
 
-  // 1. Load supply data on startup from public/data
+  // 1. Load test users from Mongo API; fallback to local file for resilience.
   useEffect(() => {
-    const loadInitialData = async () => {
-      const fetchJsonl = async (url) => {
-        const response = await fetch(url);
-        const text = await response.text();
-        // Parse JSONL: split by lines and filter out empty strings
-        return text.trim().split('\n').filter(line => line).map(line => JSON.parse(line));
-      };
+    const normalizeUsers = (raw) => {
+      if (Array.isArray(raw)) return raw;
+      if (raw && typeof raw === 'object') {
+        if (Array.isArray(raw.users)) return raw.users;
+        if (Array.isArray(raw.test_users)) return raw.test_users;
+      }
+      return [];
+    };
 
+    const loadInitialData = async () => {
       try {
-        const supplyData = await fetchJsonl('/data/supply.jsonl');
-        setUsers(supplyData);
+        const mongoUsers = await fetchTestUsers();
+        setUsers(normalizeUsers(mongoUsers));
       } catch (error) {
-        console.error("Error loading initial data files:", error);
+        try {
+          const response = await fetch('/data/test_users.json');
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const raw = await response.json();
+          setUsers(normalizeUsers(raw));
+          console.warn('Mongo test-users unavailable, fallback to local file.', error);
+        } catch (fallbackError) {
+          console.error('Error loading test users (mongo + fallback file):', fallbackError);
+        }
       }
     };
     loadInitialData();
@@ -32,6 +46,11 @@ function App() {
 
   // 2. Function to trigger the live Matching API
   const handleMatch = async (selectedUser) => {
+    const uid = String(
+      selectedUser.user_id ?? selectedUser.youth_id ?? ''
+    ).trim();
+    setSelectedJobseekerUserId(uid);
+
     setLoading(true);
     try {
       // Transform the user data to match the schema
@@ -44,15 +63,9 @@ function App() {
         preference_vector: selectedUser.preference_vector
       };
 
-      const response = await fetch('http://127.0.0.1:8000/match', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestPayload)
-      });
-
-      if (!response.ok) throw new Error("Backend connection failed");
-
-      const result = await response.json();
+      const results = await postMatch([requestPayload]);
+      const result = Array.isArray(results) ? results[0] : results;
+      if (!result?.user_id) throw new Error('Invalid match response');
 
       // Update global results: replace if user already matched, else add
       setLiveRecommendations(prev => {
@@ -69,11 +82,12 @@ function App() {
   return (
     <Layout currentView={view} setView={setView}>
       {view === 'jobseeker' && (
-        <JobseekerView 
-          users={users} 
-          onMatch={handleMatch} 
-          data={liveRecommendations} 
+        <JobseekerView
+          users={users}
+          onMatch={handleMatch}
+          data={liveRecommendations}
           isLoading={loading}
+          selectedUserId={selectedJobseekerUserId}
         />
       )}
       {view === 'employer' && (
@@ -82,6 +96,7 @@ function App() {
       {view === 'policy' && (
         <PolicyView data={liveRecommendations} />
       )}
+      {view === 'config' && <MatchingConfigView />}
     </Layout>
   );
 }

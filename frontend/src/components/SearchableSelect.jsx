@@ -1,8 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
-export const SearchableSelect = ({ options, onSelect, placeholder, labelKey = "id" }) => {
+/** When `committedLabel` is set from the parent (e.g. persisted user id), keep the input in sync after remount / tab switch. */
+export const SearchableSelect = ({
+  options,
+  onSelect,
+  placeholder,
+  labelKey = 'id',
+  committedLabel = '',
+}) => {
   const [isOpen, setIsOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState("");
+  const [searchTerm, setSearchTerm] = useState(() => String(committedLabel ?? ''));
+
+  useEffect(() => {
+    setSearchTerm(String(committedLabel ?? ''));
+  }, [committedLabel]);
 
   const getLabel = (option) => {
     const v = option?.[labelKey];
