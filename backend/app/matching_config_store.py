@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from app.database import client
@@ -18,30 +16,63 @@ from app.matching_runtime import (
 
 logger = logging.getLogger(__name__)
 
-_COLLECTION = os.getenv("MONGO_MATCHING_CONFIG_COLLECTION", "matching_configuration")
-_CFG_DB_NAME = os.getenv("MONGO_TEST_USERS_DB_NAME") or os.getenv("MONGO_DB_NAME")
-_CFG_DB = client[_CFG_DB_NAME]
+def _cfg_collection():
+    return client[c.MONGO_MATCHING_CONFIG_DB_NAME][c.MONGO_MATCHING_CONFIG_COLLECTION]
+
+
+def _routing_collection():
+    return client[c.MONGO_ROUTING_CONFIG_DB_NAME][c.MONGO_MATCHING_CONFIG_COLLECTION]
 
 
 async def fetch_override_flat() -> Dict[str, Any]:
-    doc = await _CFG_DB[_COLLECTION].find_one({"_id": "default"})
+    doc = await _cfg_collection().find_one({"_id": "default"})
     if not doc:
         return {}
     return dict(doc.get("values") or {})
 
 
-async def save_override_flat(flat: Dict[str, Any]) -> datetime:
-    now = datetime.now(timezone.utc)
-    await _CFG_DB[_COLLECTION].update_one(
+async def save_override_flat(flat: Dict[str, Any]) -> None:
+    await _cfg_collection().update_one(
         {"_id": "default"},
-        {"$set": {"values": flat, "updated_at": now}},
+        {"$set": {"values": flat}},
         upsert=True,
     )
-    return now
 
 
 async def fetch_config_document() -> Optional[Dict[str, Any]]:
-    return await _CFG_DB[_COLLECTION].find_one({"_id": "default"})
+    return await _cfg_collection().find_one({"_id": "default"})
+
+
+async def fetch_mongo_routing_document() -> Optional[Dict[str, Any]]:
+    return await _routing_collection().find_one({"_id": "mongo_routing"})
+
+
+async def save_mongo_routing_config(values: Dict[str, Any]) -> None:
+    await _routing_collection().update_one(
+        {"_id": "mongo_routing"},
+        {"$set": {"values": dict(values)}},
+        upsert=True,
+    )
+
+
+async def load_and_apply_mongo_routing_config() -> Dict[str, str]:
+    doc = await fetch_mongo_routing_document()
+    if not doc:
+        return {
+            "MONGO_DB_NAME": c.MONGO_DB_NAME,
+            "MONGO_JOBS_COLLECTION": c.MONGO_JOBS_COLLECTION,
+        }
+    vals = doc.get("values") or {}
+    db_name = str(vals.get("MONGO_DB_NAME") or c.MONGO_DB_NAME).strip()
+    jobs_collection = str(vals.get("MONGO_JOBS_COLLECTION") or c.MONGO_JOBS_COLLECTION).strip()
+    if db_name:
+        c.MONGO_DB_NAME = db_name
+    if jobs_collection:
+        c.MONGO_JOBS_COLLECTION = jobs_collection
+    return {
+        "MONGO_DB_NAME": c.MONGO_DB_NAME,
+        "MONGO_JOBS_COLLECTION": c.MONGO_JOBS_COLLECTION,
+    }
 
 
 async def load_effective_matching_settings() -> MatchingRuntimeSettings:

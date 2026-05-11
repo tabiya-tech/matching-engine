@@ -20,10 +20,12 @@ export const SearchableSelect = ({
     return v === undefined || v === null ? "" : String(v);
   };
 
-  // Filter options based on typing
-  const filteredOptions = options.filter((option) =>
-    getLabel(option).toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const term = searchTerm.toLowerCase().trim();
+  // When input is empty, show a starter list so users can browse immediately.
+  const filteredOptions = (term
+    ? options.filter((option) => getLabel(option).toLowerCase().includes(term))
+    : options
+  ).slice(0, 100);
 
   return (
     <div className="relative w-full">
@@ -39,7 +41,7 @@ export const SearchableSelect = ({
         onFocus={() => setIsOpen(true)}
       />
 
-      {isOpen && searchTerm && (
+      {isOpen && (
         <div className="absolute z-50 w-full mt-2 bg-white border border-slate-200 rounded-xl shadow-xl max-h-60 overflow-y-auto">
           {filteredOptions.length > 0 ? (
             filteredOptions.map((option, index) => {

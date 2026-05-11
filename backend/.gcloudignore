@@ -1,0 +1,18 @@
+.git
+.gitignore
+
+# Local virtualenv / caches
+venv/
+__pycache__/
+.pytest_cache/
+.python_cache/
+*.pyc
+
+# Local tooling files
+.DS_Store
+*.log
+
+# Not needed for backend build context
+../frontend/
+../data/
+../iac/

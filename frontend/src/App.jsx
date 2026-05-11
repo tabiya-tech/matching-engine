@@ -16,11 +16,16 @@ function App() {
 
   // 1. Load test users from Mongo API; fallback to local file for resilience.
   useEffect(() => {
+    const canonicalizeUser = (u) => {
+      const uid = String(u?.user_id ?? u?.youth_id ?? '').trim();
+      return { ...u, user_id: uid };
+    };
+
     const normalizeUsers = (raw) => {
-      if (Array.isArray(raw)) return raw;
+      if (Array.isArray(raw)) return raw.map(canonicalizeUser);
       if (raw && typeof raw === 'object') {
-        if (Array.isArray(raw.users)) return raw.users;
-        if (Array.isArray(raw.test_users)) return raw.test_users;
+        if (Array.isArray(raw.users)) return raw.users.map(canonicalizeUser);
+        if (Array.isArray(raw.test_users)) return raw.test_users.map(canonicalizeUser);
       }
       return [];
     };
@@ -33,7 +38,8 @@ function App() {
         try {
           const response = await fetch('/data/test_users.json');
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const raw = await response.json();
+          const text = await response.text();
+          const raw = text.trim() ? JSON.parse(text) : [];
           setUsers(normalizeUsers(raw));
           console.warn('Mongo test-users unavailable, fallback to local file.', error);
         } catch (fallbackError) {
@@ -55,7 +61,7 @@ function App() {
     try {
       // Transform the user data to match the schema
       const requestPayload = {
-        user_id: selectedUser.user_id,
+        user_id: uid,
         city: selectedUser.city,
         province: selectedUser.province,
         skills_vector: selectedUser.skills_vector || { top_skills: [] },

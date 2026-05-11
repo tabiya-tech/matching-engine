@@ -1,5 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { fetchMatchingConfig, saveMatchingConfig } from '../api/client';
+import {
+  fetchMatchingConfig,
+  saveMatchingConfig,
+  fetchMongoConfig,
+  saveMongoConfig,
+} from '../api/client';
 
 function formatSource(sources, key) {
   const s = sources?.[key];
@@ -15,6 +20,8 @@ export function MatchingConfigView() {
   const [sources, setSources] = useState({});
   const [updatedAt, setUpdatedAt] = useState(null);
   const [draft, setDraft] = useState({});
+  const [mongoCfg, setMongoCfg] = useState({});
+  const [mongoDraft, setMongoDraft] = useState({});
 
   const keys = useMemo(() => Object.keys(effective).sort(), [effective]);
 
@@ -22,11 +29,16 @@ export function MatchingConfigView() {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchMatchingConfig();
+      const [data, mongoData] = await Promise.all([
+        fetchMatchingConfig(),
+        fetchMongoConfig(),
+      ]);
       setEffective(data.effective ?? {});
       setSources(data.sources ?? {});
       setUpdatedAt(data.updated_at ?? null);
       setDraft(data.effective ?? {});
+      setMongoCfg(mongoData ?? {});
+      setMongoDraft(mongoData ?? {});
     } catch (e) {
       setError(e.message || String(e));
     } finally {
@@ -60,12 +72,35 @@ export function MatchingConfigView() {
 
   const onReset = () => {
     setDraft({ ...effective });
+    setMongoDraft({ ...mongoCfg });
     setError(null);
   };
 
   const dirty = useMemo(() => {
     return keys.some((k) => String(draft[k]) !== String(effective[k]));
   }, [keys, draft, effective]);
+  const mongoDirty = useMemo(() => {
+    return Object.keys(mongoCfg).some((k) => String(mongoDraft[k] ?? '') !== String(mongoCfg[k] ?? ''));
+  }, [mongoCfg, mongoDraft]);
+
+  const onMongoChange = (key, value) => {
+    setMongoDraft((d) => ({ ...d, [key]: value }));
+  };
+
+  const onSaveMongo = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const data = await saveMongoConfig(mongoDraft);
+      const applied = data.mongo_config ?? {};
+      setMongoCfg(applied);
+      setMongoDraft(applied);
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -106,7 +141,7 @@ export function MatchingConfigView() {
             <button
               type="button"
               onClick={onReset}
-              disabled={saving || !dirty}
+              disabled={saving || (!dirty && !mongoDirty)}
               className="px-4 py-2 rounded-full text-sm font-bold border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
             >
               Discard edits
@@ -160,6 +195,35 @@ export function MatchingConfigView() {
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+          <h3 className="text-xs font-black uppercase tracking-wide text-slate-500">
+            Mongo DB routing (jobs only)
+          </h3>
+          <button
+            type="button"
+            onClick={onSaveMongo}
+            disabled={saving || !mongoDirty}
+            className="px-4 py-1.5 rounded-full text-xs font-black bg-tabiya-navy text-white disabled:opacity-50"
+          >
+            {saving ? 'Saving…' : 'Save DB config'}
+          </button>
+        </div>
+        <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+          {Object.keys(mongoDraft).map((key) => (
+            <label key={key} className="block">
+              <span className="block mb-1 font-mono text-[11px] text-slate-600">{key}</span>
+              <input
+                type="text"
+                value={mongoDraft[key] ?? ''}
+                onChange={(e) => onMongoChange(key, e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-3 py-1.5 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-tabiya-green/40"
+              />
+            </label>
+          ))}
         </div>
       </div>
     </div>

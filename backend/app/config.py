@@ -43,8 +43,15 @@ def _b(key: str, default: bool) -> bool:
 # ---------------------------------------------------------------------------
 # Mongo — job source (enriched collection from migration / reranker)
 # ---------------------------------------------------------------------------
+MONGO_DB_NAME: str = _s("MONGO_DB_NAME", "matching_service")
 # Default: RankedJobsEnriched (see scripts/enrich_ranked_jobs_to_new_collection.py). Set to RankedJobs for legacy.
 MONGO_JOBS_COLLECTION: str = _s("MONGO_JOBS_COLLECTION", "RankedJobsEnriched")
+MONGO_MATCHING_CONFIG_DB_NAME: str = _s("MONGO_MATCHING_CONFIG_DB_NAME", MONGO_DB_NAME)
+MONGO_MATCHING_CONFIG_COLLECTION: str = _s("MONGO_MATCHING_CONFIG_COLLECTION", "matching_configuration")
+# Keep mongo routing document (_id: mongo_routing) in a stable config DB, not in jobs DB.
+MONGO_ROUTING_CONFIG_DB_NAME: str = _s("MONGO_ROUTING_CONFIG_DB_NAME", "ma-testing-db")
+MONGO_TEST_USERS_DB_NAME: str = _s("MONGO_TEST_USERS_DB_NAME", MONGO_DB_NAME)
+MONGO_TEST_USERS_COLLECTION: str = _s("MONGO_TEST_USERS_COLLECTION", "test_users")
 
 # HTTP /match: when set, load at most N jobs with is_active + (remote OR per-user location),
 # as a superset of matching_service._job_matches_user_location. Set to 0 to disable

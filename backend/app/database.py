@@ -7,22 +7,13 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
+import app.config as c
 
-from app.config import (
-    JOBS_FIND_USE_PROJECTION,
-    JOBS_RETRIEVAL_FILTER,
-    JOBS_RETRIEVAL_LIMIT,
-    MONGO_JOBS_COLLECTION,
-    OCCUPATION_JSON_PATH,
-)
+from app.config import OCCUPATION_JSON_PATH
 
 load_dotenv()
 
-# Load from environment
 MONGO_URL = os.getenv("MONGO_URL")
-DATABASE_NAME = os.getenv("MONGO_DB_NAME")
-MONGO_TEST_USERS_DB_NAME = os.getenv("MONGO_TEST_USERS_DB_NAME") or DATABASE_NAME
-MONGO_TEST_USERS_COLLECTION = os.getenv("MONGO_TEST_USERS_COLLECTION", "test_users")
 
 if not MONGO_URL:
     raise ValueError("MONGO_URL environment variable is not set")
@@ -38,7 +29,6 @@ if _mongo_min_pool > 0:
     _mongo_client_kwargs["minPoolSize"] = _mongo_min_pool
 
 client = AsyncIOMotorClient(MONGO_URL, **_mongo_client_kwargs)
-db = client[DATABASE_NAME]
 
 logger = logging.getLogger(__name__)
 
@@ -135,12 +125,12 @@ def _enrich_work_activities(wa_items: list, classified_occupations: list) -> lis
 
 
 def get_database():
-    return db
+    return client[c.MONGO_DB_NAME]
 
 
 async def get_test_users(limit: int = 500) -> List[Dict[str, Any]]:
     """Load dynamic test users from Mongo (separate DB/collection supported)."""
-    col = client[MONGO_TEST_USERS_DB_NAME][MONGO_TEST_USERS_COLLECTION]
+    col = client[c.MONGO_TEST_USERS_DB_NAME][c.MONGO_TEST_USERS_COLLECTION]
     cursor = col.find({}, {"_id": 0}).sort("user_id", 1).limit(max(1, int(limit)))
     return [doc async for doc in cursor]
 
@@ -368,20 +358,20 @@ async def get_all_jobs_with_timing(users: Optional[Sequence[dict]] = None):
     t0 = time.perf_counter()
     filt: Dict[str, Any] = RANKED_JOBS_ACTIVE_FILTER
     retrieval_applied = False
-    if JOBS_RETRIEVAL_FILTER and users:
+    if c.JOBS_RETRIEVAL_FILTER and users:
         built = build_mongo_filter_active_and_location(users)
         if built is not None and built != RANKED_JOBS_ACTIVE_FILTER:
             filt = built
             retrieval_applied = True
-    col = db[MONGO_JOBS_COLLECTION]
-    if JOBS_FIND_USE_PROJECTION:
+    col = get_database()[c.MONGO_JOBS_COLLECTION]
+    if c.JOBS_FIND_USE_PROJECTION:
         cursor = col.find(filt, RANKED_JOB_FIND_PROJECTION)
     else:
         cursor = col.find(filt)
     if retrieval_applied:
         cursor = cursor.sort([("_id", -1)])
-        if JOBS_RETRIEVAL_LIMIT > 0:
-            cursor = cursor.limit(JOBS_RETRIEVAL_LIMIT)
+        if c.JOBS_RETRIEVAL_LIMIT > 0:
+            cursor = cursor.limit(c.JOBS_RETRIEVAL_LIMIT)
     ranked_docs = [d async for d in cursor]
     mongo_ranked_find_ms = _ms(t0)
 
@@ -400,7 +390,7 @@ async def get_all_jobs_with_timing(users: Optional[Sequence[dict]] = None):
     logger.info(
         "Loaded %d active jobs from %s (matched=%d, skipped_in_build=%d)",
         len(jobs),
-        MONGO_JOBS_COLLECTION,
+        c.MONGO_JOBS_COLLECTION,
         len(ranked_docs),
         skipped,
     )
@@ -412,7 +402,7 @@ async def get_all_jobs_with_timing(users: Optional[Sequence[dict]] = None):
         "n_skipped_inactive": skipped,
         "get_all_jobs_total_ms": total_ms,
         "jobs_retrieval_filter_applied": retrieval_applied,
-        "jobs_find_use_projection": JOBS_FIND_USE_PROJECTION,
+        "jobs_find_use_projection": c.JOBS_FIND_USE_PROJECTION,
     }
 
 
@@ -545,7 +535,7 @@ async def warmup_on_startup() -> None:
     if _env_warmup_flag("MONGO_WARMUP_ON_STARTUP", True):
         t0 = time.perf_counter()
         try:
-            await db.command("ping")
+            await get_database().command("ping")
             logger.info("Mongo warmup: ping ok (%.2f ms)", _ms(t0))
         except Exception:
             logger.exception("Mongo warmup: ping failed")

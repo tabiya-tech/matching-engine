@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+import app.config as c
 
 from pydantic import BaseModel
 from typing import Any, Dict, List
@@ -12,8 +13,10 @@ from app.schemas import MatchRequest, MatchResponse
 from app.database import get_all_jobs_with_timing, get_all_occupations_with_timing, get_test_users
 from app.match_timing_log import log_match_step
 from app.matching_config_store import (
-    fetch_config_document,
+    fetch_mongo_routing_document,
+    load_and_apply_mongo_routing_config,
     load_effective_matching_settings,
+    save_mongo_routing_config,
     save_override_flat,
 )
 from app.matching_runtime import DEFAULT_TUNABLE_FLAT, TUNABLE_KEYS, build_effective_settings
@@ -43,14 +46,38 @@ async def health() -> Health:
 @router.get("/config", tags=["config"])
 async def get_matching_config():
     settings = await load_effective_matching_settings()
-    doc = await fetch_config_document()
-    out: Dict[str, Any] = {
+    return {
         "effective": settings.to_effective_flat(),
         "sources": settings.sources,
     }
-    if doc and doc.get("updated_at") is not None:
-        out["updated_at"] = doc["updated_at"].isoformat()
-    return out
+
+
+@router.get("/config/mongo", tags=["config"])
+async def get_mongo_config():
+    runtime = await load_and_apply_mongo_routing_config()
+    doc = await fetch_mongo_routing_document()
+    if not doc:
+        return runtime
+    vals = doc.get("values") or {}
+    return {
+        "MONGO_DB_NAME": str(vals.get("MONGO_DB_NAME") or runtime["MONGO_DB_NAME"]),
+        "MONGO_JOBS_COLLECTION": str(vals.get("MONGO_JOBS_COLLECTION") or runtime["MONGO_JOBS_COLLECTION"]),
+    }
+
+
+@router.post("/config/mongo", tags=["config"])
+async def post_mongo_config(body: Dict[str, Any]):
+    keys = {
+        "MONGO_DB_NAME",
+        "MONGO_JOBS_COLLECTION",
+    }
+    updates = {k: str(v).strip() for k, v in body.items() if k in keys and str(v).strip()}
+    if not updates:
+        raise HTTPException(status_code=422, detail="No valid mongo config keys provided")
+    for k, v in updates.items():
+        setattr(c, k, v)
+    await save_mongo_routing_config(updates)
+    return {"ok": True, "mongo_config": await get_mongo_config()}
 
 
 @router.get("/test-users", tags=["testing"])
@@ -71,11 +98,10 @@ async def post_matching_config(body: Dict[str, Any]):
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     merged = {**DEFAULT_TUNABLE_FLAT, **user_flat}
-    updated_at = await save_override_flat(merged)
+    await save_override_flat(merged)
     settings = await load_effective_matching_settings()
     return {
         "ok": True,
-        "updated_at": updated_at.isoformat(),
         "effective": settings.to_effective_flat(),
         "sources": settings.sources,
     }
@@ -100,6 +126,7 @@ async def match(payload: List[MatchRequest]):
     """Match one or more users. Body is a JSON array of MatchRequest (use length 1 for a single user)."""
 
     try:
+        await load_and_apply_mongo_routing_config()
         # One Mongo + one occupation load per request; run each user in a thread pool
         # (CPU-bound scoring) so concurrent requests are not stuck behind one GIL.
         t_req = time.perf_counter()
