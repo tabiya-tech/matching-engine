@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Match Comparison Dashboard</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; margin: 0; color: #1a1a1a; background: #f6f7f8; }
+  header { background: #111827; color: #fff; padding: 10px 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  header h1 { font-size: 14px; font-weight: 600; margin: 0 12px 0 0; }
+  header select { font: inherit; padding: 4px 8px; border-radius: 4px; border: 1px solid #374151; background: #1f2937; color: #fff; }
+  header label { color: #d1d5db; font-size: 11px; margin-right: 4px; }
+  header .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 500; background: #374151; color: #d1d5db; }
+  header button { font: inherit; padding: 4px 10px; border-radius: 4px; border: 1px solid #4b5563; background: #1f2937; color: #fff; cursor: pointer; }
+  header button:hover { background: #374151; }
+  .stats { color: #9ca3af; font-size: 11px; flex: 1; text-align: right; }
+  main { display: grid; grid-template-columns: 280px 1fr; height: calc(100vh - 46px); }
+  aside { background: #fff; border-right: 1px solid #e5e7eb; overflow-y: auto; }
+  aside input { width: calc(100% - 24px); padding: 6px 10px; margin: 10px 12px; border: 1px solid #d1d5db; border-radius: 4px; font: inherit; }
+  .ulist { list-style: none; margin: 0; padding: 0; }
+  .ulist li { padding: 8px 14px; cursor: pointer; border-bottom: 1px solid #f0f0f0; font-size: 12px; }
+  .ulist li:hover { background: #f9fafb; }
+  .ulist li.active { background: #eff6ff; border-left: 3px solid #2563eb; padding-left: 11px; }
+  .ulist .uname { font-weight: 600; color: #111827; }
+  .ulist .umeta { color: #6b7280; font-size: 10px; margin-top: 2px; }
+  .ulist .ucov { display: inline-block; padding: 0 5px; border-radius: 8px; font-size: 9px; margin-left: 4px; }
+  .ucov.both { background: #d1fae5; color: #065f46; }
+  .ucov.aonly { background: #fef3c7; color: #92400e; }
+  .ucov.bonly { background: #dbeafe; color: #1e40af; }
+  section.main { overflow-y: auto; padding: 14px 18px; }
+  .userhead { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 12px 16px; margin-bottom: 12px; }
+  .userhead h2 { margin: 0 0 4px 0; font-size: 16px; }
+  .userhead .meta { color: #6b7280; font-size: 11px; margin-bottom: 6px; }
+  .controls { display: flex; gap: 14px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; font-size: 11px; color: #4b5563; }
+  .controls label { display: flex; align-items: center; gap: 4px; }
+  .controls input[type=number] { width: 50px; padding: 3px 5px; }
+  .alphas { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .col { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; min-width: 0; }
+  .col h3 { margin: 0 0 6px 0; font-size: 12px; color: #374151; line-height: 1.3; }
+  .col .empty { color: #9ca3af; padding: 12px 0; text-align: center; font-style: italic; font-size: 11px; }
+  .row { padding: 6px 0; border-bottom: 1px solid #f3f4f6; cursor: pointer; }
+  .row:hover { background: #fafbfc; }
+  .row .top { display: flex; justify-content: space-between; gap: 6px; align-items: baseline; }
+  .row .title { font-weight: 600; color: #111827; font-size: 12px; }
+  .row .score { color: #2563eb; font-variant-numeric: tabular-nums; font-weight: 600; flex-shrink: 0; font-size: 12px; }
+  .row .submeta { color: #6b7280; font-size: 10px; margin-top: 1px; }
+  .row.elig .title::after { content: " ✓"; color: #059669; }
+  .row.zero .score { color: #b91c1c; }
+  .row.expanded { background: #fffbeb; padding: 8px 10px; border: 1px solid #fde68a; border-radius: 4px; }
+  .detail { display: none; margin-top: 6px; padding: 6px 0; border-top: 1px dashed #e5e7eb; font-size: 11px; }
+  .row.expanded .detail { display: block; }
+  .scoregrid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 3px 10px; margin: 4px 0; padding: 5px; background: #f9fafb; border-radius: 4px; font-size: 10px; font-variant-numeric: tabular-nums; }
+  .scoregrid .label { color: #6b7280; }
+  .scoregrid .value { color: #111827; font-weight: 500; }
+  .matchlist { margin: 6px 0; padding-left: 0; list-style: none; font-size: 10px; }
+  .matchlist li { padding: 1px 0; color: #374151; }
+  .matchlist .ok .checkmark { color: #047857; font-weight: 600; }
+  .matchlist .bad .checkmark { color: #b91c1c; font-weight: 600; }
+  .matchlist .lbl-u { background: #eef2ff; color: #3730a3; padding: 0 5px; border-radius: 7px; font-size: 9px; font-weight: 600; margin-right: 3px; }
+  .matchlist .lbl-j { background: #fef3c7; color: #92400e; padding: 0 5px; border-radius: 7px; font-size: 9px; font-weight: 600; margin-right: 3px; }
+  .matchlist .skill-u { color: #3730a3; }
+  .matchlist .skill-j { color: #92400e; }
+  .matchlist .sim { color: #6b7280; font-variant-numeric: tabular-nums; margin-left: 4px; }
+  .skillpill { display: inline-block; background: #f3f4f6; color: #374151; padding: 1px 6px; border-radius: 7px; font-size: 9px; margin: 1px; }
+  details summary { cursor: pointer; padding: 1px 0; color: #4b5563; font-size: 10px; user-select: none; }
+  details[open] summary { color: #111827; font-weight: 500; }
+  .desc { white-space: pre-wrap; color: #374151; max-height: 100px; overflow-y: auto; padding: 4px; background: #f9fafb; border-radius: 3px; font-size: 10px; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 9px; font-weight: 500; }
+  .badge.elig { background: #d1fae5; color: #065f46; }
+  .badge.inelig { background: #fee2e2; color: #991b1b; }
+  .skills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .skill { background: #eef2ff; color: #3730a3; border-radius: 10px; padding: 1px 8px; font-size: 10px; white-space: nowrap; }
+  /* Modal */
+  .modalbg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 100; padding: 28px; overflow-y: auto; }
+  .modalbg.open { display: block; }
+  .modal { max-width: 920px; margin: 0 auto; background: #fff; border-radius: 8px; padding: 24px 28px; box-shadow: 0 25px 50px rgba(0,0,0,0.25); }
+  .modal h2 { margin: 0 0 8px 0; font-size: 18px; }
+  .modal h3 { margin: 18px 0 6px 0; font-size: 14px; color: #1f2937; padding-top: 12px; border-top: 1px solid #e5e7eb; }
+  .modal h4 { margin: 14px 0 4px 0; font-size: 12px; color: #374151; }
+  .modal p { margin: 6px 0; line-height: 1.5; color: #374151; font-size: 12px; }
+  .modal .closebtn { float: right; background: #f3f4f6; border: 1px solid #e5e7eb; padding: 4px 12px; border-radius: 4px; cursor: pointer; }
+  .modal code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+  .modal blockquote { border-left: 3px solid #d1d5db; margin: 8px 0; padding: 4px 12px; color: #4b5563; font-style: italic; font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Match Comparison</h1>
+  <label>A:</label><select id="selA"></select>
+  <label>B:</label><select id="selB"></select>
+  <button id="swapBtn">⇄ Swap</button>
+  <button id="keyBtn">📖 Key</button>
+  <span class="stats" id="hdrstats"></span>
+</header>
+<main>
+  <aside>
+    <input type="search" id="usearch" placeholder="Search user_id or name…">
+    <ul class="ulist" id="ulist"></ul>
+  </aside>
+  <section class="main" id="mainpanel">
+    <div class="empty" style="text-align:center;padding:40px;color:#9ca3af;font-style:italic">Pick two datasets and a user.</div>
+  </section>
+</main>
+
+<div class="modalbg" id="modalbg"><div class="modal" id="modal"></div></div>
+
+<script>
+
+const META = __META_JSON__;
+const DATA = __DATA_JSON__;
+
+let selA = "njila_a0_n2v";
+let selB = "njila_a0_gem";
+let activeUid = null;
+let topN = 10;
+let onlyElig = false;
+
+function escape(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function dataset(key) { return DATA[key] || []; }
+
+function buildSelectors() {
+  const optsHtml = Object.keys(META).map(k =>
+    `<option value="${escape(k)}">${escape(META[k].label)} (${META[k].n_users} users)</option>`
+  ).join('');
+  document.getElementById('selA').innerHTML = optsHtml;
+  document.getElementById('selB').innerHTML = optsHtml;
+  document.getElementById('selA').value = selA;
+  document.getElementById('selB').value = selB;
+}
+
+function buildUserList() {
+  const A = dataset(selA);
+  const B = dataset(selB);
+  const aMap = new Map(A.map(u => [u.uid, u]));
+  const bMap = new Map(B.map(u => [u.uid, u]));
+  const allUids = Array.from(new Set([...aMap.keys(), ...bMap.keys()]));
+  const items = allUids.map(uid => {
+    const a = aMap.get(uid);
+    const b = bMap.get(uid);
+    const u = a || b;
+    const cov = a && b ? 'both' : (a ? 'aonly' : 'bonly');
+    return { uid, name: u.name || uid, city: u.city, prov: u.prov, ns: u.ns, cov };
+  });
+  // Sort: both first, then by name; within name alphabetical
+  items.sort((x, y) => {
+    if (x.cov !== y.cov) return x.cov === 'both' ? -1 : (y.cov === 'both' ? 1 : 0);
+    return (x.name || '').localeCompare(y.name || '');
+  });
+  return items;
+}
+
+function renderUserList(filter) {
+  const items = buildUserList();
+  const f = (filter || '').toLowerCase();
+  const filtered = f
+    ? items.filter(u => (u.name || '').toLowerCase().includes(f) || (u.uid || '').toLowerCase().includes(f) || (u.city || '').toLowerCase().includes(f))
+    : items;
+  const ul = document.getElementById('ulist');
+  ul.innerHTML = '';
+  let count = 0;
+  for (const u of filtered) {
+    if (count++ > 1500) break;  // hard cap render
+    const li = document.createElement('li');
+    if (u.uid === activeUid) li.classList.add('active');
+    const covLabel = u.cov === 'both' ? 'both' : (u.cov === 'aonly' ? 'A only' : 'B only');
+    li.innerHTML =
+      `<div class="uname">${escape((u.name||'').substring(0,30) || u.uid.substring(0,16))} <span class="ucov ${u.cov}">${covLabel}</span></div>` +
+      `<div class="umeta">${escape(u.uid.substring(0,18))} · ${escape(u.city||'?')} · ${u.ns} skills</div>`;
+    li.onclick = () => { activeUid = u.uid; renderUserList(filter); renderMain(); };
+    ul.appendChild(li);
+  }
+  if (count >= 1500) {
+    const li = document.createElement('li');
+    li.style.color = '#9ca3af';
+    li.style.fontStyle = 'italic';
+    li.style.cursor = 'default';
+    li.textContent = `... and more (use search to narrow)`;
+    ul.appendChild(li);
+  }
+}
+
+function renderHeaderStats() {
+  const A = dataset(selA), B = dataset(selB);
+  const aMap = new Map(A.map(u => [u.uid, u]));
+  const bMap = new Map(B.map(u => [u.uid, u]));
+  const both = [...aMap.keys()].filter(k => bMap.has(k)).length;
+  document.getElementById('hdrstats').textContent =
+    `A: ${A.length} users  ·  B: ${B.length} users  ·  shared: ${both}`;
+}
+
+function getUser(key, uid) {
+  return dataset(key).find(u => u.uid === uid);
+}
+
+function renderMain() {
+  const panel = document.getElementById('mainpanel');
+  if (!activeUid) {
+    panel.innerHTML = '<div class="empty" style="text-align:center;padding:40px;color:#9ca3af;font-style:italic">Pick a user from the sidebar.</div>';
+    return;
+  }
+  const a = getUser(selA, activeUid);
+  const b = getUser(selB, activeUid);
+  const u = a || b;
+  // Show skills from each side (may differ if datasets used different skill sources)
+  const skillsAhtml = (a && a.user_skills && a.user_skills.length) ? a.user_skills.map(s => `<span class="skill">${escape(s)}</span>`).join('') : '';
+  const skillsBhtml = (b && b.user_skills && b.user_skills.length) ? b.user_skills.map(s => `<span class="skill">${escape(s)}</span>`).join('') : '';
+  // If A and B have identical skills (same source), show once. Otherwise show both labelled.
+  const sameSkills = a && b && JSON.stringify(a.user_skills||[]) === JSON.stringify(b.user_skills||[]);
+  let skillsBlock = '';
+  if (skillsAhtml && (!skillsBhtml || sameSkills)) {
+    skillsBlock = `<div class="skills">${skillsAhtml}</div>`;
+  } else if (skillsBhtml && !skillsAhtml) {
+    skillsBlock = `<div class="skills">${skillsBhtml}</div>`;
+  } else if (skillsAhtml && skillsBhtml && !sameSkills) {
+    skillsBlock = `
+      <div style="margin-top:6px;font-size:10px;color:#6b7280">A skills (${(a.user_skills||[]).length}):</div>
+      <div class="skills">${skillsAhtml}</div>
+      <div style="margin-top:4px;font-size:10px;color:#6b7280">B skills (${(b.user_skills||[]).length}):</div>
+      <div class="skills">${skillsBhtml}</div>
+    `;
+  } else {
+    skillsBlock = `<div style="color:#9ca3af;font-style:italic;font-size:11px;margin-top:4px">no skill list available for this user</div>`;
+  }
+  panel.innerHTML = `
+    <div class="userhead">
+      <h2>${escape(u.name || u.uid)}</h2>
+      <div class="meta">user_id: <code>${escape(u.uid)}</code> · ${escape(u.city || '?')} · ${escape(u.prov || '?')} · ${u.ns} skills</div>
+      ${skillsBlock}
+    </div>
+    <div class="controls">
+      <label>Top
+        <input type="number" id="topN" min="1" max="128" value="${topN}">
+      </label>
+      <label><input type="checkbox" id="onlyElig" ${onlyElig ? 'checked' : ''}> only eligible</label>
+    </div>
+    <div class="alphas">
+      <div class="col"><h3>${escape(META[selA].label)}</h3><div id="recsA"></div></div>
+      <div class="col"><h3>${escape(META[selB].label)}</h3><div id="recsB"></div></div>
+    </div>
+  `;
+  document.getElementById('topN').onchange = (e) => { topN = parseInt(e.target.value, 10) || 10; renderRecs(); };
+  document.getElementById('onlyElig').onchange = (e) => { onlyElig = e.target.checked; renderRecs(); };
+  renderRecs();
+}
+
+function renderRecs() {
+  const a = getUser(selA, activeUid);
+  const b = getUser(selB, activeUid);
+  document.getElementById('recsA').innerHTML = a ? renderRecList(a.recs) : '<div class="empty">user not in this dataset</div>';
+  document.getElementById('recsB').innerHTML = b ? renderRecList(b.recs) : '<div class="empty">user not in this dataset</div>';
+  document.querySelectorAll('.row').forEach(r => {
+    r.onclick = (e) => {
+      if (e.target.closest('details')) return;
+      r.classList.toggle('expanded');
+    };
+  });
+}
+
+function renderRecList(recs) {
+  let filt = recs.slice(0, topN);
+  if (onlyElig) filt = filt.filter(r => r.el);
+  if (!filt.length) return '<div class="empty">no matches in this filter</div>';
+  return filt.map(renderRow).join('');
+}
+
+function renderRow(r) {
+  const eligBadge = r.el ? '<span class="badge elig">eligible</span>' : '<span class="badge inelig">not eligible</span>';
+  const score = (r.f ?? 0).toFixed(3);
+  const isZero = (r.f ?? 0) === 0;
+  const matches = (r.ms || []).map(m => {
+    const [u, j, sim, ok] = m;
+    if (ok) {
+      return `<li class="ok"><span class="checkmark">✓</span> <span class="lbl-j">JOB</span><span class="skill-j">${escape(j)}</span> ↔ <span class="lbl-u">USER</span><span class="skill-u">${escape(u)}</span><span class="sim">sim=${sim.toFixed(2)}</span></li>`;
+    } else {
+      return `<li class="bad"><span class="checkmark">✗</span> <span class="lbl-j">JOB</span><span class="skill-j">${escape(j)}</span> <span class="sim">— no user skill above threshold (τ=0.35)</span></li>`;
+    }
+  }).join('');
+  const nMatched = (r.ms || []).filter(m => m[3]).length;
+  const nTotal = (r.ms || []).length;
+  const jobOpt = (r.jo || []).map(s => `<span class="skillpill">${escape(s)}</span>`).join('');
+  return `
+    <div class="row ${r.el ? 'elig' : ''} ${isZero ? 'zero' : ''}">
+      <div class="top">
+        <div><span style="color:#9ca3af">#${r.r}</span> <span class="title">${escape(r.t)}</span> ${eligBadge}</div>
+        <span class="score">${score}</span>
+      </div>
+      <div class="submeta">${escape(r.e)} · ${escape(r.l || '?')} · u=${(r.u??0).toFixed(2)} · p=${(r.p??0).toFixed(2)} · ${nMatched}/${nTotal} essentials matched</div>
+      <div class="detail">
+        <div class="scoregrid">
+          <div><span class="label">final:</span> <span class="value">${score}</span></div>
+          <div><span class="label">u_hat:</span> <span class="value">${(r.u??0).toFixed(3)}</span></div>
+          <div><span class="label">p_hat:</span> <span class="value">${(r.p??0).toFixed(3)}</span></div>
+          <div><span class="label">eligible:</span> <span class="value">${r.el}</span></div>
+          <div><span class="label">phat.gate:</span> <span class="value">${(r.pg??0).toFixed(2)}</span></div>
+          <div><span class="label">phat.ess_fit:</span> <span class="value">${(r.pe??0).toFixed(2)}</span></div>
+          <div><span class="label">phat.recruiter:</span> <span class="value">${(r.pr??0).toFixed(2)}</span></div>
+          <div><span class="label">phat.market:</span> <span class="value">${(r.pm??0).toFixed(2)}</span></div>
+          <div><span class="label">skill.loc:</span> <span class="value">${(r.sl??0).toFixed(2)}</span></div>
+          <div><span class="label">skill.ess:</span> <span class="value">${(r.se??0).toFixed(2)}</span></div>
+          <div><span class="label">skill.opt:</span> <span class="value">${(r.so??0).toFixed(2)}</span></div>
+          <div><span class="label">skill.grp:</span> <span class="value">${(r.sg??0).toFixed(2)}</span></div>
+        </div>
+        ${matches ? `<details open><summary>Job essentials &amp; user matches (${nMatched} ✓ / ${nTotal} essential skills)</summary><ul class="matchlist">${matches}</ul></details>` : ''}
+        ${jobOpt ? `<details><summary>Job optional skills (${r.jo.length})</summary><div>${jobOpt}</div></details>` : ''}
+        ${r.j ? `<details><summary>Justification</summary><div class="desc">${escape(r.j)}</div></details>` : ''}
+        ${r.url ? `<div style="margin-top:5px;"><a href="${escape(r.url)}" target="_blank" rel="noopener">↗ original posting</a></div>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function openKey() {
+  const m = document.getElementById('modal');
+  m.innerHTML = `
+    <button class="closebtn" onclick="document.getElementById('modalbg').classList.remove('open')">Close</button>
+    <h2>Key — A/B embedding comparison</h2>
+    <p><strong>A</strong> and <strong>B</strong> use the <em>same</em> supply-side users and the <em>same</em> job list from Mongo.
+    Only the skill embedding matrix differs (how user vs job skill vectors are compared).</p>
+
+    <h3>Column A — Node2Vec-style (graph walk)</h3>
+    <p>ESCO taxonomy random walks + skip-gram (<code>skill_embedding_model.pt</code>). Similarity reflects graph neighbourhood structure.</p>
+
+    <h3>Column B — Text (Gemini)</h3>
+    <p>Semantic embeddings from skill label + description (<code>gemini-embedding-001</code>).
+    Use <strong>raw</strong> vs <strong>whitened</strong> artefacts to compare only the post-processing step
+    (<code>--preset gemini_raw_whitened</code> in <code>build_embedding_ab_dashboard.py</code>).</p>
+
+    <h3>META labels</h3>
+    <p>Built by <code>backend/scripts/build_embedding_ab_dashboard.py</code>. Filenames in META list the supply JSONL and the <code>.pt</code> used for that column.</p>
+  `;
+  document.getElementById('modalbg').classList.add('open');
+}
+
+document.getElementById('selA').onchange = (e) => { selA = e.target.value; renderHeaderStats(); renderUserList(document.getElementById('usearch').value); renderMain(); };
+document.getElementById('selB').onchange = (e) => { selB = e.target.value; renderHeaderStats(); renderUserList(document.getElementById('usearch').value); renderMain(); };
+document.getElementById('swapBtn').onclick = () => {
+  const a = selA, b = selB;
+  selA = b; selB = a;
+  document.getElementById('selA').value = selA;
+  document.getElementById('selB').value = selB;
+  renderHeaderStats(); renderUserList(document.getElementById('usearch').value); renderMain();
+};
+document.getElementById('keyBtn').onclick = openKey;
+document.getElementById('modalbg').onclick = (e) => { if (e.target === document.getElementById('modalbg')) document.getElementById('modalbg').classList.remove('open'); };
+document.getElementById('usearch').oninput = (e) => renderUserList(e.target.value);
+
+buildSelectors();
+renderHeaderStats();
+renderUserList();
+</script>
+</body>
+</html>

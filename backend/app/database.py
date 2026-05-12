@@ -35,6 +35,40 @@ _mongo_client_kwargs: Dict[str, Any] = {
 if _mongo_min_pool > 0:
     _mongo_client_kwargs["minPoolSize"] = _mongo_min_pool
 
+
+def _mongo_tls_client_options() -> Dict[str, Any]:
+    """Extra Motor/PyMongo TLS options from env.
+
+    Atlas (mongodb+srv) uses TLS. On some macOS/Python installs the default CA
+    store is empty or incomplete and you get::
+
+        SSL: CERTIFICATE_VERIFY_FAILED / unable to get local issuer certificate
+
+    Fix (recommended): set ``MONGO_TLS_CA_FILE=certifi`` to use Mozilla's CA bundle via certifi.
+
+    Escape hatch (local debug only): ``MONGO_TLS_INSECURE=1`` skips certificate verification —
+    never use in production.
+    """
+    extra: Dict[str, Any] = {}
+    insecure = (os.getenv("MONGO_TLS_INSECURE") or "").strip().lower()
+    if insecure in ("1", "true", "yes", "on"):
+        extra["tlsAllowInvalidCertificates"] = True
+        return extra
+
+    ca_raw = (os.getenv("MONGO_TLS_CA_FILE") or "").strip()
+    if not ca_raw:
+        return extra
+    if ca_raw.lower() == "certifi":
+        import certifi
+
+        extra["tlsCAFile"] = certifi.where()
+        return extra
+    extra["tlsCAFile"] = ca_raw
+    return extra
+
+
+_mongo_client_kwargs.update(_mongo_tls_client_options())
+
 client = AsyncIOMotorClient(MONGO_URL, **_mongo_client_kwargs)
 db = client[DATABASE_NAME]
 
@@ -280,16 +314,30 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     job_id = str(rd.get("job_id", ""))
 
     lcs = rd.get("llm_classified_skills", {})
-    essential_ids = [
-        s["tabiya_skill_id"]
+    essential_skills = [
+        {"id": s["tabiya_skill_id"], "label": s.get("label", "")}
         for s in lcs.get("essential", [])
         if s.get("tabiya_skill_id")
     ]
-    optional_ids = [
-        s["tabiya_skill_id"]
+    optional_skills = [
+        {"id": s["tabiya_skill_id"], "label": s.get("label", "")}
         for s in lcs.get("optional", [])
         if s.get("tabiya_skill_id")
     ]
+    # Label-primary resolver requires non-empty labels. Surface jobs that arrived
+    # without them so the upstream pipeline gap (NEL/llm-reranker emitting empty
+    # label when a URI isn't in ranker_candidates) is visible at consumer side.
+    n_missing_ess = sum(1 for s in essential_skills if not s.get("label"))
+    n_missing_opt = sum(1 for s in optional_skills if not s.get("label"))
+    if n_missing_ess or n_missing_opt:
+        logger.warning(
+            "build_job_dict_from_ranked: job_id=%s job_fingerprint=%s arrived with "
+            "empty labels: %d/%d essential, %d/%d optional",
+            job_id or "?",
+            (rd.get("job_fingerprint") or "")[:16] or "?",
+            n_missing_ess, len(essential_skills),
+            n_missing_opt, len(optional_skills),
+        )
 
     llm_attrs = rd.get("llm_job_attributes", {})
     attributes = llm_attrs.get("attributes", {})
@@ -324,8 +372,8 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "closing_date": closing_s,
         "contract_type": et,
         "url": meta.get("application_url"),
-        "essential_skills_origin_uuids": essential_ids,
-        "optional_skills_origin_uuids": optional_ids,
+        "essential_skills": essential_skills,
+        "optional_skills": optional_skills,
         "skill_groups_origin_uuids": skill_groups,
         "attributes": attributes,
         "opportunity_description": meta.get("job_description") or meta.get("description") or "",
@@ -483,6 +531,10 @@ async def get_all_occupations_with_timing():
                     elif isinstance(attrs_raw, dict):
                         attributes = attrs_raw
 
+                    # Occupation JSON only carries bare skill UUIDs (no labels).
+                    # Wrap in the same {id, label} shape used by job dicts so
+                    # downstream consumers see one uniform contract; gap analysis
+                    # reads id directly without going through label resolution.
                     flattened.append({
                         "uuid": f"{code}_{county}" if county else code,
                         "originUuid": code,
@@ -492,8 +544,8 @@ async def get_all_occupations_with_timing():
                         "location": county,
                         "city": county,
                         "province": county,
-                        "essential_skills_origin_uuids": ess_uuids,
-                        "optional_skills_origin_uuids": opt_uuids,
+                        "essential_skills": [{"id": str(u), "label": ""} for u in ess_uuids],
+                        "optional_skills": [{"id": str(u), "label": ""} for u in opt_uuids],
                         "skill_groups_origin_uuids": [],
                         "attributes": attributes,
                         "onet_work_activities": onet_wa,

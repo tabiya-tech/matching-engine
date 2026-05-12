@@ -83,7 +83,7 @@ MATCH_APPLY_LOCATION_FILTER: bool = _b("MATCH_APPLY_LOCATION_FILTER", True)
 # ---------------------------------------------------------------------------
 # Success propensity  (p_hat = G * E^alpha * R^beta * M^gamma)
 # ---------------------------------------------------------------------------
-GATE_SIMILARITY_THRESHOLD: float = _f("GATE_SIMILARITY_THRESHOLD", 0.35)
+GATE_SIMILARITY_THRESHOLD: float = _f("GATE_SIMILARITY_THRESHOLD", 0.10)
 # Response filtering threshold for scored skill outputs:
 # - essential_skill_matches.similarity in opportunities/occupations
 # - skill_gap_recommendations.proximity_score
@@ -106,10 +106,38 @@ SKILL_U_W_LOC: float = _f("SKILL_U_W_LOC", 0.20)
 SKILL_U_W_ESS: float = _f("SKILL_U_W_ESS", 0.50)
 SKILL_U_W_OPT: float = _f("SKILL_U_W_OPT", 0.20)
 SKILL_U_W_GRP: float = _f("SKILL_U_W_GRP", 0.10)
-SKILL_U_GAP_PENALTY: float = _f("SKILL_U_GAP_PENALTY", 0.50)
+SKILL_U_GAP_PENALTY: float = _f("SKILL_U_GAP_PENALTY", 0.25)
 SKILL_U_TAU_ELIG: float = _f("SKILL_U_TAU_ELIG", 0.35)
 SKILL_MIN_ESSENTIAL_MATCH_SHARE: float = _f("SKILL_MIN_ESSENTIAL_MATCH_SHARE", 1.0)
 SKILL_ESSENTIAL_GEO_FLOOR: float = _f("SKILL_ESSENTIAL_GEO_FLOOR", 1e-6)
+# Score-weighted geometric mean for essential_fit: weight each row-max by (rowmax ** alpha).
+# alpha=0 -> uniform weights -> recovers the naive GM (default, current behaviour).
+# alpha>0 -> low scores contribute proportionally less; near-zero scores self-abstain via x^a*ln(x) -> 0.
+SKILL_ESSENTIAL_DAMPING_ALPHA: float = _f("SKILL_ESSENTIAL_DAMPING_ALPHA", 0.0)
+
+# ---------------------------------------------------------------------------
+# Per-rowmax rescaling target for whitened cosines.
+# ---------------------------------------------------------------------------
+# Whitened cosines compress the discriminative band: identity = 1.0 (tautological),
+# strong non-identity sits at ~0.2-0.3, random ~0.0. The score-weighted GM on raw
+# rowmaxes inherits a bimodality (identity vs everything else) that compresses the
+# downstream final_score range. Per-rowmax rescaling — divide each rowmax by SKILL_
+# RESCALE_TARGET, clip at 1.0 — stretches the [0, target] band into [0, 1] so identity
+# and strong non-identity both contribute at the top of the GM input distribution.
+#
+# The natural anchor for SKILL_RESCALE_TARGET is the upper edge of the non-identity
+# distribution in the embedding (e.g. p99.9 over random pairs). The whitening artefact
+# build script computes this and persists it in the .pt metadata as
+# state["whitening"]["target_max_p999"]; SkillScorer.__init__ reads that value and
+# sets this default at startup. Setting SKILL_RESCALE_TARGET in env overrides the
+# artefact's value (useful for ad-hoc calibration without rebuilding).
+#
+# Default of 0.0 is the "disabled" sentinel — if no artefact provides target_max_p999
+# AND no env override is set, rescaling is a no-op (rowmax_rescaled == rowmax). This
+# makes raw Gemini and Node2Vec artefacts behave as if rescaling didn't exist, which
+# is the right default because those artefacts have differently-shaped cosine
+# distributions and don't benefit from this particular rescaling.
+SKILL_RESCALE_TARGET: float = _f("SKILL_RESCALE_TARGET", 0.0)
 
 # ---------------------------------------------------------------------------
 # Demand label → numeric
@@ -187,7 +215,7 @@ PREFERENCE_CONFIG: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 OCCUPATION_JSON_PATH: str = _s("OCCUPATION_JSON_PATH", str(_DEFAULT_OCC))
 
-EMBEDDING_MODEL_PATH: str = _s("EMBEDDING_MODEL_PATH", str(_DEFAULT_MODEL_DIR / "skill_embedding_model.pt"))
+EMBEDDING_MODEL_PATH: str = _s("EMBEDDING_MODEL_PATH", str(_DEFAULT_MODEL_DIR / "skill_embedding_model_gemini.pt"))
 SKILL_TO_ROW_PATH: str = _s("SKILL_TO_ROW_PATH", str(_DEFAULT_MODEL_DIR / "skill_to_row.json"))
 _TAX = _RESOURCES / "skill_taxonomy"
 SKILLS_CSV_PATH: str = _s("SKILLS_CSV_PATH", str(_TAX / "skills.csv"))

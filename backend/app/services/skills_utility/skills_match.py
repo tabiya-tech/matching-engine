@@ -36,8 +36,10 @@ from dataclasses import dataclass
 
 from app.config import (
     GATE_SIMILARITY_THRESHOLD,
+    SKILL_ESSENTIAL_DAMPING_ALPHA,
     SKILL_ESSENTIAL_GEO_FLOOR,
     SKILL_MIN_ESSENTIAL_MATCH_SHARE,
+    SKILL_RESCALE_TARGET,
     SKILL_U_GAP_PENALTY,
     SKILL_U_TAU_ELIG,
     SKILL_U_W_ESS,
@@ -61,8 +63,8 @@ class Jobseeker:
 @dataclass(frozen=True)
 class Opportunity:
     opportunity_id: str
-    essential_skills_origin_uuids: Set[str]
-    optional_skills_origin_uuids: Set[str]
+    essential_skill_ids: Set[str]
+    optional_skill_ids: Set[str]
     skill_groups_origin_uuids: Set[str]
     city: Optional[str] = None
     province: Optional[str] = None
@@ -134,32 +136,94 @@ def _shared_pair_kernel(
     loc_score = location_near_enough(js, op)
 
     js_ids = list(js.skills_origin_uuids)
-    ess_ids = list(op.essential_skills_origin_uuids)
-    opt_ids = list(op.optional_skills_origin_uuids)
+    ess_ids = list(op.essential_skill_ids)
+    opt_ids = list(op.optional_skill_ids)
 
     js_mat, js_ids_valid = engine._rows_with_ids(js_ids)
     ess_mat, ess_ids_valid = engine._rows_with_ids(ess_ids)
 
+    # Rescaling is opt-in: SKILL_RESCALE_TARGET > 0 enables per-rowmax rescaling.
+    # When disabled (raw Gemini / Node2Vec artefacts have no target in metadata),
+    # rowmax_rescaled is just rowmax — every downstream consumer using the rescaled
+    # field gets the raw value transparently, so the system behaves as if rescaling
+    # weren't there. Whitened artefacts persist target_max_p999 in metadata and
+    # SkillScorer hydrates SKILL_RESCALE_TARGET at startup.
+    target = SKILL_RESCALE_TARGET
+    rescale_enabled = target > 0.0
+
+    def _rescale(arr):
+        if not rescale_enabled:
+            return arr
+        return np.minimum(1.0, arr / target)
+
     S = None
-    rowmax = None
+    rowmax = None                  # raw rowmaxes (identity at 1.0); preserved for diagnostic / response
+    rowmax_rescaled = None         # rescaled rowmaxes; used by every comparator in the new wiring
     argmax = None
-    ess_sim = 0.0
-    ess_geo = 0.0
+    ess_sim = 0.0                  # mean of rescaled rowmaxes (used by U_complete)
+    ess_geo = 0.0                  # score-weighted GM of rescaled rowmaxes (used by p_hat / feasibility)
+    ess_sim_raw = 0.0              # diagnostic: mean of un-rescaled rowmaxes
+    ess_geo_raw = 0.0              # diagnostic: score-weighted GM of un-rescaled rowmaxes
+    identity_coverage = 0.0        # diagnostic: fraction of essentials matched exactly by user
 
     if ess_mat.size > 0 and js_mat.size > 0:
         S = ess_mat @ js_mat.T
         np.maximum(S, 0.0, out=S)
         rowmax = S.max(axis=1)
         argmax = S.argmax(axis=1)
-        ess_sim = float(rowmax.mean())
-        floored = np.maximum(rowmax, geo_floor)
-        ess_geo = float(np.exp(np.mean(np.log(floored))))
+
+        # Diagnostic: identity coverage = fraction of essentials where user has the exact
+        # skill ID. Recorded for audit only; the GM math uses rescaled rowmaxes uniformly
+        # so identity contributes naturally at its proportion in the data.
+        ess_arr = np.array(ess_ids_valid)
+        js_arr = np.array(js_ids_valid)
+        identity_mask = ess_arr[:, None] == js_arr[None, :]
+        identity_coverage = float(identity_mask.any(axis=1).sum()) / float(len(ess_ids_valid))
+
+        # Diagnostic: the un-rescaled GM (pre-rescaling), for comparison with rescaled.
+        ess_sim_raw = float(rowmax.mean())
+        floored_raw = np.maximum(rowmax, geo_floor)
+        log_floored_raw = np.log(floored_raw)
+        if SKILL_ESSENTIAL_DAMPING_ALPHA == 0.0:
+            ess_geo_raw = float(np.exp(log_floored_raw.mean()))
+        else:
+            w_raw = floored_raw ** SKILL_ESSENTIAL_DAMPING_ALPHA
+            denom_raw = float(w_raw.sum())
+            ess_geo_raw = float(np.exp((w_raw * log_floored_raw).sum() / denom_raw)) if denom_raw > 0 else float(geo_floor)
+
+        # Per-rowmax rescaling. target is the empirical "saturation point" of non-identity
+        # cosines (e.g. p99.9 over random pairs from the embedding). Identity rowmaxes (=1.0)
+        # clip to 1.0 unchanged; non-identity rowmaxes in [0, target] stretch into [0, 1].
+        # Score-weighted GM operates on the uniform-scale rescaled distribution so identity
+        # and strong-related sit at the top together (bimodality flattens at the GM input).
+        rowmax_rescaled = _rescale(rowmax)
+        ess_sim = float(rowmax_rescaled.mean())
+        floored = np.maximum(rowmax_rescaled, geo_floor)
+        log_floored = np.log(floored)
+        if SKILL_ESSENTIAL_DAMPING_ALPHA == 0.0:
+            ess_geo = float(np.exp(log_floored.mean()))
+        else:
+            w = floored ** SKILL_ESSENTIAL_DAMPING_ALPHA
+            denom = float(w.sum())
+            ess_geo = float(np.exp((w * log_floored).sum() / denom)) if denom > 0 else float(geo_floor)
     elif ess_ids_valid and js_mat.size == 0:
         rowmax = np.zeros(len(ess_ids_valid), dtype=np.float64)
+        rowmax_rescaled = rowmax
 
-    js_mean = engine._mean_unit(js_mat)
-    opt_vec = engine._mean_unit(engine._rows(opt_ids))
-    opt_sim = max(0.0, float(js_mean @ opt_vec)) if js_mean is not None and opt_vec is not None else 0.0
+    # Optional skills: same rowmax-style approach as essentials (not mean-of-centroids).
+    # Mean-of-centroids on whitened embeddings degenerates because whitening spreads
+    # vectors so any centroid approaches zero magnitude and renormalises into direction
+    # noise. Per-optional rowmax → rescale → mean keeps optional in the same calibrated
+    # frame as essential. Each optional skill contributes its best user-skill cosine.
+    opt_mat, opt_ids_valid = engine._rows_with_ids(opt_ids)
+    if opt_mat.size > 0 and js_mat.size > 0:
+        S_opt = opt_mat @ js_mat.T
+        np.maximum(S_opt, 0.0, out=S_opt)
+        rowmax_opt_raw = S_opt.max(axis=1)
+        rowmax_opt_rescaled = _rescale(rowmax_opt_raw)
+        opt_sim = float(rowmax_opt_rescaled.mean())
+    else:
+        opt_sim = 0.0
 
     if op.skill_groups_origin_uuids:
         inter = len(op.skill_groups_origin_uuids & js.skill_groups_origin_uuids)
@@ -177,32 +241,47 @@ def _shared_pair_kernel(
         "js_ids_valid": js_ids_valid,
         "ess_ids_valid": ess_ids_valid,
         "S": S,
-        "rowmax": rowmax,
+        "rowmax": rowmax,                  # raw rowmax (preserved for diagnostic / response)
+        "rowmax_rescaled": rowmax_rescaled,  # rescaled rowmax (used by all gate / GM / mean comparators)
         "argmax": argmax,
         "ess_sim": ess_sim,
         "ess_geo": ess_geo,
         "opt_sim": opt_sim,
         "grp_sim": grp_sim,
+        "identity_coverage": identity_coverage,
+        "ess_sim_raw": ess_sim_raw,
+        "ess_geo_raw": ess_geo_raw,
     }
 
 
 def _build_essential_match_list(
-    ess_mat, js_mat, S, rowmax, argmax, ess_ids_valid, js_ids_valid,
+    ess_mat, js_mat, S, rowmax, rowmax_rescaled, argmax, ess_ids_valid, js_ids_valid,
     skill_labels, user_skill_labels, threshold: float
 ):
+    """Match-list payload for the response. `similarity` is in rescaled space (the
+    same frame as final_score, p_hat, essential_fit), so a human reader sees one
+    consistent scale. `similarity_raw` is the un-rescaled whitened cosine, kept for
+    audit / debugging. `meets_threshold` compares the rescaled value, since the
+    threshold lives in the same rescaled frame as all the gate decisions.
+    """
     essential_skill_matches = []
     if ess_mat.size > 0 and js_mat.size > 0 and rowmax is not None and argmax is not None:
+        # rowmax_rescaled is None only if the kernel skipped rescaling; in that case
+        # fall back to raw (rescaling disabled => values are already in the right frame).
+        rescaled = rowmax_rescaled if rowmax_rescaled is not None else rowmax
         for i, ess_id in enumerate(ess_ids_valid):
             best_idx = int(argmax[i])
             best_js_id = js_ids_valid[best_idx] if js_ids_valid else None
-            sim = float(rowmax[i])
+            sim_rescaled = float(rescaled[i])
+            sim_raw = float(rowmax[i])
             essential_skill_matches.append({
                 "job_skill_id": ess_id,
                 "job_skill_label": skill_labels.get(ess_id),
                 "best_user_skill_id": best_js_id,
                 "best_user_skill_label": user_skill_labels.get(best_js_id),
-                "similarity": round(sim, 4),
-                "meets_threshold": sim >= threshold,
+                "similarity": round(sim_rescaled, 4),
+                "similarity_raw": round(sim_raw, 4),
+                "meets_threshold": sim_rescaled >= threshold,
             })
     elif ess_ids_valid:
         for ess_id in ess_ids_valid:
@@ -267,7 +346,8 @@ def compute_U_complete(
     ess_sim = k["ess_sim"]
     opt_sim = k["opt_sim"]
     grp_sim = k["grp_sim"]
-    ess_rowmax = k["rowmax"]
+    ess_rowmax_raw = k["rowmax"]                # raw (preserved for diagnostic)
+    ess_rowmax_rescaled = k["rowmax_rescaled"]  # rescaled (used for gap_share / eligibility)
     ess_mat, js_mat = k["ess_mat"], k["js_mat"]
     js_ids, opt_ids = k["js_ids"], k["opt_ids"]
     ess_ids_valid, js_ids_valid = k["ess_ids_valid"], k["js_ids_valid"]
@@ -277,17 +357,23 @@ def compute_U_complete(
         W_LOC * loc_score + W_ESS * ess_sim + W_OPT * opt_sim + W_GRP * grp_sim
     ) / (W_LOC + W_ESS + W_OPT + W_GRP)
 
-    if ess_rowmax is None or (hasattr(ess_rowmax, "size") and ess_rowmax.size == 0):
+    # gap_share / eligibility evaluated against rescaled rowmax so the TAU_ELIG threshold
+    # lives in the same calibrated frame as ess_sim and final_score. When rescaling is
+    # disabled (no artefact metadata), rowmax_rescaled == rowmax, so behaviour is identical
+    # to before.
+    rowmax_for_gates = ess_rowmax_rescaled if ess_rowmax_rescaled is not None else ess_rowmax_raw
+    if rowmax_for_gates is None or (hasattr(rowmax_for_gates, "size") and rowmax_for_gates.size == 0):
         gap_share, eligible = 0.0, True
     else:
-        meets = (ess_rowmax >= TAU_ELIG)
+        meets = (rowmax_for_gates >= TAU_ELIG)
         gap_share = float((~meets).mean())
         eligible = (float(meets.mean()) >= MIN_ESS_SHARE)
 
     u_final = max(0.0, core_score - (W_GAP_PEN * gap_share))
 
     essential_skill_matches = _build_essential_match_list(
-        ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
+        ess_mat, js_mat, S, ess_rowmax_raw, ess_rowmax_rescaled, argmax,
+        ess_ids_valid, js_ids_valid,
         skill_labels, user_skill_labels, TAU_ELIG,
     )
     optional_exact_matches, skill_group_matches = _optional_and_group_match_lists(
@@ -337,7 +423,8 @@ def compute_feasibility_signals(
     ess_ids = k["ess_ids"]
     opt_ids = k["opt_ids"]
     js_ids = k["js_ids"]
-    ess_rowmax = k["rowmax"]
+    ess_rowmax_raw = k["rowmax"]                # raw (preserved for diagnostic)
+    ess_rowmax_rescaled = k["rowmax_rescaled"]  # rescaled (used for gate / gap_share)
     ess_geo = k["ess_geo"]
     opt_sim = k["opt_sim"]
     grp_recall = k["grp_sim"]
@@ -345,22 +432,28 @@ def compute_feasibility_signals(
     ess_ids_valid, js_ids_valid = k["ess_ids_valid"], k["js_ids_valid"]
     S, argmax = k["S"], k["argmax"]
 
+    # Gate evaluated against rescaled rowmax so GATE_SIMILARITY_THRESHOLD lives in the
+    # same calibrated frame as essential_fit and final_score. When rescaling is disabled
+    # (no artefact metadata), rowmax_rescaled == rowmax, so behaviour matches the
+    # pre-rescaling system.
+    rowmax_for_gates = ess_rowmax_rescaled if ess_rowmax_rescaled is not None else ess_rowmax_raw
     has_essential_reqs = len(ess_ids) > 0
     if not has_essential_reqs:
         gap_share = 1.0
         gate_passed = False
         ess_geo = 0.0
-    elif ess_rowmax is None or ess_rowmax.size == 0:
+    elif rowmax_for_gates is None or rowmax_for_gates.size == 0:
         gap_share = 1.0
         gate_passed = False
         ess_geo = 0.0
     else:
-        meets = ess_rowmax >= gate_threshold
+        meets = rowmax_for_gates >= gate_threshold
         gap_share = float((~meets).mean())
         gate_passed = bool(gap_share <= 0.5)
 
     essential_skill_matches = _build_essential_match_list(
-        ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
+        ess_mat, js_mat, S, ess_rowmax_raw, ess_rowmax_rescaled, argmax,
+        ess_ids_valid, js_ids_valid,
         skill_labels, user_skill_labels, gate_threshold,
     )
     optional_exact_matches, skill_group_matches = _optional_and_group_match_lists(
@@ -370,6 +463,8 @@ def compute_feasibility_signals(
     return {
         "gate_passed": gate_passed,
         "essential_fit": round(ess_geo, 4),
+        "essential_fit_raw": round(k.get("ess_geo_raw", 0.0), 4),
+        "identity_coverage": round(k.get("identity_coverage", 0.0), 4),
         "optional_sim": round(opt_sim, 4),
         "skill_group_recall": round(grp_recall, 4),
         "gap_share": round(gap_share, 4),
@@ -412,7 +507,8 @@ def compute_utility_and_feasibility_pair(
     ess_geo = k["ess_geo"]
     opt_sim = k["opt_sim"]
     grp_sim = k["grp_sim"]
-    ess_rowmax = k["rowmax"]
+    ess_rowmax_raw = k["rowmax"]                # raw (preserved for diagnostic)
+    ess_rowmax_rescaled = k["rowmax_rescaled"]  # rescaled (used for both u-side and f-side gates)
     ess_mat, js_mat = k["ess_mat"], k["js_mat"]
     ess_ids, opt_ids, js_ids = k["ess_ids"], k["opt_ids"], k["js_ids"]
     ess_ids_valid, js_ids_valid = k["ess_ids_valid"], k["js_ids_valid"]
@@ -422,10 +518,12 @@ def compute_utility_and_feasibility_pair(
         W_LOC * loc_score + W_ESS * ess_sim + W_OPT * opt_sim + W_GRP * grp_sim
     ) / (W_LOC + W_ESS + W_OPT + W_GRP)
 
-    if ess_rowmax is None or (hasattr(ess_rowmax, "size") and ess_rowmax.size == 0):
+    # u-side gap: TAU_ELIG against rescaled rowmax (calibrated frame).
+    rowmax_for_gates = ess_rowmax_rescaled if ess_rowmax_rescaled is not None else ess_rowmax_raw
+    if rowmax_for_gates is None or (hasattr(rowmax_for_gates, "size") and rowmax_for_gates.size == 0):
         u_gap, eligible = 0.0, True
     else:
-        meets = (ess_rowmax >= TAU_ELIG)
+        meets = (rowmax_for_gates >= TAU_ELIG)
         u_gap = float((~meets).mean())
         eligible = (float(meets.mean()) >= MIN_ESS_SHARE)
 
@@ -433,16 +531,19 @@ def compute_utility_and_feasibility_pair(
 
     if abs(TAU_ELIG - gate_threshold) >= 1e-9:
         u_ess = _build_essential_match_list(
-            ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
+            ess_mat, js_mat, S, ess_rowmax_raw, ess_rowmax_rescaled, argmax,
+            ess_ids_valid, js_ids_valid,
             skill_labels, user_skill_labels, TAU_ELIG,
         )
         f_ess = _build_essential_match_list(
-            ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
+            ess_mat, js_mat, S, ess_rowmax_raw, ess_rowmax_rescaled, argmax,
+            ess_ids_valid, js_ids_valid,
             skill_labels, user_skill_labels, gate_threshold,
         )
     else:
         u_ess = f_ess = _build_essential_match_list(
-            ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
+            ess_mat, js_mat, S, ess_rowmax_raw, ess_rowmax_rescaled, argmax,
+            ess_ids_valid, js_ids_valid,
             skill_labels, user_skill_labels, TAU_ELIG,
         )
 
@@ -467,16 +568,17 @@ def compute_utility_and_feasibility_pair(
         },
     }
 
+    # f-side gate: gate_threshold against rescaled rowmax.
     if not (len(ess_ids) > 0):
         f_gap = 1.0
         gate_passed = False
         f_ess_geo = 0.0
-    elif ess_rowmax is None or ess_rowmax.size == 0:
+    elif rowmax_for_gates is None or rowmax_for_gates.size == 0:
         f_gap = 1.0
         gate_passed = False
         f_ess_geo = 0.0
     else:
-        meets = ess_rowmax >= gate_threshold
+        meets = rowmax_for_gates >= gate_threshold
         f_gap = float((~meets).mean())
         gate_passed = bool(f_gap <= 0.5)
         f_ess_geo = ess_geo
@@ -484,6 +586,8 @@ def compute_utility_and_feasibility_pair(
     feasibility = {
         "gate_passed": gate_passed,
         "essential_fit": round(f_ess_geo, 4),
+        "essential_fit_raw": round(k.get("ess_geo_raw", 0.0), 4),
+        "identity_coverage": round(k.get("identity_coverage", 0.0), 4),
         "optional_sim": round(opt_sim, 4),
         "skill_group_recall": round(grp_sim, 4),
         "gap_share": round(f_gap, 4),

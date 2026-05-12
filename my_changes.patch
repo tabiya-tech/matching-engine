@@ -1,0 +1,992 @@
+diff --git a/backend/.env.example b/backend/.env.example
+index 47ed172..6e6e1a5 100644
+--- a/backend/.env.example
++++ b/backend/.env.example
+@@ -66,6 +66,18 @@ SKILL_U_GAP_PENALTY=0.50
+ SKILL_U_TAU_ELIG=0.35
+ SKILL_MIN_ESSENTIAL_MATCH_SHARE=1.0
+ SKILL_ESSENTIAL_GEO_FLOOR=0.000001
++# Score-weighted geometric mean for essential_fit. 0 = naive GM (current behaviour);
++# >0 dampens influence of low row-max scores via weight = rowmax**alpha. Try 0.5 or 1.0.
++SKILL_ESSENTIAL_DAMPING_ALPHA=0.0
++
++# --- Per-rowmax rescaling target ---
++# Whitened cosine for distinct skills sits in a narrow [0, ~0.3] working band; identity
++# matches sit at 1.0 (tautological). To use the full [0, 1] discriminative range, every
++# rowmax (per-essential best user-skill cosine) gets rescaled to min(1, rowmax / target)
++# before the score-weighted GM. Identity rowmaxes clip to 1.0; non-identity stretch.
++# Default lives in the whitened artefact's metadata (key: target_max_p999, computed
++# at build time as p99.9 of 1M random-pair cosines). Set this env var to override.
++# SKILL_RESCALE_TARGET=0.3
+ 
+ # --- Preferences (base + sigmoid + legacy scale) ---
+ PREFERENCE_BASE_CONSTANT=0.5
+@@ -83,7 +95,22 @@ PREF_ENABLE_SOCIAL_MEANING=false
+ 
+ # --- Data files (defaults under backend/resources/; set absolute paths in production) ---
+ # OCCUPATION_JSON_PATH=resources/occupations/combined_occupation_database_with_wa.json
++#
++# Skill embedding artefact. Default: gemini-embedding-001 over preferredLabel
++# + description (encodes semantic concept similarity), 3072-dim fp16.
++# EMBEDDING_MODEL_PATH=resources/models/skill_embedding_model_gemini.pt
++#
++# Alternative: legacy Node2Vec graph-walk over the ESCO taxonomy (encodes
++# ESCO-graph adjacency rather than semantic similarity), 64-dim fp32. Row
++# order is shared with the Gemini artefact, so SKILL_TO_ROW_PATH is unchanged.
+ # EMBEDDING_MODEL_PATH=resources/models/skill_embedding_model.pt
++#
++# Threshold note: GATE_SIMILARITY_THRESHOLD, SKILL_U_TAU_ELIG, and
++# SKILL_ESSENTIAL_DAMPING_ALPHA were originally tuned against the Node2Vec
++# score distribution. Gemini produces sharper, more bimodal cosines (true
++# matches near 1.0, true mismatches near 0.0), which makes the existing
++# thresholds more conservative than they need to be. Recalibrate against
++# the new distribution before claiming production-tuned settings.
+ # SKILL_TO_ROW_PATH=resources/models/skill_to_row.json
+ # SKILLS_CSV_PATH=resources/skill_taxonomy/skills.csv
+ # SKILL_GROUPS_CSV_PATH=resources/skill_taxonomy/skill_groups.csv
+diff --git a/backend/app/config.py b/backend/app/config.py
+index cb32e16..2b0a77a 100644
+--- a/backend/app/config.py
++++ b/backend/app/config.py
+@@ -83,7 +83,7 @@ MATCH_APPLY_LOCATION_FILTER: bool = _b("MATCH_APPLY_LOCATION_FILTER", True)
+ # ---------------------------------------------------------------------------
+ # Success propensity  (p_hat = G * E^alpha * R^beta * M^gamma)
+ # ---------------------------------------------------------------------------
+-GATE_SIMILARITY_THRESHOLD: float = _f("GATE_SIMILARITY_THRESHOLD", 0.35)
++GATE_SIMILARITY_THRESHOLD: float = _f("GATE_SIMILARITY_THRESHOLD", 0.10)
+ # Response filtering threshold for scored skill outputs:
+ # - essential_skill_matches.similarity in opportunities/occupations
+ # - skill_gap_recommendations.proximity_score
+@@ -106,10 +106,38 @@ SKILL_U_W_LOC: float = _f("SKILL_U_W_LOC", 0.20)
+ SKILL_U_W_ESS: float = _f("SKILL_U_W_ESS", 0.50)
+ SKILL_U_W_OPT: float = _f("SKILL_U_W_OPT", 0.20)
+ SKILL_U_W_GRP: float = _f("SKILL_U_W_GRP", 0.10)
+-SKILL_U_GAP_PENALTY: float = _f("SKILL_U_GAP_PENALTY", 0.50)
++SKILL_U_GAP_PENALTY: float = _f("SKILL_U_GAP_PENALTY", 0.25)
+ SKILL_U_TAU_ELIG: float = _f("SKILL_U_TAU_ELIG", 0.35)
+ SKILL_MIN_ESSENTIAL_MATCH_SHARE: float = _f("SKILL_MIN_ESSENTIAL_MATCH_SHARE", 1.0)
+ SKILL_ESSENTIAL_GEO_FLOOR: float = _f("SKILL_ESSENTIAL_GEO_FLOOR", 1e-6)
++# Score-weighted geometric mean for essential_fit: weight each row-max by (rowmax ** alpha).
++# alpha=0 -> uniform weights -> recovers the naive GM (default, current behaviour).
++# alpha>0 -> low scores contribute proportionally less; near-zero scores self-abstain via x^a*ln(x) -> 0.
++SKILL_ESSENTIAL_DAMPING_ALPHA: float = _f("SKILL_ESSENTIAL_DAMPING_ALPHA", 0.0)
++
++# ---------------------------------------------------------------------------
++# Per-rowmax rescaling target for whitened cosines.
++# ---------------------------------------------------------------------------
++# Whitened cosines compress the discriminative band: identity = 1.0 (tautological),
++# strong non-identity sits at ~0.2-0.3, random ~0.0. The score-weighted GM on raw
++# rowmaxes inherits a bimodality (identity vs everything else) that compresses the
++# downstream final_score range. Per-rowmax rescaling — divide each rowmax by SKILL_
++# RESCALE_TARGET, clip at 1.0 — stretches the [0, target] band into [0, 1] so identity
++# and strong non-identity both contribute at the top of the GM input distribution.
++#
++# The natural anchor for SKILL_RESCALE_TARGET is the upper edge of the non-identity
++# distribution in the embedding (e.g. p99.9 over random pairs). The whitening artefact
++# build script computes this and persists it in the .pt metadata as
++# state["whitening"]["target_max_p999"]; SkillScorer.__init__ reads that value and
++# sets this default at startup. Setting SKILL_RESCALE_TARGET in env overrides the
++# artefact's value (useful for ad-hoc calibration without rebuilding).
++#
++# Default of 0.0 is the "disabled" sentinel — if no artefact provides target_max_p999
++# AND no env override is set, rescaling is a no-op (rowmax_rescaled == rowmax). This
++# makes raw Gemini and Node2Vec artefacts behave as if rescaling didn't exist, which
++# is the right default because those artefacts have differently-shaped cosine
++# distributions and don't benefit from this particular rescaling.
++SKILL_RESCALE_TARGET: float = _f("SKILL_RESCALE_TARGET", 0.0)
+ 
+ # ---------------------------------------------------------------------------
+ # Demand label → numeric
+@@ -187,7 +215,7 @@ PREFERENCE_CONFIG: Dict[str, Any] = {
+ # ---------------------------------------------------------------------------
+ OCCUPATION_JSON_PATH: str = _s("OCCUPATION_JSON_PATH", str(_DEFAULT_OCC))
+ 
+-EMBEDDING_MODEL_PATH: str = _s("EMBEDDING_MODEL_PATH", str(_DEFAULT_MODEL_DIR / "skill_embedding_model.pt"))
++EMBEDDING_MODEL_PATH: str = _s("EMBEDDING_MODEL_PATH", str(_DEFAULT_MODEL_DIR / "skill_embedding_model_gemini.pt"))
+ SKILL_TO_ROW_PATH: str = _s("SKILL_TO_ROW_PATH", str(_DEFAULT_MODEL_DIR / "skill_to_row.json"))
+ _TAX = _RESOURCES / "skill_taxonomy"
+ SKILLS_CSV_PATH: str = _s("SKILLS_CSV_PATH", str(_TAX / "skills.csv"))
+diff --git a/backend/app/database.py b/backend/app/database.py
+index c1d326d..d3908ea 100644
+--- a/backend/app/database.py
++++ b/backend/app/database.py
+@@ -280,16 +280,30 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+     job_id = str(rd.get("job_id", ""))
+ 
+     lcs = rd.get("llm_classified_skills", {})
+-    essential_ids = [
+-        s["tabiya_skill_id"]
++    essential_skills = [
++        {"id": s["tabiya_skill_id"], "label": s.get("label", "")}
+         for s in lcs.get("essential", [])
+         if s.get("tabiya_skill_id")
+     ]
+-    optional_ids = [
+-        s["tabiya_skill_id"]
++    optional_skills = [
++        {"id": s["tabiya_skill_id"], "label": s.get("label", "")}
+         for s in lcs.get("optional", [])
+         if s.get("tabiya_skill_id")
+     ]
++    # Label-primary resolver requires non-empty labels. Surface jobs that arrived
++    # without them so the upstream pipeline gap (NEL/llm-reranker emitting empty
++    # label when a URI isn't in ranker_candidates) is visible at consumer side.
++    n_missing_ess = sum(1 for s in essential_skills if not s.get("label"))
++    n_missing_opt = sum(1 for s in optional_skills if not s.get("label"))
++    if n_missing_ess or n_missing_opt:
++        logger.warning(
++            "build_job_dict_from_ranked: job_id=%s job_fingerprint=%s arrived with "
++            "empty labels: %d/%d essential, %d/%d optional",
++            job_id or "?",
++            (rd.get("job_fingerprint") or "")[:16] or "?",
++            n_missing_ess, len(essential_skills),
++            n_missing_opt, len(optional_skills),
++        )
+ 
+     llm_attrs = rd.get("llm_job_attributes", {})
+     attributes = llm_attrs.get("attributes", {})
+@@ -324,8 +338,8 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+         "closing_date": closing_s,
+         "contract_type": et,
+         "url": meta.get("application_url"),
+-        "essential_skills_origin_uuids": essential_ids,
+-        "optional_skills_origin_uuids": optional_ids,
++        "essential_skills": essential_skills,
++        "optional_skills": optional_skills,
+         "skill_groups_origin_uuids": skill_groups,
+         "attributes": attributes,
+         "opportunity_description": meta.get("job_description") or meta.get("description") or "",
+@@ -483,6 +497,10 @@ async def get_all_occupations_with_timing():
+                     elif isinstance(attrs_raw, dict):
+                         attributes = attrs_raw
+ 
++                    # Occupation JSON only carries bare skill UUIDs (no labels).
++                    # Wrap in the same {id, label} shape used by job dicts so
++                    # downstream consumers see one uniform contract; gap analysis
++                    # reads id directly without going through label resolution.
+                     flattened.append({
+                         "uuid": f"{code}_{county}" if county else code,
+                         "originUuid": code,
+@@ -492,8 +510,8 @@ async def get_all_occupations_with_timing():
+                         "location": county,
+                         "city": county,
+                         "province": county,
+-                        "essential_skills_origin_uuids": ess_uuids,
+-                        "optional_skills_origin_uuids": opt_uuids,
++                        "essential_skills": [{"id": str(u), "label": ""} for u in ess_uuids],
++                        "optional_skills": [{"id": str(u), "label": ""} for u in opt_uuids],
+                         "skill_groups_origin_uuids": [],
+                         "attributes": attributes,
+                         "onet_work_activities": onet_wa,
+diff --git a/backend/app/services/matching_service.py b/backend/app/services/matching_service.py
+index 90a5842..23674b7 100644
+--- a/backend/app/services/matching_service.py
++++ b/backend/app/services/matching_service.py
+@@ -506,7 +506,7 @@ def match_user_with_data(
+         scorer_skill.engine,
+         scorer_skill.skill_labels,
+         top_k=MATCH_TOP_K_SKILL_GAPS,
+-        resolve_id=scorer_skill._resolve_id,
++        resolve_id=scorer_skill._resolve_label,
+         timing_out=None,
+     )
+     skill_gaps = _filter_skill_gap_recommendations(skill_gaps)
+diff --git a/backend/app/services/skill_gap_analysis.py b/backend/app/services/skill_gap_analysis.py
+index 504117b..335d100 100644
+--- a/backend/app/services/skill_gap_analysis.py
++++ b/backend/app/services/skill_gap_analysis.py
+@@ -10,6 +10,8 @@ import time
+ import numpy as np
+ from typing import List, Dict, Optional, Set
+ 
++from app.config import SKILL_RESCALE_TARGET
++
+ def _ms(t0: float) -> float:
+     return (time.perf_counter() - t0) * 1000.0
+ 
+@@ -44,20 +46,22 @@ def analyze_skill_gaps(
+     t_total = time.perf_counter()
+     uid = str(user_profile.get("user_id", "?"))
+     n_jobs = len(all_jobs)
++    # `resolve_id` is the SkillScorer's label-primary resolver. The historical
++    # parameter name predates the UUID→label switch; it now takes a preferredLabel.
+     _resolve = resolve_id if resolve_id is not None else (lambda x: x)
+ 
+-    # 1. Extract user's existing skills (resolved to internal IDs)
++    # 1. Extract user's existing skills (resolved to internal IDs via label).
+     user_skill_ids: Set[str] = set()
+     user_skill_labels: Dict[str, str] = {}
+     for s in user_profile.get("skills_vector", {}).get("top_skills", []):
+-        raw = s.get("originUUID")
+-        if not raw:
++        label = s.get("preferredLabel")
++        if not label:
++            continue
++        resolved = _resolve(label)
++        if resolved is None:
+             continue
+-        resolved = _resolve(raw)
+         user_skill_ids.add(resolved)
+-        label = s.get("preferredLabel")
+-        if label:
+-            user_skill_labels[resolved] = label
++        user_skill_labels[resolved] = label
+     
+     if not user_skill_ids:
+         if timing_out is not None:
+@@ -79,8 +83,8 @@ def analyze_skill_gaps(
+     _ess_sets: List[Set[str]] = []
+     _opt_sets: List[Set[str]] = []
+     for job in all_jobs:
+-        ess_resolved = {_resolve(s) for s in job.get("essential_skills_origin_uuids", []) if s}
+-        opt_resolved = {_resolve(s) for s in job.get("optional_skills_origin_uuids", []) if s}
++        ess_resolved = {s["id"] for s in job.get("essential_skills", []) if isinstance(s, dict) and s.get("id")}
++        opt_resolved = {s["id"] for s in job.get("optional_skills", []) if isinstance(s, dict) and s.get("id")}
+         _ess_sets.append(ess_resolved)
+         _opt_sets.append(opt_resolved)
+         candidate_skills.update(ess_resolved | opt_resolved)
+@@ -102,10 +106,18 @@ def analyze_skill_gaps(
+             )
+         return []
+ 
+-    # 3. Compute proximity score for each candidate
++    # 3. Compute proximity score for each candidate. Apply per-cosine rescaling so
++    # proximity_score lives in the same calibrated frame as the matching service's
++    # essential_fit / final_score (whitened cosines compress otherwise). When rescaling
++    # is disabled (target<=0), rescaled == raw and behaviour is identical.
+     user_mat = engine._rows(list(user_skill_ids))
+     user_skill_ids_list = list(user_skill_ids)
+-    
++
++    _target = SKILL_RESCALE_TARGET
++    _rescale_enabled = _target > 0.0
++    def _rescale_value(v: float) -> float:
++        return min(1.0, v / _target) if _rescale_enabled else v
++
+     proximity_scores: Dict[str, float] = {}
+     closest_user_skills: Dict[str, tuple] = {}
+     for cand_id in candidate_skills:
+@@ -116,10 +128,11 @@ def analyze_skill_gaps(
+         else:
+             S = cand_mat @ user_mat.T
+             argmax_idx = int(np.argmax(S))
+-            max_sim = float(np.max(S))
++            max_sim_raw = float(np.max(S))
++            max_sim = _rescale_value(max(0.0, max_sim_raw))
+             closest_user_skill_id = user_skill_ids_list[argmax_idx]
+-            proximity_scores[cand_id] = max(0.0, max_sim)
+-            closest_user_skills[cand_id] = (closest_user_skill_id, max(0.0, max_sim))
++            proximity_scores[cand_id] = max_sim
++            closest_user_skills[cand_id] = (closest_user_skill_id, max_sim)
+     
+     # 4. Compute job unlock potential for each candidate (using pre-resolved sets)
+     job_unlock_counts: Dict[str, int] = {}
+diff --git a/backend/app/services/skill_score.py b/backend/app/services/skill_score.py
+index d712869..cff5480 100644
+--- a/backend/app/services/skill_score.py
++++ b/backend/app/services/skill_score.py
+@@ -1,6 +1,9 @@
++from collections import Counter
+ from pathlib import Path
+ import logging
+ 
++import os
++
+ import torch
+ import json
+ import csv
+@@ -14,6 +17,7 @@ from app.config import (
+     SKILL_HIERARCHY_CSV_PATH,
+     SKILL_TO_ROW_PATH,
+ )
++from app.services.skills_utility import skills_match as _skills_match
+ from app.services.skills_utility.skills_match import (
+     Jobseeker,
+     Opportunity,
+@@ -26,6 +30,11 @@ from app.services.skills_utility.skills_match import (
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _canon(label: str) -> str:
++    """Canonical form for label-based skill resolution: lowercase, whitespace-collapsed."""
++    return " ".join(label.strip().lower().split())
++
++
+ class SkillScorer:
+     def __init__(self):
+         self.MODEL_PATH = Path(EMBEDDING_MODEL_PATH)
+@@ -35,7 +44,28 @@ class SkillScorer:
+         self.HIERARCHY_CSV_PATH = Path(SKILL_HIERARCHY_CSV_PATH)
+ 
+         state = torch.load(self.MODEL_PATH, map_location="cpu")
++
++        # Hydrate per-rowmax rescale target from artefact metadata, unless the operator
++        # has explicitly set SKILL_RESCALE_TARGET in env (operator wins). Whitened artefacts
++        # carry a `target_max_p999` value computed at build time; raw / non-whitened
++        # artefacts won't have one, in which case we leave the existing default in place.
++        # Mutate the binding inside skills_match (where the kernel reads it) — same pattern
++        # used for SKILL_ESSENTIAL_DAMPING_ALPHA overrides in batch scripts.
++        if "SKILL_RESCALE_TARGET" not in os.environ:
++            target_from_artefact = (state.get("whitening") or {}).get("target_max_p999")
++            if target_from_artefact is not None:
++                _skills_match.SKILL_RESCALE_TARGET = float(target_from_artefact)
++                logger.info(
++                    "SkillScorer: SKILL_RESCALE_TARGET set from artefact metadata = %.4f",
++                    float(target_from_artefact),
++                )
++
+         W = state["state_dict"]["embedding.weight"].numpy()
++        # Promote lower-precision weights (e.g. fp16, used by the Gemini artefact
++        # to stay under GitHub's per-file size limit) to fp32 before any
++        # downstream math; SimilarityEngine and the cosine kernels assume fp32.
++        if W.dtype != np.float32:
++            W = W.astype(np.float32)
+         norms = np.linalg.norm(W, axis=1, keepdims=True)
+         W = W / np.where(norms > 0, norms, 1.0)
+ 
+@@ -45,32 +75,52 @@ class SkillScorer:
+         self._embedding_ids = set(skill_to_row.keys())
+         self.engine = SimilarityEngine(W, skill_to_row)
+ 
+-        self.skill_labels = {}
+-        self._esco_to_internal: dict[str, str] = {}
++        # Label-primary resolution maps. UUIDs are NOT used for resolution — they
++        # carry modelId-drift risk (a Compass-side UUID can resolve to a different
++        # internal skill than the user's declared label). Labels are stable across
++        # taxonomy versions; they're our trust anchor.
++        self.skill_labels: dict[str, str] = {}            # internal_id -> preferredLabel (display)
++        self._preferred_to_id: dict[str, str] = {}        # canonical preferredLabel -> internal_id
++        self._altlabel_to_id: dict[str, str] = {}         # canonical altLabel -> internal_id
++        self._preferred_collisions = 0
+         try:
+             with open(self.SKILLS_CSV_PATH, "r", encoding="utf-8") as f:
+                 reader = csv.DictReader(f)
+                 for row in reader:
+-                    skill_id = row.get("ID")
+-                    label = row.get("PREFERREDLABEL")
+-                    if skill_id and label:
+-                        self.skill_labels[str(skill_id)] = label
+-                    uuid_history = row.get("UUIDHISTORY", "")
+-                    origin_uri = row.get("ORIGINURI", "")
+-                    if skill_id:
+-                        for uuid in uuid_history.strip().split("\n"):
+-                            uuid = uuid.strip()
+-                            if uuid:
+-                                self._esco_to_internal[uuid] = str(skill_id)
+-                        if "/esco/skill/" in origin_uri:
+-                            esco_uuid = origin_uri.split("/esco/skill/")[-1]
+-                            self._esco_to_internal[esco_uuid] = str(skill_id)
++                    sid = row.get("ID")
++                    label = row.get("PREFERREDLABEL") or ""
++                    if not sid or sid not in self._embedding_ids:
++                        continue
++                    if label:
++                        self.skill_labels[str(sid)] = label
++                        canon = _canon(label)
++                        if canon and canon not in self._preferred_to_id:
++                            self._preferred_to_id[canon] = str(sid)
++                        elif canon and self._preferred_to_id.get(canon) != str(sid):
++                            self._preferred_collisions += 1
++                    for alt in (row.get("ALTLABELS") or "").split("\n"):
++                        canon = _canon(alt)
++                        if not canon:
++                            continue
++                        # Don't shadow a preferredLabel hit via altLabel; first writer wins on alt.
++                        if canon in self._preferred_to_id:
++                            continue
++                        self._altlabel_to_id.setdefault(canon, str(sid))
+         except FileNotFoundError:
+             self.skill_labels = {}
+ 
++        # Miss telemetry (per-process, lifetime-cumulative).
++        self._missed_labels: Counter = Counter()
++
+         logger.info(
+-            "SkillScorer: %d embedding IDs, %d ESCO->internal mappings",
+-            len(self._embedding_ids), len(self._esco_to_internal),
++            "SkillScorer: %d embedding IDs (model=%s, dim=%d); "
++            "%d preferredLabel keys, %d altLabel keys (preferred-collisions: %d)",
++            len(self._embedding_ids),
++            state.get("model_name") or self.MODEL_PATH.name,
++            W.shape[1],
++            len(self._preferred_to_id),
++            len(self._altlabel_to_id),
++            self._preferred_collisions,
+         )
+ 
+         self.skill_group_labels = {}
+@@ -105,28 +155,41 @@ class SkillScorer:
+             groups.update(self._skill_to_groups.get(sid, set()))
+         return groups
+ 
+-    def _resolve_id(self, raw_id: str) -> str:
+-        """Translate a skill ID to the embedding model's internal ID space.
++    def _resolve_label(self, label: str) -> str | None:
++        """Resolve a skill label to its internal embedding ID. Strict label-only.
+ 
+-        Accepts ESCO standard UUIDs (e.g. 'd5c9e39f-...'), internal IDs
+-        (already in embedding), or any other format.  Returns the internal
+-        ID if a mapping exists, otherwise returns the input unchanged.
++        Lookup chain: canonical preferredLabel → canonical altLabel → miss.
++        UUIDs are deliberately not consulted — they carry modelId-drift risk.
+         """
+-        sid = str(raw_id)
+-        if sid in self._embedding_ids:
++        if not label:
++            return None
++        canon = _canon(label)
++        if not canon:
++            return None
++        sid = self._preferred_to_id.get(canon)
++        if sid is not None:
++            return sid
++        sid = self._altlabel_to_id.get(canon)
++        if sid is not None:
+             return sid
+-        return self._esco_to_internal.get(sid, sid)
++        self._missed_labels[label] += 1
++        return None
+ 
+-    def _resolve_ids(self, raw_ids) -> set[str]:
+-        """Batch-resolve a collection of skill IDs."""
+-        return {self._resolve_id(sid) for sid in raw_ids if sid}
++    def get_resolution_stats(self) -> dict:
++        """Per-process miss telemetry. Useful for batch scripts at end-of-run."""
++        return {
++            "total_misses": sum(self._missed_labels.values()),
++            "distinct_missed_labels": len(self._missed_labels),
++            "top_misses": self._missed_labels.most_common(20),
++        }
+ 
+     def _build_objects(self, user_profile: dict, job_posting: dict):
+         """Build Jobseeker / Opportunity dataclasses + user skill labels.
+ 
+-        All skill IDs are resolved to the embedding model's internal ID
+-        space so that ESCO UUIDs, Tabiya IDs, or internal IDs all work
+-        transparently.
++        Both sides resolve via labels — user payload carries preferredLabel,
++        job payload carries essential_skills/optional_skills as [{id, label}, ...]
++        dicts (label is the trust anchor). Group IDs come pre-resolved from
++        the upstream taxonomy export and are passed through unchanged.
+         """
+         user_id = user_profile.get("user_id") or user_profile.get("youth_id")
+         if not user_id:
+@@ -139,20 +202,16 @@ class SkillScorer:
+         for s in user_top_skills:
+             if not isinstance(s, dict):
+                 continue
+-            raw = s.get("originUUID")
+-            if not raw:
++            label = s.get("preferredLabel")
++            resolved = self._resolve_label(label)
++            if resolved is None:
+                 continue
+-            resolved = self._resolve_id(raw)
+             resolved_user_ids.add(resolved)
+-            label = s.get("preferredLabel")
+             if label:
+                 user_skill_labels[resolved] = label
+-                if resolved != raw:
+-                    user_skill_labels[raw] = label
+ 
+-        user_groups = self._resolve_ids(
+-            user_profile.get("skill_groups_origin_uuids", [])
+-        )
++        raw_user_groups = user_profile.get("skill_groups_origin_uuids", []) or []
++        user_groups = {str(g) for g in raw_user_groups if g}
+         if not user_groups:
+             user_groups = self._derive_groups(resolved_user_ids)
+ 
+@@ -164,22 +223,28 @@ class SkillScorer:
+             province=user_profile.get("province"),
+         )
+ 
+-        resolved_ess = self._resolve_ids(
+-            job_posting.get("essential_skills_origin_uuids", [])
+-        )
+-        resolved_opt = self._resolve_ids(
+-            job_posting.get("optional_skills_origin_uuids", [])
+-        )
+-        job_groups = self._resolve_ids(
+-            job_posting.get("skill_groups_origin_uuids", [])
+-        )
++        def _resolve_job_skills(items) -> set[str]:
++            out: set[str] = set()
++            for s in items or []:
++                if not isinstance(s, dict):
++                    continue
++                resolved = self._resolve_label(s.get("label"))
++                if resolved is not None:
++                    out.add(resolved)
++            return out
++
++        resolved_ess = _resolve_job_skills(job_posting.get("essential_skills"))
++        resolved_opt = _resolve_job_skills(job_posting.get("optional_skills"))
++
++        raw_job_groups = job_posting.get("skill_groups_origin_uuids", []) or []
++        job_groups = {str(g) for g in raw_job_groups if g}
+         if not job_groups:
+             job_groups = self._derive_groups(resolved_ess | resolved_opt)
+ 
+         op = Opportunity(
+             opportunity_id=str(job_posting.get("uuid")),
+-            essential_skills_origin_uuids=resolved_ess,
+-            optional_skills_origin_uuids=resolved_opt,
++            essential_skill_ids=resolved_ess,
++            optional_skill_ids=resolved_opt,
+             skill_groups_origin_uuids=job_groups,
+             city=job_posting.get("city") or job_posting.get("location"),
+             province=job_posting.get("province") or job_posting.get("location"),
+diff --git a/backend/app/services/skills_utility/generate_data.py b/backend/app/services/skills_utility/generate_data.py
+index c660f70..bd330f6 100644
+--- a/backend/app/services/skills_utility/generate_data.py
++++ b/backend/app/services/skills_utility/generate_data.py
+@@ -59,8 +59,8 @@ with open('demand.jsonl', 'w') as f:
+             "city": item["location"], # Helper for U_loc
+             "province": item["location"], # Helper for U_loc
+             "contract_type": item["contract_type"],
+-            "essential_skills_origin_uuids": item["essential"],
+-            "optional_skills_origin_uuids": [],
++            "essential_skills": [{"id": str(u), "label": ""} for u in item["essential"]],
++            "optional_skills": [],
+             "skill_groups_origin_uuids": [item["group"]],
+             "attributes": item["attributes"]
+         }
+diff --git a/backend/app/services/skills_utility/skills_match.py b/backend/app/services/skills_utility/skills_match.py
+index bbf4196..0763c42 100644
+--- a/backend/app/services/skills_utility/skills_match.py
++++ b/backend/app/services/skills_utility/skills_match.py
+@@ -36,8 +36,10 @@ from dataclasses import dataclass
+ 
+ from app.config import (
+     GATE_SIMILARITY_THRESHOLD,
++    SKILL_ESSENTIAL_DAMPING_ALPHA,
+     SKILL_ESSENTIAL_GEO_FLOOR,
+     SKILL_MIN_ESSENTIAL_MATCH_SHARE,
++    SKILL_RESCALE_TARGET,
+     SKILL_U_GAP_PENALTY,
+     SKILL_U_TAU_ELIG,
+     SKILL_U_W_ESS,
+@@ -61,8 +63,8 @@ class Jobseeker:
+ @dataclass(frozen=True)
+ class Opportunity:
+     opportunity_id: str
+-    essential_skills_origin_uuids: Set[str]
+-    optional_skills_origin_uuids: Set[str]
++    essential_skill_ids: Set[str]
++    optional_skill_ids: Set[str]
+     skill_groups_origin_uuids: Set[str]
+     city: Optional[str] = None
+     province: Optional[str] = None
+@@ -134,32 +136,94 @@ def _shared_pair_kernel(
+     loc_score = location_near_enough(js, op)
+ 
+     js_ids = list(js.skills_origin_uuids)
+-    ess_ids = list(op.essential_skills_origin_uuids)
+-    opt_ids = list(op.optional_skills_origin_uuids)
++    ess_ids = list(op.essential_skill_ids)
++    opt_ids = list(op.optional_skill_ids)
+ 
+     js_mat, js_ids_valid = engine._rows_with_ids(js_ids)
+     ess_mat, ess_ids_valid = engine._rows_with_ids(ess_ids)
+ 
++    # Rescaling is opt-in: SKILL_RESCALE_TARGET > 0 enables per-rowmax rescaling.
++    # When disabled (raw Gemini / Node2Vec artefacts have no target in metadata),
++    # rowmax_rescaled is just rowmax — every downstream consumer using the rescaled
++    # field gets the raw value transparently, so the system behaves as if rescaling
++    # weren't there. Whitened artefacts persist target_max_p999 in metadata and
++    # SkillScorer hydrates SKILL_RESCALE_TARGET at startup.
++    target = SKILL_RESCALE_TARGET
++    rescale_enabled = target > 0.0
++
++    def _rescale(arr):
++        if not rescale_enabled:
++            return arr
++        return np.minimum(1.0, arr / target)
++
+     S = None
+-    rowmax = None
++    rowmax = None                  # raw rowmaxes (identity at 1.0); preserved for diagnostic / response
++    rowmax_rescaled = None         # rescaled rowmaxes; used by every comparator in the new wiring
+     argmax = None
+-    ess_sim = 0.0
+-    ess_geo = 0.0
++    ess_sim = 0.0                  # mean of rescaled rowmaxes (used by U_complete)
++    ess_geo = 0.0                  # score-weighted GM of rescaled rowmaxes (used by p_hat / feasibility)
++    ess_sim_raw = 0.0              # diagnostic: mean of un-rescaled rowmaxes
++    ess_geo_raw = 0.0              # diagnostic: score-weighted GM of un-rescaled rowmaxes
++    identity_coverage = 0.0        # diagnostic: fraction of essentials matched exactly by user
+ 
+     if ess_mat.size > 0 and js_mat.size > 0:
+         S = ess_mat @ js_mat.T
+         np.maximum(S, 0.0, out=S)
+         rowmax = S.max(axis=1)
+         argmax = S.argmax(axis=1)
+-        ess_sim = float(rowmax.mean())
+-        floored = np.maximum(rowmax, geo_floor)
+-        ess_geo = float(np.exp(np.mean(np.log(floored))))
++
++        # Diagnostic: identity coverage = fraction of essentials where user has the exact
++        # skill ID. Recorded for audit only; the GM math uses rescaled rowmaxes uniformly
++        # so identity contributes naturally at its proportion in the data.
++        ess_arr = np.array(ess_ids_valid)
++        js_arr = np.array(js_ids_valid)
++        identity_mask = ess_arr[:, None] == js_arr[None, :]
++        identity_coverage = float(identity_mask.any(axis=1).sum()) / float(len(ess_ids_valid))
++
++        # Diagnostic: the un-rescaled GM (pre-rescaling), for comparison with rescaled.
++        ess_sim_raw = float(rowmax.mean())
++        floored_raw = np.maximum(rowmax, geo_floor)
++        log_floored_raw = np.log(floored_raw)
++        if SKILL_ESSENTIAL_DAMPING_ALPHA == 0.0:
++            ess_geo_raw = float(np.exp(log_floored_raw.mean()))
++        else:
++            w_raw = floored_raw ** SKILL_ESSENTIAL_DAMPING_ALPHA
++            denom_raw = float(w_raw.sum())
++            ess_geo_raw = float(np.exp((w_raw * log_floored_raw).sum() / denom_raw)) if denom_raw > 0 else float(geo_floor)
++
++        # Per-rowmax rescaling. target is the empirical "saturation point" of non-identity
++        # cosines (e.g. p99.9 over random pairs from the embedding). Identity rowmaxes (=1.0)
++        # clip to 1.0 unchanged; non-identity rowmaxes in [0, target] stretch into [0, 1].
++        # Score-weighted GM operates on the uniform-scale rescaled distribution so identity
++        # and strong-related sit at the top together (bimodality flattens at the GM input).
++        rowmax_rescaled = _rescale(rowmax)
++        ess_sim = float(rowmax_rescaled.mean())
++        floored = np.maximum(rowmax_rescaled, geo_floor)
++        log_floored = np.log(floored)
++        if SKILL_ESSENTIAL_DAMPING_ALPHA == 0.0:
++            ess_geo = float(np.exp(log_floored.mean()))
++        else:
++            w = floored ** SKILL_ESSENTIAL_DAMPING_ALPHA
++            denom = float(w.sum())
++            ess_geo = float(np.exp((w * log_floored).sum() / denom)) if denom > 0 else float(geo_floor)
+     elif ess_ids_valid and js_mat.size == 0:
+         rowmax = np.zeros(len(ess_ids_valid), dtype=np.float64)
+-
+-    js_mean = engine._mean_unit(js_mat)
+-    opt_vec = engine._mean_unit(engine._rows(opt_ids))
+-    opt_sim = max(0.0, float(js_mean @ opt_vec)) if js_mean is not None and opt_vec is not None else 0.0
++        rowmax_rescaled = rowmax
++
++    # Optional skills: same rowmax-style approach as essentials (not mean-of-centroids).
++    # Mean-of-centroids on whitened embeddings degenerates because whitening spreads
++    # vectors so any centroid approaches zero magnitude and renormalises into direction
++    # noise. Per-optional rowmax → rescale → mean keeps optional in the same calibrated
++    # frame as essential. Each optional skill contributes its best user-skill cosine.
++    opt_mat, opt_ids_valid = engine._rows_with_ids(opt_ids)
++    if opt_mat.size > 0 and js_mat.size > 0:
++        S_opt = opt_mat @ js_mat.T
++        np.maximum(S_opt, 0.0, out=S_opt)
++        rowmax_opt_raw = S_opt.max(axis=1)
++        rowmax_opt_rescaled = _rescale(rowmax_opt_raw)
++        opt_sim = float(rowmax_opt_rescaled.mean())
++    else:
++        opt_sim = 0.0
+ 
+     if op.skill_groups_origin_uuids:
+         inter = len(op.skill_groups_origin_uuids & js.skill_groups_origin_uuids)
+@@ -177,32 +241,47 @@ def _shared_pair_kernel(
+         "js_ids_valid": js_ids_valid,
+         "ess_ids_valid": ess_ids_valid,
+         "S": S,
+-        "rowmax": rowmax,
++        "rowmax": rowmax,                  # raw rowmax (preserved for diagnostic / response)
++        "rowmax_rescaled": rowmax_rescaled,  # rescaled rowmax (used by all gate / GM / mean comparators)
+         "argmax": argmax,
+         "ess_sim": ess_sim,
+         "ess_geo": ess_geo,
+         "opt_sim": opt_sim,
+         "grp_sim": grp_sim,
++        "identity_coverage": identity_coverage,
++        "ess_sim_raw": ess_sim_raw,
++        "ess_geo_raw": ess_geo_raw,
+     }
+ 
+ 
+ def _build_essential_match_list(
+-    ess_mat, js_mat, S, rowmax, argmax, ess_ids_valid, js_ids_valid,
++    ess_mat, js_mat, S, rowmax, rowmax_rescaled, argmax, ess_ids_valid, js_ids_valid,
+     skill_labels, user_skill_labels, threshold: float
+ ):
++    """Match-list payload for the response. `similarity` is in rescaled space (the
++    same frame as final_score, p_hat, essential_fit), so a human reader sees one
++    consistent scale. `similarity_raw` is the un-rescaled whitened cosine, kept for
++    audit / debugging. `meets_threshold` compares the rescaled value, since the
++    threshold lives in the same rescaled frame as all the gate decisions.
++    """
+     essential_skill_matches = []
+     if ess_mat.size > 0 and js_mat.size > 0 and rowmax is not None and argmax is not None:
++        # rowmax_rescaled is None only if the kernel skipped rescaling; in that case
++        # fall back to raw (rescaling disabled => values are already in the right frame).
++        rescaled = rowmax_rescaled if rowmax_rescaled is not None else rowmax
+         for i, ess_id in enumerate(ess_ids_valid):
+             best_idx = int(argmax[i])
+             best_js_id = js_ids_valid[best_idx] if js_ids_valid else None
+-            sim = float(rowmax[i])
++            sim_rescaled = float(rescaled[i])
++            sim_raw = float(rowmax[i])
+             essential_skill_matches.append({
+                 "job_skill_id": ess_id,
+                 "job_skill_label": skill_labels.get(ess_id),
+                 "best_user_skill_id": best_js_id,
+                 "best_user_skill_label": user_skill_labels.get(best_js_id),
+-                "similarity": round(sim, 4),
+-                "meets_threshold": sim >= threshold,
++                "similarity": round(sim_rescaled, 4),
++                "similarity_raw": round(sim_raw, 4),
++                "meets_threshold": sim_rescaled >= threshold,
+             })
+     elif ess_ids_valid:
+         for ess_id in ess_ids_valid:
+@@ -267,7 +346,8 @@ def compute_U_complete(
+     ess_sim = k["ess_sim"]
+     opt_sim = k["opt_sim"]
+     grp_sim = k["grp_sim"]
+-    ess_rowmax = k["rowmax"]
++    ess_rowmax_raw = k["rowmax"]                # raw (preserved for diagnostic)
++    ess_rowmax_rescaled = k["rowmax_rescaled"]  # rescaled (used for gap_share / eligibility)
+     ess_mat, js_mat = k["ess_mat"], k["js_mat"]
+     js_ids, opt_ids = k["js_ids"], k["opt_ids"]
+     ess_ids_valid, js_ids_valid = k["ess_ids_valid"], k["js_ids_valid"]
+@@ -277,17 +357,23 @@ def compute_U_complete(
+         W_LOC * loc_score + W_ESS * ess_sim + W_OPT * opt_sim + W_GRP * grp_sim
+     ) / (W_LOC + W_ESS + W_OPT + W_GRP)
+ 
+-    if ess_rowmax is None or (hasattr(ess_rowmax, "size") and ess_rowmax.size == 0):
++    # gap_share / eligibility evaluated against rescaled rowmax so the TAU_ELIG threshold
++    # lives in the same calibrated frame as ess_sim and final_score. When rescaling is
++    # disabled (no artefact metadata), rowmax_rescaled == rowmax, so behaviour is identical
++    # to before.
++    rowmax_for_gates = ess_rowmax_rescaled if ess_rowmax_rescaled is not None else ess_rowmax_raw
++    if rowmax_for_gates is None or (hasattr(rowmax_for_gates, "size") and rowmax_for_gates.size == 0):
+         gap_share, eligible = 0.0, True
+     else:
+-        meets = (ess_rowmax >= TAU_ELIG)
++        meets = (rowmax_for_gates >= TAU_ELIG)
+         gap_share = float((~meets).mean())
+         eligible = (float(meets.mean()) >= MIN_ESS_SHARE)
+ 
+     u_final = max(0.0, core_score - (W_GAP_PEN * gap_share))
+ 
+     essential_skill_matches = _build_essential_match_list(
+-        ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
++        ess_mat, js_mat, S, ess_rowmax_raw, ess_rowmax_rescaled, argmax,
++        ess_ids_valid, js_ids_valid,
+         skill_labels, user_skill_labels, TAU_ELIG,
+     )
+     optional_exact_matches, skill_group_matches = _optional_and_group_match_lists(
+@@ -337,7 +423,8 @@ def compute_feasibility_signals(
+     ess_ids = k["ess_ids"]
+     opt_ids = k["opt_ids"]
+     js_ids = k["js_ids"]
+-    ess_rowmax = k["rowmax"]
++    ess_rowmax_raw = k["rowmax"]                # raw (preserved for diagnostic)
++    ess_rowmax_rescaled = k["rowmax_rescaled"]  # rescaled (used for gate / gap_share)
+     ess_geo = k["ess_geo"]
+     opt_sim = k["opt_sim"]
+     grp_recall = k["grp_sim"]
+@@ -345,22 +432,28 @@ def compute_feasibility_signals(
+     ess_ids_valid, js_ids_valid = k["ess_ids_valid"], k["js_ids_valid"]
+     S, argmax = k["S"], k["argmax"]
+ 
++    # Gate evaluated against rescaled rowmax so GATE_SIMILARITY_THRESHOLD lives in the
++    # same calibrated frame as essential_fit and final_score. When rescaling is disabled
++    # (no artefact metadata), rowmax_rescaled == rowmax, so behaviour matches the
++    # pre-rescaling system.
++    rowmax_for_gates = ess_rowmax_rescaled if ess_rowmax_rescaled is not None else ess_rowmax_raw
+     has_essential_reqs = len(ess_ids) > 0
+     if not has_essential_reqs:
+         gap_share = 1.0
+         gate_passed = False
+         ess_geo = 0.0
+-    elif ess_rowmax is None or ess_rowmax.size == 0:
++    elif rowmax_for_gates is None or rowmax_for_gates.size == 0:
+         gap_share = 1.0
+         gate_passed = False
+         ess_geo = 0.0
+     else:
+-        meets = ess_rowmax >= gate_threshold
++        meets = rowmax_for_gates >= gate_threshold
+         gap_share = float((~meets).mean())
+         gate_passed = bool(gap_share <= 0.5)
+ 
+     essential_skill_matches = _build_essential_match_list(
+-        ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
++        ess_mat, js_mat, S, ess_rowmax_raw, ess_rowmax_rescaled, argmax,
++        ess_ids_valid, js_ids_valid,
+         skill_labels, user_skill_labels, gate_threshold,
+     )
+     optional_exact_matches, skill_group_matches = _optional_and_group_match_lists(
+@@ -370,6 +463,8 @@ def compute_feasibility_signals(
+     return {
+         "gate_passed": gate_passed,
+         "essential_fit": round(ess_geo, 4),
++        "essential_fit_raw": round(k.get("ess_geo_raw", 0.0), 4),
++        "identity_coverage": round(k.get("identity_coverage", 0.0), 4),
+         "optional_sim": round(opt_sim, 4),
+         "skill_group_recall": round(grp_recall, 4),
+         "gap_share": round(gap_share, 4),
+@@ -412,7 +507,8 @@ def compute_utility_and_feasibility_pair(
+     ess_geo = k["ess_geo"]
+     opt_sim = k["opt_sim"]
+     grp_sim = k["grp_sim"]
+-    ess_rowmax = k["rowmax"]
++    ess_rowmax_raw = k["rowmax"]                # raw (preserved for diagnostic)
++    ess_rowmax_rescaled = k["rowmax_rescaled"]  # rescaled (used for both u-side and f-side gates)
+     ess_mat, js_mat = k["ess_mat"], k["js_mat"]
+     ess_ids, opt_ids, js_ids = k["ess_ids"], k["opt_ids"], k["js_ids"]
+     ess_ids_valid, js_ids_valid = k["ess_ids_valid"], k["js_ids_valid"]
+@@ -422,10 +518,12 @@ def compute_utility_and_feasibility_pair(
+         W_LOC * loc_score + W_ESS * ess_sim + W_OPT * opt_sim + W_GRP * grp_sim
+     ) / (W_LOC + W_ESS + W_OPT + W_GRP)
+ 
+-    if ess_rowmax is None or (hasattr(ess_rowmax, "size") and ess_rowmax.size == 0):
++    # u-side gap: TAU_ELIG against rescaled rowmax (calibrated frame).
++    rowmax_for_gates = ess_rowmax_rescaled if ess_rowmax_rescaled is not None else ess_rowmax_raw
++    if rowmax_for_gates is None or (hasattr(rowmax_for_gates, "size") and rowmax_for_gates.size == 0):
+         u_gap, eligible = 0.0, True
+     else:
+-        meets = (ess_rowmax >= TAU_ELIG)
++        meets = (rowmax_for_gates >= TAU_ELIG)
+         u_gap = float((~meets).mean())
+         eligible = (float(meets.mean()) >= MIN_ESS_SHARE)
+ 
+@@ -433,16 +531,19 @@ def compute_utility_and_feasibility_pair(
+ 
+     if abs(TAU_ELIG - gate_threshold) >= 1e-9:
+         u_ess = _build_essential_match_list(
+-            ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
++            ess_mat, js_mat, S, ess_rowmax_raw, ess_rowmax_rescaled, argmax,
++            ess_ids_valid, js_ids_valid,
+             skill_labels, user_skill_labels, TAU_ELIG,
+         )
+         f_ess = _build_essential_match_list(
+-            ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
++            ess_mat, js_mat, S, ess_rowmax_raw, ess_rowmax_rescaled, argmax,
++            ess_ids_valid, js_ids_valid,
+             skill_labels, user_skill_labels, gate_threshold,
+         )
+     else:
+         u_ess = f_ess = _build_essential_match_list(
+-            ess_mat, js_mat, S, ess_rowmax, argmax, ess_ids_valid, js_ids_valid,
++            ess_mat, js_mat, S, ess_rowmax_raw, ess_rowmax_rescaled, argmax,
++            ess_ids_valid, js_ids_valid,
+             skill_labels, user_skill_labels, TAU_ELIG,
+         )
+ 
+@@ -467,16 +568,17 @@ def compute_utility_and_feasibility_pair(
+         },
+     }
+ 
++    # f-side gate: gate_threshold against rescaled rowmax.
+     if not (len(ess_ids) > 0):
+         f_gap = 1.0
+         gate_passed = False
+         f_ess_geo = 0.0
+-    elif ess_rowmax is None or ess_rowmax.size == 0:
++    elif rowmax_for_gates is None or rowmax_for_gates.size == 0:
+         f_gap = 1.0
+         gate_passed = False
+         f_ess_geo = 0.0
+     else:
+-        meets = ess_rowmax >= gate_threshold
++        meets = rowmax_for_gates >= gate_threshold
+         f_gap = float((~meets).mean())
+         gate_passed = bool(f_gap <= 0.5)
+         f_ess_geo = ess_geo
+@@ -484,6 +586,8 @@ def compute_utility_and_feasibility_pair(
+     feasibility = {
+         "gate_passed": gate_passed,
+         "essential_fit": round(f_ess_geo, 4),
++        "essential_fit_raw": round(k.get("ess_geo_raw", 0.0), 4),
++        "identity_coverage": round(k.get("identity_coverage", 0.0), 4),
+         "optional_sim": round(opt_sim, 4),
+         "skill_group_recall": round(grp_sim, 4),
+         "gap_share": round(f_gap, 4),
+diff --git a/backend/configs/template.env.yaml b/backend/configs/template.env.yaml
+index 984016d..4e14fa7 100644
+--- a/backend/configs/template.env.yaml
++++ b/backend/configs/template.env.yaml
+@@ -29,6 +29,13 @@ SKILL_U_GAP_PENALTY: "0.50"
+ SKILL_U_TAU_ELIG: "0.35"
+ SKILL_MIN_ESSENTIAL_MATCH_SHARE: "1.0"
+ SKILL_ESSENTIAL_GEO_FLOOR: "0.000001"
++SKILL_ESSENTIAL_DAMPING_ALPHA: "0.0"
++
++# Per-rowmax rescaling target. Each rowmax is divided by this and clipped at 1.0 before
++# the score-weighted GM, so identity (=1.0) and strong non-identity both saturate. Default
++# is read from the whitened embedding artefact's metadata (target_max_p999); set here to
++# override. Leave commented to use the artefact's value.
++# SKILL_RESCALE_TARGET: "0.3"
+ 
+ PREFERENCE_BASE_CONSTANT: "0.5"
+ PREFERENCE_LEGACY_SCORE_SCALE: "0.2"
+@@ -44,7 +51,15 @@ PREF_ENABLE_SOCIAL_MEANING: "false"
+ 
+ # Optional overrides; defaults: backend/resources/occupations, skill_taxonomy, models
+ # OCCUPATION_JSON_PATH: ""
+-# EMBEDDING_MODEL_PATH: ""
++# Default: gemini-embedding-001 semantic embedding (3072-dim fp16, semantic
++# concept similarity over preferredLabel + description):
++# EMBEDDING_MODEL_PATH: "resources/models/skill_embedding_model_gemini.pt"
++# Alternative: legacy Node2Vec graph-walk embedding (64-dim, ESCO-graph adjacency).
++# Row order is shared with the Gemini artefact, so SKILL_TO_ROW_PATH is unchanged.
++# Threshold note: GATE_SIMILARITY_THRESHOLD, SKILL_U_TAU_ELIG, and
++# SKILL_ESSENTIAL_DAMPING_ALPHA were tuned against Node2Vec; recalibrate against
++# Gemini's sharper score distribution before claiming production-tuned settings.
++# EMBEDDING_MODEL_PATH: "resources/models/skill_embedding_model.pt"
+ # SKILL_TO_ROW_PATH: ""
+ # SKILLS_CSV_PATH: ""
+ # SKILL_GROUPS_CSV_PATH: ""
+diff --git a/backend/run_local.py b/backend/run_local.py
+index ad942cb..127de7e 100644
+--- a/backend/run_local.py
++++ b/backend/run_local.py
+@@ -85,8 +85,8 @@ for entry in _raw_occupations:
+             "province": county,
+             "city": county,
+             "location": county,
+-            "essential_skills_origin_uuids": essential_uuids,
+-            "optional_skills_origin_uuids": optional_uuids,
++            "essential_skills": [{"id": str(u), "label": ""} for u in essential_uuids],
++            "optional_skills": [{"id": str(u), "label": ""} for u in optional_uuids],
+             "skill_groups_origin_uuids": [],
+             "attributes": flat_attrs,
+             "onet_work_activities": onet_was,
+diff --git a/iac/backend/env_vars.py b/iac/backend/env_vars.py
+index 3b96f95..9add8d9 100644
+--- a/iac/backend/env_vars.py
++++ b/iac/backend/env_vars.py
+@@ -35,6 +35,7 @@ class EnvKeys:
+     SKILL_U_TAU_ELIG = "SKILL_U_TAU_ELIG"
+     SKILL_MIN_ESSENTIAL_MATCH_SHARE = "SKILL_MIN_ESSENTIAL_MATCH_SHARE"
+     SKILL_ESSENTIAL_GEO_FLOOR = "SKILL_ESSENTIAL_GEO_FLOOR"
++    SKILL_ESSENTIAL_DAMPING_ALPHA = "SKILL_ESSENTIAL_DAMPING_ALPHA"
+     PREFERENCE_BASE_CONSTANT = "PREFERENCE_BASE_CONSTANT"
+     PREFERENCE_LEGACY_SCORE_SCALE = "PREFERENCE_LEGACY_SCORE_SCALE"
+     PREFERENCE_SIGMOID_NUMERATOR = "PREFERENCE_SIGMOID_NUMERATOR"
+@@ -77,6 +78,7 @@ class EnvVars:
+     skill_u_tau_elig: float
+     skill_min_essential_match_share: float
+     skill_essential_geo_floor: float
++    skill_essential_damping_alpha: float
+     preference_base_constant: float
+     preference_legacy_score_scale: float
+     preference_sigmoid_numerator: float
+@@ -132,6 +134,8 @@ class EnvVars:
+                                                            value=self.skill_min_essential_match_share),
+             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.SKILL_ESSENTIAL_GEO_FLOOR,
+                                                            value=self.skill_essential_geo_floor),
++            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.SKILL_ESSENTIAL_DAMPING_ALPHA,
++                                                           value=self.skill_essential_damping_alpha),
+             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.PREFERENCE_BASE_CONSTANT,
+                                                            value=self.preference_base_constant),
+             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.PREFERENCE_LEGACY_SCORE_SCALE,
+@@ -190,6 +194,7 @@ class EnvVars:
+             skill_u_tau_elig=get_env(EnvKeys.SKILL_U_TAU_ELIG),
+             skill_min_essential_match_share=get_env(EnvKeys.SKILL_MIN_ESSENTIAL_MATCH_SHARE),
+             skill_essential_geo_floor=get_env(EnvKeys.SKILL_ESSENTIAL_GEO_FLOOR),
++            skill_essential_damping_alpha=get_env(EnvKeys.SKILL_ESSENTIAL_DAMPING_ALPHA),
+             preference_base_constant=get_env(EnvKeys.PREFERENCE_BASE_CONSTANT),
+             preference_legacy_score_scale=get_env(EnvKeys.PREFERENCE_LEGACY_SCORE_SCALE),
+             preference_sigmoid_numerator=get_env(EnvKeys.PREFERENCE_SIGMOID_NUMERATOR),

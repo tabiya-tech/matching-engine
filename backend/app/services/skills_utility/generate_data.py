@@ -59,8 +59,8 @@ with open('demand.jsonl', 'w') as f:
             "city": item["location"], # Helper for U_loc
             "province": item["location"], # Helper for U_loc
             "contract_type": item["contract_type"],
-            "essential_skills_origin_uuids": item["essential"],
-            "optional_skills_origin_uuids": [],
+            "essential_skills": [{"id": str(u), "label": ""} for u in item["essential"]],
+            "optional_skills": [],
             "skill_groups_origin_uuids": [item["group"]],
             "attributes": item["attributes"]
         }

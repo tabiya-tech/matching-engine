@@ -9,3 +9,5 @@ frontend/dist/
 .idea/
 backend/scripts/
 backend/tests/
+output_results/
+output_results_*

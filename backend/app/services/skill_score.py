@@ -1,5 +1,8 @@
+from collections import Counter
 from pathlib import Path
 import logging
+
+import os
 
 import torch
 import json
@@ -14,6 +17,7 @@ from app.config import (
     SKILL_HIERARCHY_CSV_PATH,
     SKILL_TO_ROW_PATH,
 )
+from app.services.skills_utility import skills_match as _skills_match
 from app.services.skills_utility.skills_match import (
     Jobseeker,
     Opportunity,
@@ -26,6 +30,11 @@ from app.services.skills_utility.skills_match import (
 logger = logging.getLogger(__name__)
 
 
+def _canon(label: str) -> str:
+    """Canonical form for label-based skill resolution: lowercase, whitespace-collapsed."""
+    return " ".join(label.strip().lower().split())
+
+
 class SkillScorer:
     def __init__(self):
         self.MODEL_PATH = Path(EMBEDDING_MODEL_PATH)
@@ -35,7 +44,28 @@ class SkillScorer:
         self.HIERARCHY_CSV_PATH = Path(SKILL_HIERARCHY_CSV_PATH)
 
         state = torch.load(self.MODEL_PATH, map_location="cpu")
+
+        # Hydrate per-rowmax rescale target from artefact metadata, unless the operator
+        # has explicitly set SKILL_RESCALE_TARGET in env (operator wins). Whitened artefacts
+        # carry a `target_max_p999` value computed at build time; raw / non-whitened
+        # artefacts won't have one, in which case we leave the existing default in place.
+        # Mutate the binding inside skills_match (where the kernel reads it) — same pattern
+        # used for SKILL_ESSENTIAL_DAMPING_ALPHA overrides in batch scripts.
+        if "SKILL_RESCALE_TARGET" not in os.environ:
+            target_from_artefact = (state.get("whitening") or {}).get("target_max_p999")
+            if target_from_artefact is not None:
+                _skills_match.SKILL_RESCALE_TARGET = float(target_from_artefact)
+                logger.info(
+                    "SkillScorer: SKILL_RESCALE_TARGET set from artefact metadata = %.4f",
+                    float(target_from_artefact),
+                )
+
         W = state["state_dict"]["embedding.weight"].numpy()
+        # Promote lower-precision weights (e.g. fp16, used by the Gemini artefact
+        # to stay under GitHub's per-file size limit) to fp32 before any
+        # downstream math; SimilarityEngine and the cosine kernels assume fp32.
+        if W.dtype != np.float32:
+            W = W.astype(np.float32)
         norms = np.linalg.norm(W, axis=1, keepdims=True)
         W = W / np.where(norms > 0, norms, 1.0)
 
@@ -45,32 +75,52 @@ class SkillScorer:
         self._embedding_ids = set(skill_to_row.keys())
         self.engine = SimilarityEngine(W, skill_to_row)
 
-        self.skill_labels = {}
-        self._esco_to_internal: dict[str, str] = {}
+        # Label-primary resolution maps. UUIDs are NOT used for resolution — they
+        # carry modelId-drift risk (a Compass-side UUID can resolve to a different
+        # internal skill than the user's declared label). Labels are stable across
+        # taxonomy versions; they're our trust anchor.
+        self.skill_labels: dict[str, str] = {}            # internal_id -> preferredLabel (display)
+        self._preferred_to_id: dict[str, str] = {}        # canonical preferredLabel -> internal_id
+        self._altlabel_to_id: dict[str, str] = {}         # canonical altLabel -> internal_id
+        self._preferred_collisions = 0
         try:
             with open(self.SKILLS_CSV_PATH, "r", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    skill_id = row.get("ID")
-                    label = row.get("PREFERREDLABEL")
-                    if skill_id and label:
-                        self.skill_labels[str(skill_id)] = label
-                    uuid_history = row.get("UUIDHISTORY", "")
-                    origin_uri = row.get("ORIGINURI", "")
-                    if skill_id:
-                        for uuid in uuid_history.strip().split("\n"):
-                            uuid = uuid.strip()
-                            if uuid:
-                                self._esco_to_internal[uuid] = str(skill_id)
-                        if "/esco/skill/" in origin_uri:
-                            esco_uuid = origin_uri.split("/esco/skill/")[-1]
-                            self._esco_to_internal[esco_uuid] = str(skill_id)
+                    sid = row.get("ID")
+                    label = row.get("PREFERREDLABEL") or ""
+                    if not sid or sid not in self._embedding_ids:
+                        continue
+                    if label:
+                        self.skill_labels[str(sid)] = label
+                        canon = _canon(label)
+                        if canon and canon not in self._preferred_to_id:
+                            self._preferred_to_id[canon] = str(sid)
+                        elif canon and self._preferred_to_id.get(canon) != str(sid):
+                            self._preferred_collisions += 1
+                    for alt in (row.get("ALTLABELS") or "").split("\n"):
+                        canon = _canon(alt)
+                        if not canon:
+                            continue
+                        # Don't shadow a preferredLabel hit via altLabel; first writer wins on alt.
+                        if canon in self._preferred_to_id:
+                            continue
+                        self._altlabel_to_id.setdefault(canon, str(sid))
         except FileNotFoundError:
             self.skill_labels = {}
 
+        # Miss telemetry (per-process, lifetime-cumulative).
+        self._missed_labels: Counter = Counter()
+
         logger.info(
-            "SkillScorer: %d embedding IDs, %d ESCO->internal mappings",
-            len(self._embedding_ids), len(self._esco_to_internal),
+            "SkillScorer: %d embedding IDs (model=%s, dim=%d); "
+            "%d preferredLabel keys, %d altLabel keys (preferred-collisions: %d)",
+            len(self._embedding_ids),
+            state.get("model_name") or self.MODEL_PATH.name,
+            W.shape[1],
+            len(self._preferred_to_id),
+            len(self._altlabel_to_id),
+            self._preferred_collisions,
         )
 
         self.skill_group_labels = {}
@@ -105,28 +155,41 @@ class SkillScorer:
             groups.update(self._skill_to_groups.get(sid, set()))
         return groups
 
-    def _resolve_id(self, raw_id: str) -> str:
-        """Translate a skill ID to the embedding model's internal ID space.
+    def _resolve_label(self, label: str) -> str | None:
+        """Resolve a skill label to its internal embedding ID. Strict label-only.
 
-        Accepts ESCO standard UUIDs (e.g. 'd5c9e39f-...'), internal IDs
-        (already in embedding), or any other format.  Returns the internal
-        ID if a mapping exists, otherwise returns the input unchanged.
+        Lookup chain: canonical preferredLabel → canonical altLabel → miss.
+        UUIDs are deliberately not consulted — they carry modelId-drift risk.
         """
-        sid = str(raw_id)
-        if sid in self._embedding_ids:
+        if not label:
+            return None
+        canon = _canon(label)
+        if not canon:
+            return None
+        sid = self._preferred_to_id.get(canon)
+        if sid is not None:
             return sid
-        return self._esco_to_internal.get(sid, sid)
+        sid = self._altlabel_to_id.get(canon)
+        if sid is not None:
+            return sid
+        self._missed_labels[label] += 1
+        return None
 
-    def _resolve_ids(self, raw_ids) -> set[str]:
-        """Batch-resolve a collection of skill IDs."""
-        return {self._resolve_id(sid) for sid in raw_ids if sid}
+    def get_resolution_stats(self) -> dict:
+        """Per-process miss telemetry. Useful for batch scripts at end-of-run."""
+        return {
+            "total_misses": sum(self._missed_labels.values()),
+            "distinct_missed_labels": len(self._missed_labels),
+            "top_misses": self._missed_labels.most_common(20),
+        }
 
     def _build_objects(self, user_profile: dict, job_posting: dict):
         """Build Jobseeker / Opportunity dataclasses + user skill labels.
 
-        All skill IDs are resolved to the embedding model's internal ID
-        space so that ESCO UUIDs, Tabiya IDs, or internal IDs all work
-        transparently.
+        Both sides resolve via labels — user payload carries preferredLabel,
+        job payload carries essential_skills/optional_skills as [{id, label}, ...]
+        dicts (label is the trust anchor). Group IDs come pre-resolved from
+        the upstream taxonomy export and are passed through unchanged.
         """
         user_id = user_profile.get("user_id") or user_profile.get("youth_id")
         if not user_id:
@@ -139,20 +202,16 @@ class SkillScorer:
         for s in user_top_skills:
             if not isinstance(s, dict):
                 continue
-            raw = s.get("originUUID")
-            if not raw:
-                continue
-            resolved = self._resolve_id(raw)
-            resolved_user_ids.add(resolved)
             label = s.get("preferredLabel")
+            resolved = self._resolve_label(label)
+            if resolved is None:
+                continue
+            resolved_user_ids.add(resolved)
             if label:
                 user_skill_labels[resolved] = label
-                if resolved != raw:
-                    user_skill_labels[raw] = label
 
-        user_groups = self._resolve_ids(
-            user_profile.get("skill_groups_origin_uuids", [])
-        )
+        raw_user_groups = user_profile.get("skill_groups_origin_uuids", []) or []
+        user_groups = {str(g) for g in raw_user_groups if g}
         if not user_groups:
             user_groups = self._derive_groups(resolved_user_ids)
 
@@ -164,22 +223,28 @@ class SkillScorer:
             province=user_profile.get("province"),
         )
 
-        resolved_ess = self._resolve_ids(
-            job_posting.get("essential_skills_origin_uuids", [])
-        )
-        resolved_opt = self._resolve_ids(
-            job_posting.get("optional_skills_origin_uuids", [])
-        )
-        job_groups = self._resolve_ids(
-            job_posting.get("skill_groups_origin_uuids", [])
-        )
+        def _resolve_job_skills(items) -> set[str]:
+            out: set[str] = set()
+            for s in items or []:
+                if not isinstance(s, dict):
+                    continue
+                resolved = self._resolve_label(s.get("label"))
+                if resolved is not None:
+                    out.add(resolved)
+            return out
+
+        resolved_ess = _resolve_job_skills(job_posting.get("essential_skills"))
+        resolved_opt = _resolve_job_skills(job_posting.get("optional_skills"))
+
+        raw_job_groups = job_posting.get("skill_groups_origin_uuids", []) or []
+        job_groups = {str(g) for g in raw_job_groups if g}
         if not job_groups:
             job_groups = self._derive_groups(resolved_ess | resolved_opt)
 
         op = Opportunity(
             opportunity_id=str(job_posting.get("uuid")),
-            essential_skills_origin_uuids=resolved_ess,
-            optional_skills_origin_uuids=resolved_opt,
+            essential_skill_ids=resolved_ess,
+            optional_skill_ids=resolved_opt,
             skill_groups_origin_uuids=job_groups,
             city=job_posting.get("city") or job_posting.get("location"),
             province=job_posting.get("province") or job_posting.get("location"),

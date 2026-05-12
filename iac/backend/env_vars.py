@@ -35,6 +35,7 @@ class EnvKeys:
     SKILL_U_TAU_ELIG = "SKILL_U_TAU_ELIG"
     SKILL_MIN_ESSENTIAL_MATCH_SHARE = "SKILL_MIN_ESSENTIAL_MATCH_SHARE"
     SKILL_ESSENTIAL_GEO_FLOOR = "SKILL_ESSENTIAL_GEO_FLOOR"
+    SKILL_ESSENTIAL_DAMPING_ALPHA = "SKILL_ESSENTIAL_DAMPING_ALPHA"
     PREFERENCE_BASE_CONSTANT = "PREFERENCE_BASE_CONSTANT"
     PREFERENCE_LEGACY_SCORE_SCALE = "PREFERENCE_LEGACY_SCORE_SCALE"
     PREFERENCE_SIGMOID_NUMERATOR = "PREFERENCE_SIGMOID_NUMERATOR"
@@ -77,6 +78,7 @@ class EnvVars:
     skill_u_tau_elig: float
     skill_min_essential_match_share: float
     skill_essential_geo_floor: float
+    skill_essential_damping_alpha: float
     preference_base_constant: float
     preference_legacy_score_scale: float
     preference_sigmoid_numerator: float
@@ -132,6 +134,8 @@ class EnvVars:
                                                            value=self.skill_min_essential_match_share),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.SKILL_ESSENTIAL_GEO_FLOOR,
                                                            value=self.skill_essential_geo_floor),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.SKILL_ESSENTIAL_DAMPING_ALPHA,
+                                                           value=self.skill_essential_damping_alpha),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.PREFERENCE_BASE_CONSTANT,
                                                            value=self.preference_base_constant),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.PREFERENCE_LEGACY_SCORE_SCALE,
@@ -190,6 +194,7 @@ class EnvVars:
             skill_u_tau_elig=get_env(EnvKeys.SKILL_U_TAU_ELIG),
             skill_min_essential_match_share=get_env(EnvKeys.SKILL_MIN_ESSENTIAL_MATCH_SHARE),
             skill_essential_geo_floor=get_env(EnvKeys.SKILL_ESSENTIAL_GEO_FLOOR),
+            skill_essential_damping_alpha=get_env(EnvKeys.SKILL_ESSENTIAL_DAMPING_ALPHA),
             preference_base_constant=get_env(EnvKeys.PREFERENCE_BASE_CONSTANT),
             preference_legacy_score_scale=get_env(EnvKeys.PREFERENCE_LEGACY_SCORE_SCALE),
             preference_sigmoid_numerator=get_env(EnvKeys.PREFERENCE_SIGMOID_NUMERATOR),

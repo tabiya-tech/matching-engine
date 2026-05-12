@@ -10,6 +10,8 @@ import time
 import numpy as np
 from typing import List, Dict, Optional, Set
 
+from app.config import SKILL_RESCALE_TARGET
+
 def _ms(t0: float) -> float:
     return (time.perf_counter() - t0) * 1000.0
 
@@ -44,20 +46,22 @@ def analyze_skill_gaps(
     t_total = time.perf_counter()
     uid = str(user_profile.get("user_id", "?"))
     n_jobs = len(all_jobs)
+    # `resolve_id` is the SkillScorer's label-primary resolver. The historical
+    # parameter name predates the UUID→label switch; it now takes a preferredLabel.
     _resolve = resolve_id if resolve_id is not None else (lambda x: x)
 
-    # 1. Extract user's existing skills (resolved to internal IDs)
+    # 1. Extract user's existing skills (resolved to internal IDs via label).
     user_skill_ids: Set[str] = set()
     user_skill_labels: Dict[str, str] = {}
     for s in user_profile.get("skills_vector", {}).get("top_skills", []):
-        raw = s.get("originUUID")
-        if not raw:
-            continue
-        resolved = _resolve(raw)
-        user_skill_ids.add(resolved)
         label = s.get("preferredLabel")
-        if label:
-            user_skill_labels[resolved] = label
+        if not label:
+            continue
+        resolved = _resolve(label)
+        if resolved is None:
+            continue
+        user_skill_ids.add(resolved)
+        user_skill_labels[resolved] = label
     
     if not user_skill_ids:
         if timing_out is not None:
@@ -79,8 +83,8 @@ def analyze_skill_gaps(
     _ess_sets: List[Set[str]] = []
     _opt_sets: List[Set[str]] = []
     for job in all_jobs:
-        ess_resolved = {_resolve(s) for s in job.get("essential_skills_origin_uuids", []) if s}
-        opt_resolved = {_resolve(s) for s in job.get("optional_skills_origin_uuids", []) if s}
+        ess_resolved = {s["id"] for s in job.get("essential_skills", []) if isinstance(s, dict) and s.get("id")}
+        opt_resolved = {s["id"] for s in job.get("optional_skills", []) if isinstance(s, dict) and s.get("id")}
         _ess_sets.append(ess_resolved)
         _opt_sets.append(opt_resolved)
         candidate_skills.update(ess_resolved | opt_resolved)
@@ -102,10 +106,18 @@ def analyze_skill_gaps(
             )
         return []
 
-    # 3. Compute proximity score for each candidate
+    # 3. Compute proximity score for each candidate. Apply per-cosine rescaling so
+    # proximity_score lives in the same calibrated frame as the matching service's
+    # essential_fit / final_score (whitened cosines compress otherwise). When rescaling
+    # is disabled (target<=0), rescaled == raw and behaviour is identical.
     user_mat = engine._rows(list(user_skill_ids))
     user_skill_ids_list = list(user_skill_ids)
-    
+
+    _target = SKILL_RESCALE_TARGET
+    _rescale_enabled = _target > 0.0
+    def _rescale_value(v: float) -> float:
+        return min(1.0, v / _target) if _rescale_enabled else v
+
     proximity_scores: Dict[str, float] = {}
     closest_user_skills: Dict[str, tuple] = {}
     for cand_id in candidate_skills:
@@ -116,10 +128,11 @@ def analyze_skill_gaps(
         else:
             S = cand_mat @ user_mat.T
             argmax_idx = int(np.argmax(S))
-            max_sim = float(np.max(S))
+            max_sim_raw = float(np.max(S))
+            max_sim = _rescale_value(max(0.0, max_sim_raw))
             closest_user_skill_id = user_skill_ids_list[argmax_idx]
-            proximity_scores[cand_id] = max(0.0, max_sim)
-            closest_user_skills[cand_id] = (closest_user_skill_id, max(0.0, max_sim))
+            proximity_scores[cand_id] = max_sim
+            closest_user_skills[cand_id] = (closest_user_skill_id, max_sim)
     
     # 4. Compute job unlock potential for each candidate (using pre-resolved sets)
     job_unlock_counts: Dict[str, int] = {}

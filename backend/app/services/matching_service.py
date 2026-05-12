@@ -229,6 +229,108 @@ def _format_opportunity(item: dict, rank: int, recommendation: dict) -> dict:
     }
 
 
+def _format_opportunity_dashboard_row(item: dict, rank: int, recommendation: dict) -> dict:
+    """Compact opportunity row for static comparison dashboards (embedded JSON in HTML).
+
+    Unlike :func:`_format_opportunity`, includes *all* essential skill match rows in ``ms``,
+    with ``meets_threshold`` driving the fourth tuple element (dashboard shows ✓/✗ per job skill).
+    """
+    skill_details = recommendation["skill_details"]
+    match_details = recommendation["match_details"]
+    scoring_mode = recommendation.get("scoring_mode", "multiplicative")
+    _pref_standard, _wa_bws = _split_pref_details(recommendation["pref_details"])
+
+    if scoring_mode == "multiplicative":
+        breakdown = _create_score_breakdown_multiplicative(
+            recommendation["u_hat"],
+            recommendation["p_hat_result"],
+            skill_details,
+            recommendation["pref_details_score"],
+        )
+    else:
+        breakdown = _create_score_breakdown_additive(
+            skill_details,
+            recommendation["pref_details_score"],
+            recommendation.get("demand_score", 0.5),
+            recommendation.get("demand_label", "Unknown"),
+        )
+
+    essentials = match_details.get("essential_skill_matches", []) or []
+    ms: List[list] = []
+    for m in essentials:
+        u_lab = m.get("best_user_skill_label") or ""
+        j_lab = m.get("job_skill_label") or ""
+        sim = float(m.get("similarity", 0.0))
+        ok = bool(m.get("meets_threshold", False))
+        ms.append([u_lab, j_lab, round(sim, 4), ok])
+
+    je = [str(m.get("job_skill_label") or "") for m in essentials]
+
+    jo: List[str] = []
+    for s in item.get("optional_skills") or []:
+        if isinstance(s, dict):
+            lab = (s.get("label") or "").strip()
+            if lab:
+                jo.append(lab)
+
+    ph = breakdown.get("p_hat_components") or {}
+    if isinstance(ph, dict):
+        pg = float(ph.get("gate", 0.0))
+        pe = float(ph.get("essential_fit", 0.0))
+        pr = float(ph.get("recruiter_readiness", 0.0))
+        pm = float(ph.get("market_opportunity", 0.0))
+    else:
+        pg = pe = pr = pm = 0.0
+
+    sc = breakdown.get("skill_components") or {}
+    if isinstance(sc, dict):
+        sl = float(sc.get("loc", 0.0))
+        se = float(sc.get("ess", 0.0))
+        so = float(sc.get("opt", 0.0))
+        sg = float(sc.get("grp", 0.0))
+    else:
+        sl = se = so = sg = 0.0
+
+    u_hat = float(recommendation.get("u_hat", breakdown.get("u_hat", 0.5)))
+    if scoring_mode == "multiplicative":
+        p_hat = float(breakdown.get("p_hat", recommendation.get("p_hat_result", {}).get("p_hat", 0.0)))
+    else:
+        p_hat = float(recommendation.get("p_hat_result", {}).get("p_hat", 0.0))
+
+    j_text = _build_justification(
+        match_details,
+        recommendation["pref_details"],
+        recommendation.get("demand_label", "Unknown"),
+        recommendation["score"],
+    )
+
+    url = item.get("url") or item.get("URL") or ""
+
+    return {
+        "r": rank,
+        "t": item.get("opportunity_title") or "",
+        "e": item.get("employer") or "",
+        "l": item.get("location") or "",
+        "el": bool(skill_details.get("is_eligible", True)),
+        "f": round(float(recommendation["score"]), 4),
+        "u": round(u_hat, 4),
+        "p": round(p_hat, 4),
+        "pg": round(pg, 4),
+        "pe": round(pe, 4),
+        "pr": round(pr, 4),
+        "pm": round(pm, 4),
+        "sl": round(sl, 4),
+        "se": round(se, 4),
+        "so": round(so, 4),
+        "sg": round(sg, 4),
+        "ms": ms,
+        "j": j_text,
+        "url": url,
+        "je": je,
+        "jo": jo,
+    }
+
+
 def _format_occupation(item: dict, rank: int, recommendation: dict) -> dict:
     """Format a single occupation recommendation."""
     skill_details = recommendation["skill_details"]
@@ -279,7 +381,14 @@ def _format_occupation(item: dict, rank: int, recommendation: dict) -> dict:
     }
 
 
-def _match_items(user: dict, items: list, item_type: str = "opportunity", top_k: int = 10) -> tuple[list, dict]:
+def _match_items(
+    user: dict,
+    items: list,
+    item_type: str = "opportunity",
+    top_k: int = 10,
+    *,
+    format_for_dashboard: bool = False,
+) -> tuple[list, dict]:
     """
     Match user against items (opportunities or occupations) and return top recommendations.
 
@@ -436,7 +545,12 @@ def _match_items(user: dict, items: list, item_type: str = "opportunity", top_k:
 
     t_fmt = time.perf_counter()
     # Format based on item type
-    formatter = _format_occupation if item_type == "occupation" else _format_opportunity
+    if item_type == "occupation":
+        formatter = _format_occupation
+    elif format_for_dashboard:
+        formatter = _format_opportunity_dashboard_row
+    else:
+        formatter = _format_opportunity
     out = [formatter(r["item"], i, r) for i, r in enumerate(recommendations, 1)]
     format_recommendations_ms = _ms(t_fmt)
 
@@ -506,7 +620,7 @@ def match_user_with_data(
         scorer_skill.engine,
         scorer_skill.skill_labels,
         top_k=MATCH_TOP_K_SKILL_GAPS,
-        resolve_id=scorer_skill._resolve_id,
+        resolve_id=scorer_skill._resolve_label,
         timing_out=None,
     )
     skill_gaps = _filter_skill_gap_recommendations(skill_gaps)
@@ -532,6 +646,20 @@ def match_user_with_data(
         "opportunity_recommendations": opportunity_recommendations,
         "skill_gap_recommendations": skill_gaps,
     }
+
+
+def match_user_opportunities_for_dashboard(
+    user: dict,
+    jobs: List[dict],
+    top_k: Optional[int] = None,
+) -> List[dict]:
+    """Run opportunity matching and return compact rows for ``comparison_dashboard``-style HTML.
+
+    Each row matches the client's embedded schema (keys ``r``, ``t``, ``e``, ``ms``, …).
+    """
+    k = top_k if top_k is not None else MATCH_TOP_K_OPPORTUNITIES
+    rows, _timing = _match_items(user, jobs, item_type="opportunity", top_k=k, format_for_dashboard=True)
+    return rows
 
 
 async def match_single_user(
