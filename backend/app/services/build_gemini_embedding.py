@@ -44,6 +44,8 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from dotenv import load_dotenv
+
 
 try:
     from google import genai
@@ -54,6 +56,7 @@ except ImportError as e:
 
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[3]  # .../backend
+load_dotenv(_BACKEND_ROOT / ".env")
 TAXONOMY_DIR = _BACKEND_ROOT / "resources" / "skill_taxonomy"
 MODELS_DIR = _BACKEND_ROOT / "resources" / "models"
 

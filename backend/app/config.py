@@ -19,6 +19,24 @@ def _s(key: str, default: str) -> str:
     return (v or "").strip() or default
 
 
+def _resolve_under_backend(raw: str) -> str:
+    """Resolve a path configured in .env relative to ``backend/``.
+
+    * Absolute paths → ``Path.resolve()`` as-is.
+    * Leading ``backend/`` is stripped (common when mixing repo-root-relative paths with
+      a cwd of ``backend/``, which would otherwise look for ``backend/backend/...``).
+    """
+
+    p = Path(raw.strip()).expanduser()
+    if p.is_absolute():
+        return str(p.resolve())
+    parts = p.parts
+    if parts and parts[0] == "backend":
+        p = Path(*parts[1:])
+    return str((_BACKEND_ROOT / p).resolve())
+
+
+
 def _f(key: str, default: float) -> float:
     v = os.getenv(key)
     if v is None or str(v).strip() == "":
@@ -215,8 +233,12 @@ PREFERENCE_CONFIG: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 OCCUPATION_JSON_PATH: str = _s("OCCUPATION_JSON_PATH", str(_DEFAULT_OCC))
 
-EMBEDDING_MODEL_PATH: str = _s("EMBEDDING_MODEL_PATH", str(_DEFAULT_MODEL_DIR / "skill_embedding_model_gemini.pt"))
-SKILL_TO_ROW_PATH: str = _s("SKILL_TO_ROW_PATH", str(_DEFAULT_MODEL_DIR / "skill_to_row.json"))
+EMBEDDING_MODEL_PATH: str = _resolve_under_backend(
+    _s("EMBEDDING_MODEL_PATH", str(_DEFAULT_MODEL_DIR / "skill_embedding_model_gemini.pt"))
+)
+SKILL_TO_ROW_PATH: str = _resolve_under_backend(
+    _s("SKILL_TO_ROW_PATH", str(_DEFAULT_MODEL_DIR / "skill_to_row.json"))
+)
 _TAX = _RESOURCES / "skill_taxonomy"
 SKILLS_CSV_PATH: str = _s("SKILLS_CSV_PATH", str(_TAX / "skills.csv"))
 SKILL_GROUPS_CSV_PATH: str = _s("SKILL_GROUPS_CSV_PATH", str(_TAX / "skill_groups.csv"))
