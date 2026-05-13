@@ -11,3 +11,4 @@ backend/scripts/
 backend/tests/
 output_results/
 output_results_*
+index_based_matching/
