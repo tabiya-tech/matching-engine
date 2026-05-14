@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 class Skill(BaseModel):
     preferredLabel: Optional[str] = None
@@ -152,3 +152,30 @@ class MatchResponse(BaseModel):
     occupation_recommendations: List[OccupationRecommendation] = Field(default_factory=list)
     opportunity_recommendations: List[OpportunityRecommendation] = Field(default_factory=list)
     skill_gap_recommendations: List[SkillGapRecommendation] = Field(default_factory=list)
+
+
+class MatchV2JobRecommendation(BaseModel):
+    """One job from hybrid ``column_fused_weighted_minmax`` (pool min–max fusion)."""
+
+    rank: int
+    job_uuid: str
+    opportunity_title: str = ""
+    employer: Optional[str] = None
+    location: Optional[str] = None
+    URL: Optional[str] = None
+    fusion_score: float
+    bm25_norm_within_candidates: Optional[float] = None
+    cos_norm_within_candidates: Optional[float] = None
+    mean_best_cosine_raw: Optional[float] = None
+    bm25_score_raw: Optional[float] = None
+    matched_skills: List[str] = Field(default_factory=list)
+    matched_skills_cosine: List[str] = Field(default_factory=list)
+
+
+class MatchV2Response(BaseModel):
+    """``POST /match_v2``: hybrid BM25 × embedding-cosine recommendations only."""
+
+    user_id: str
+    n_jobs_scored: int
+    hybrid_recommendations: List[MatchV2JobRecommendation]
+    hybrid_config_summary: Dict[str, Any] = Field(default_factory=dict)

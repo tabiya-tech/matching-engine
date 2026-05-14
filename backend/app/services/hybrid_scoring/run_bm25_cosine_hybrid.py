@@ -60,7 +60,7 @@ from app.services.cosine_similarity.run_cosine_matching import (
     load_jobs as load_jobs_cosine,
     _load_users,
 )
-from app.services.cosine_similarity.skill_score import CosineSkillMatcher
+from app.services.cosine_similarity.skill_score import CosineSkillMatcher, compact_cosine_matched_skill_lines
 
 
 def _load_mrr_relevance(path: Path) -> Dict[str, Set[str]]:
@@ -342,6 +342,11 @@ def one_user_bundle(
             job = jobs[ji]
             k = _job_key(job)
             det = cosine_details[ji]
+            emb_sp = matcher.score_pair(user_raw, job)
+            matched_cos_lines = compact_cosine_matched_skill_lines(
+                emb_sp.get("per_job_skill") or [],
+                limit=40,
+            )
             fused_preview.append({
                 "rank": fr,
                 "fusion_method": "hybrid_pool_minmax",
@@ -365,6 +370,7 @@ def one_user_bundle(
                 "employer": job.get("employer"),
                 "location": job.get("location"),
                 "matched_skills": matched_skill_phrases(user_raw, job)[:12],
+                "matched_skills_cosine": matched_cos_lines,
             })
 
     common_rows_sorted: List[Dict[str, Any]] = []
@@ -499,6 +505,131 @@ def one_user_bundle(
     return out
 
 
+_cosine_matcher_singleton: Optional[CosineSkillMatcher] = None
+
+
+def get_cosine_matcher_singleton() -> CosineSkillMatcher:
+    """Reuse one embedding loader across CLI batches and ``POST /match_v2`` calls."""
+
+    global _cosine_matcher_singleton
+    if _cosine_matcher_singleton is None:
+        _cosine_matcher_singleton = CosineSkillMatcher()
+    return _cosine_matcher_singleton
+
+
+def hybrid_match_users_with_jobs(
+    users: List[Dict[str, Any]],
+    jobs: List[Dict[str, Any]],
+    *,
+    variant_bm25: Literal["single", "hybrid"] = "hybrid",
+    bm25_pool_k: int = 120,
+    cosine_pool_k: int = 120,
+    min_common: int = 3,
+    max_fallback_pool: int = 200,
+    col_display_k: int = 15,
+    alpha_on_cosine: float = 0.5,
+    skills_weight: float = 0.5,
+    text_weight: float = 0.5,
+    k1: float = 1.5,
+    b: float = 0.75,
+    include_programme: bool = False,
+    mrr_labels: Optional[Dict[str, Set[str]]] = None,
+) -> Dict[str, Any]:
+    """Run BM25×cosine hybrid over in-memory ``users`` and ``jobs``.
+
+    Same scoring as CLI :func:`run` but without file paths or Mongo fetches.
+    Used by ``POST /match_v2`` and internally by :func:`run`.
+
+    Preconditions: ``rank-bm25`` installed; ``jobs`` non-empty (needed to build indexes).
+    """
+
+    from app.services.bm25_scoring.bm25library import _require_rank_bm25
+
+    _require_rank_bm25()
+    if not jobs:
+        raise ValueError("hybrid_match_users_with_jobs requires at least one job document")
+
+    skills_corpus, full_corpus = build_corpora(jobs)
+    skills_okapi, full_okapi = build_okapi_indexes(
+        skills_corpus, full_corpus, k1=k1, b=b
+    )
+    matcher = get_cosine_matcher_singleton()
+
+    cfg_skill = "CosineSkillMatcher.mean_best_cosine (embedding cosine on skills)"
+    results: List[Dict[str, Any]] = []
+    for u in users:
+        uid_k = str(u.get("user_id") or "")
+        rel = mrr_labels.get(uid_k) if mrr_labels is not None else None
+        results.append(
+            one_user_bundle(
+                u,
+                jobs,
+                skills_okapi,
+                full_okapi,
+                matcher,
+                variant_bm25=variant_bm25,
+                bm25_pool_k=bm25_pool_k,
+                cosine_pool_k=cosine_pool_k,
+                min_common=min_common,
+                max_fallback_pool=max_fallback_pool,
+                col_display_k=col_display_k,
+                alpha_on_cosine=alpha_on_cosine,
+                skills_weight=skills_weight,
+                text_weight=text_weight,
+                include_programme=include_programme,
+                relevance_ids=rel,
+            )
+        )
+
+    config: Dict[str, Any] = {
+        "entrypoint": "hybrid_match_users_with_jobs",
+        "scorer": "bm25_cosine_skills_four_col_hybrid_pool_minmax",
+        "legacy_skill_model": cfg_skill,
+        "fusion": "weighted_minmax_on_candidate_pool_bm25_cosine_only",
+        "alpha_on_cosine_skill": alpha_on_cosine,
+        "(1-alpha)_on_bm25": round(1.0 - alpha_on_cosine, 4),
+        "variant_bm25": variant_bm25,
+        "bm25_pool_k": bm25_pool_k,
+        "cosine_pool_k": cosine_pool_k,
+        "legacy_pool_k": cosine_pool_k,
+        "min_common_intersection": min_common,
+        "max_fallback_pool": max_fallback_pool,
+        "column_display_rows": col_display_k,
+        "column_common_max_rows_saved": min(max(col_display_k * 8, col_display_k), 200),
+        "k1": k1,
+        "b": b,
+        "include_programme_context": include_programme,
+        "embedding_model_path": str(EMBEDDING_MODEL_PATH),
+        "skill_to_row_path": str(SKILL_TO_ROW_PATH),
+        "skills_csv_path": str(SKILLS_CSV_PATH),
+        "notes": (
+            "CosineSkillMatcher pooled embedding cosine for skills; BM25 hybrid index; "
+            "common ∩ pool; fused = α·norm(cosine)+(1−α)·norm(BM25) within pool only."
+        ),
+    }
+    if variant_bm25 == "hybrid":
+        config["skills_weight"] = skills_weight
+        config["text_weight"] = text_weight
+
+    embedding_dim = int(matcher.W.shape[1])
+    payload: Dict[str, Any] = {
+        "config": config,
+        "index_stats": {
+            "n_jobs": len(jobs),
+            "skills_vocab_size": corpus_vocab_size(skills_corpus),
+            "full_vocab_size": corpus_vocab_size(full_corpus),
+            "skills_avg_doc_len": round(avg_doc_length(skills_corpus), 2),
+            "full_avg_doc_len": round(avg_doc_length(full_corpus), 2),
+            "embedding_dim": embedding_dim,
+        },
+        "n_users": len(users),
+        "n_jobs": len(jobs),
+        "results": results,
+        "skill_cosine_resolution_stats_end_of_run": matcher.get_resolution_stats(),
+    }
+    return payload
+
+
 def run(
     users_path: Path,
     jobs_source: Literal["file", "mongo"],
@@ -542,11 +673,37 @@ def run(
         mongo_filter_by_users,
     )
 
-    skills_corpus, full_corpus = build_corpora(jobs)
-    skills_okapi, full_okapi = build_okapi_indexes(
-        skills_corpus, full_corpus, k1=k1, b=b
+    payload = hybrid_match_users_with_jobs(
+        users,
+        jobs,
+        variant_bm25=variant_bm25,
+        bm25_pool_k=bm25_pool_k,
+        cosine_pool_k=cosine_pool_k,
+        min_common=min_common,
+        max_fallback_pool=max_fallback_pool,
+        col_display_k=col_display_k,
+        alpha_on_cosine=alpha_on_cosine,
+        skills_weight=skills_weight,
+        text_weight=text_weight,
+        k1=k1,
+        b=b,
+        include_programme=include_programme,
+        mrr_labels=mrr_labels if mrr_relevance_path is not None else None,
     )
-    matcher = CosineSkillMatcher()
+
+    cfg_skill = "CosineSkillMatcher.mean_best_cosine (embedding cosine on skills)"
+    payload["config"].update({
+        "users_path": str(users_path),
+        "jobs_source": jobs_source,
+        "mongo_filter_by_users": mongo_filter_by_users,
+        "legacy_skill_model": cfg_skill,
+    })
+    if jobs_source == "file":
+        payload["config"]["jobs_path"] = str(jobs_path) if jobs_path else None
+    if mrr_relevance_path is not None:
+        payload["config"]["mrr_relevance_json"] = str(mrr_relevance_path)
+
+    results = payload["results"]
 
     print(
         f"[bm25_cosine_hybrid] {len(users)} users × {len(jobs)} jobs "
@@ -554,89 +711,8 @@ def run(
         file=sys.stderr,
     )
 
-    results: List[Dict[str, Any]] = []
-    for u in users:
-        uid_k = str(u.get("user_id") or "")
-        rel = mrr_labels.get(uid_k) if mrr_relevance_path is not None else None
-        results.append(
-            one_user_bundle(
-                u,
-                jobs,
-                skills_okapi,
-                full_okapi,
-                matcher,
-                variant_bm25=variant_bm25,
-                bm25_pool_k=bm25_pool_k,
-                cosine_pool_k=cosine_pool_k,
-                min_common=min_common,
-                max_fallback_pool=max_fallback_pool,
-                col_display_k=col_display_k,
-                alpha_on_cosine=alpha_on_cosine,
-                skills_weight=skills_weight,
-                text_weight=text_weight,
-                include_programme=include_programme,
-                relevance_ids=rel,
-            )
-        )
-
-    cfg_skill = "CosineSkillMatcher.mean_best_cosine (embedding cosine on skills)"
-
-    config: Dict[str, Any] = {
-        "users_path": str(users_path),
-        "jobs_source": jobs_source,
-        "scorer": "bm25_cosine_skills_four_col_hybrid_pool_minmax",
-        "legacy_skill_model": cfg_skill,
-        "fusion": "weighted_minmax_on_candidate_pool_bm25_cosine_only",
-        "alpha_on_cosine_skill": alpha_on_cosine,
-        "(1-alpha)_on_bm25": round(1.0 - alpha_on_cosine, 4),
-        "variant_bm25": variant_bm25,
-        "bm25_pool_k": bm25_pool_k,
-        "cosine_pool_k": cosine_pool_k,
-        "legacy_pool_k": cosine_pool_k,
-        "min_common_intersection": min_common,
-        "max_fallback_pool": max_fallback_pool,
-        "column_display_rows": col_display_k,
-        "column_common_max_rows_saved": min(max(col_display_k * 8, col_display_k), 200),
-        "k1": k1,
-        "b": b,
-        "include_programme_context": include_programme,
-        "embedding_model_path": str(EMBEDDING_MODEL_PATH),
-        "skill_to_row_path": str(SKILL_TO_ROW_PATH),
-        "skills_csv_path": str(SKILLS_CSV_PATH),
-        "notes": (
-            "CosineSkillMatcher pooled embedding cosine for skills; BM25 hybrid index; "
-            "common ∩ pool; fused = α·norm(cosine)+(1−α)·norm(BM25) within pool only."
-        ),
-    }
-    if variant_bm25 == "hybrid":
-        config["skills_weight"] = skills_weight
-        config["text_weight"] = text_weight
-    if jobs_source == "file":
-        config["jobs_path"] = str(jobs_path) if jobs_path else None
-    else:
-        config["mongo_filter_by_users"] = mongo_filter_by_users
-    if mrr_relevance_path is not None:
-        config["mrr_relevance_json"] = str(mrr_relevance_path)
-
-    embedding_dim = int(matcher.W.shape[1])
-    payload: Dict[str, Any] = {
-        "config": config,
-        "index_stats": {
-            "n_jobs": len(jobs),
-            "skills_vocab_size": corpus_vocab_size(skills_corpus),
-            "full_vocab_size": corpus_vocab_size(full_corpus),
-            "skills_avg_doc_len": round(avg_doc_length(skills_corpus), 2),
-            "full_avg_doc_len": round(avg_doc_length(full_corpus), 2),
-            "embedding_dim": embedding_dim,
-        },
-        "n_users": len(users),
-        "n_jobs": len(jobs),
-        "results": results,
-    }
     if mongo_timing is not None:
         payload["mongo_timing"] = mongo_timing
-
-    payload["skill_cosine_resolution_stats_end_of_run"] = matcher.get_resolution_stats()
 
     if mrr_relevance_path is not None:
         keys_m = (

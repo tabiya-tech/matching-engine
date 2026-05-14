@@ -94,6 +94,10 @@ MATCH_TOP_K_OPPORTUNITIES: int = _i("MATCH_TOP_K_OPPORTUNITIES", 5)
 MATCH_TOP_K_OCCUPATIONS: int = _i("MATCH_TOP_K_OCCUPATIONS", 5)
 MATCH_TOP_K_SKILL_GAPS: int = _i("MATCH_TOP_K_SKILL_GAPS", 5)
 
+# POST /match_v2 — BM25 × cosine hybrid pool fusion (see hybrid_scoring.run_bm25_cosine_hybrid).
+MATCH_V2_HYBRID_TOP_K: int = _i("MATCH_V2_HYBRID_TOP_K", 20)
+MATCH_V2_MAX_USERS_PER_REQUEST: int = _i("MATCH_V2_MAX_USERS_PER_REQUEST", 32)
+
 # When false, skip _job_matches_user_location in _match_items (opportunities and occupations).
 # Mongo prefilter is separate: JOBS_RETRIEVAL_FILTER. Default true keeps current behaviour.
 MATCH_APPLY_LOCATION_FILTER: bool = _b("MATCH_APPLY_LOCATION_FILTER", True)

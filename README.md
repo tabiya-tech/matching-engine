@@ -41,6 +41,10 @@ Primary endpoint:
   - `occupation_recommendations`
   - `skill_gap_recommendations`
 
+Hybrid diagnostic / alternate ranking:
+
+- `POST /match_v2` — same `MatchRequest` body shape as `POST /match` (JSON array); loads **all active jobs** from Mongo **without** the per-user location prefilter used by `POST /match` (`JOBS_RETRIEVAL_FILTER` is effectively bypassed here so hybrid indexes match unrestricted batch runs, e.g. CLI `--mongo-all-active`). Returns **`hybrid_recommendations`** ranked by BM25 × embedding‑cosine **pool fused** scores (optional query: `fusion_top_k`, `alpha_on_cosine`). Does not compute occupations or the full SkillScorer / `p_hat` stack. **`x-api-key` is not required** on this route for now (unlike `/match`).
+
 Interactive API docs are available at `http://127.0.0.1:8000/docs` when the backend is running.
 
 ## Quick Start

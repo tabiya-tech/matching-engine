@@ -1,16 +1,3 @@
-"""Embedding-only skill overlap: cosine similarity between user and job skill vectors.
-
-**Production “legacy cosine” skill model** — used by ``run_cosine_matching`` and
-``hybrid_scoring.run_bm25_cosine_hybrid`` for column 2. Not the full-rule
-``SkillScorer`` stack (no location, skill groups, gap penalties on ``U``).
-
-Loads the same ``.pt`` matrix, ``skill_to_row.json``, and ``skills.csv`` as the main
-app (via ``app.config``). Resolves labels to internal IDs, then for each **job**
-skill (essential ∪ optional, de-duplicated) takes the **row-wise maximum** cosine
-against all **user** skills and ranks jobs by the **mean** of those maxima.
-
-No location, skill groups, gap penalties, or feasibility — only vectors + cosine.
-"""
 
 from __future__ import annotations
 
@@ -32,6 +19,34 @@ logger = logging.getLogger(__name__)
 
 def _canon(label: str) -> str:
     return " ".join(label.strip().lower().split())
+
+
+def compact_cosine_matched_skill_lines(
+    per_job_skill: Sequence[Dict[str, Any]],
+    *,
+    limit: int = 24,
+) -> List[str]:
+    if not per_job_skill or limit <= 0:
+        return []
+    ranked = sorted(
+        per_job_skill,
+        key=lambda x: float(x.get("cosine_similarity") or 0),
+        reverse=True,
+    )[:limit]
+    lines: List[str] = []
+    for row in ranked:
+        jl = str(row.get("job_skill_label") or row.get("job_skill_id") or "").strip()
+        ul = str(row.get("best_user_skill_label") or row.get("best_user_skill_id") or "").strip()
+        c = float(row.get("cosine_similarity") or 0)
+        if jl and ul and _canon(jl) == _canon(ul):
+            lines.append(f"{jl} ({c:.2f})")
+        elif jl and ul:
+            lines.append(f"{jl} \u2190 {ul} ({c:.2f})")  # left arrow: job \u2190 user match
+        elif jl:
+            lines.append(f"{jl} ({c:.2f})")
+        elif ul:
+            lines.append(f"{ul} ({c:.2f})")
+    return lines
 
 
 class CosineSkillMatcher:
