@@ -97,6 +97,35 @@ paths:
           request-metric: 1
       security:
         - gcp_api_key: []
+  '/match_v2':
+    post:
+      description: Match one or many users against jobs and occupations. 2.0 version.
+      operationId: match_v2
+      parameters:
+        - name: body
+          in: body
+          required: true
+          description: User(s) to match. Single object or array of MatchRequest.
+          schema:
+            type: object
+            description: MatchRequest or array of MatchRequest
+      responses:
+        '200':
+          description: Match recommendations
+        '400':
+          description: Bad Request - invalid payload
+        '429':
+          description: Too Many Requests - rate limit exceeded
+        '500':
+          description: Internal Server Error
+      summary: Match users to opportunities
+      tags:
+        - Matching
+      x-google-quota:
+        metricCosts:
+          request-metric: 1
+      security:
+        - gcp_api_key: [ ]
     options:
       description: CORS preflight for /match
       operationId: match_options
