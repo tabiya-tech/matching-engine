@@ -94,6 +94,14 @@ MATCH_TOP_K_OPPORTUNITIES: int = _i("MATCH_TOP_K_OPPORTUNITIES", 5)
 MATCH_TOP_K_OCCUPATIONS: int = _i("MATCH_TOP_K_OCCUPATIONS", 5)
 MATCH_TOP_K_SKILL_GAPS: int = _i("MATCH_TOP_K_SKILL_GAPS", 5)
 
+# Cosine batch runner cross-encoder rerank (see cross_encoder.reranker, run_cosine_matching).
+CROSS_ENCODER_MODEL_NAME: str = _s(
+    "CROSS_ENCODER_MODEL_NAME",
+    "cross-encoder/ms-marco-MiniLM-L-6-v2",
+)
+CROSS_ENCODER_BATCH_SIZE: int = _i("CROSS_ENCODER_BATCH_SIZE", 16)
+COSINE_CROSS_ENCODER_RETRIEVE_TOP_K: int = _i("COSINE_CROSS_ENCODER_RETRIEVE_TOP_K", 50)
+
 # POST /match_v2 — BM25 × cosine hybrid pool fusion (see hybrid_scoring.run_bm25_cosine_hybrid).
 MATCH_V2_HYBRID_TOP_K: int = _i("MATCH_V2_HYBRID_TOP_K", 20)
 MATCH_V2_MAX_USERS_PER_REQUEST: int = _i("MATCH_V2_MAX_USERS_PER_REQUEST", 32)

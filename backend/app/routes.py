@@ -1,18 +1,29 @@
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, Body, HTTPException, Depends, Query
 from fastapi.security import APIKeyHeader
 
-from app.schemas import MatchRequest, MatchResponse, MatchV2Response, MatchV2JobRecommendation
-from app.config import MATCH_V2_HYBRID_TOP_K, MATCH_V2_MAX_USERS_PER_REQUEST
+from app.schemas import (
+    MatchRequest,
+    MatchResponse,
+    MatchV2Response,
+    MatchV2JobRecommendation,
+    MatchConcatGeminiCeResponse,
+)
+from app.config import (
+    MATCH_V2_HYBRID_TOP_K,
+    MATCH_V2_MAX_USERS_PER_REQUEST,
+    COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
+)
 from app.database import get_all_jobs_with_timing, get_all_occupations_with_timing
 from app.match_timing_log import log_match_step
 from app.services.matching_service import match_user_with_data
+from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
 
 api_key_auth = APIKeyHeader(
     scheme_name="gcp_api_key",
@@ -21,7 +32,7 @@ api_key_auth = APIKeyHeader(
 )
 
 router = APIRouter(dependencies=[Depends(api_key_auth)])
-# Temporary: hybrid endpoint without API key (parity with keyed /match TBD).
+# Public matching routes (no x-api-key): /match_v2 (hybrid BM25×cosine), /match_v3 (Gemini concat × Mongo CE).
 router_public = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -97,6 +108,7 @@ async def health() -> Health:
 @router.post(
     "/match",
     tags=["matching"],
+    operation_id="match",
     response_model=List[MatchResponse],
     responses={
         400: {
@@ -156,6 +168,7 @@ async def match(payload: List[MatchRequest]):
 @router_public.post(
     "/match_v2",
     tags=["matching"],
+    operation_id="match_v2",
     response_model=List[MatchV2Response],
     responses={
         400: {"description": "Bad Request"},
@@ -294,3 +307,131 @@ async def match_v2(
     except Exception as e:
         logger.exception(e)
         raise HTTPException(status_code=500, detail=f"Internal server error: {e.__class__.__name__}")
+
+
+# Swagger default: SA city/province so JOBS_RETRIEVAL_FILTER matches SouthAfricaJobs_V2 jobs.
+_MATCH_V3_BODY_EXAMPLE: List[Dict[str, Any]] = [
+    {
+        "user_id": "u1",
+        "city": "Johannesburg",
+        "province": "Gauteng",
+        "skills_vector": {
+            "top_skills": [
+                {
+                    "originUUID": "00000000-0000-4000-8000-000000000001",
+                    "preferredLabel": "customer service",
+                    "proficiency": 0.8,
+                }
+            ]
+        },
+        "skill_groups_origin_uuids": [],
+        "preference_vector": {
+            "earnings_per_month": 0,
+            "physical_demand": 0,
+            "social_interaction": 0,
+            "career_growth": 0,
+        },
+    }
+]
+
+
+@router_public.post(
+    "/match_v3",
+    tags=["matching"],
+    operation_id="match_v3",
+    response_model=List[MatchConcatGeminiCeResponse],
+    responses={
+        400: {"description": "Bad Request"},
+        500: {"description": "Internal Server Error"},
+    },
+)
+async def match_v3(
+    payload: Annotated[
+        List[MatchRequest],
+        Body(
+            ...,
+            description=(
+                "JSON **array** of MatchRequest (one object per user). "
+                "When JOBS_RETRIEVAL_FILTER is on, city/province must overlap job locations "
+                "in Mongo (e.g. Johannesburg/Gauteng for SouthAfricaJobs_V2)."
+            ),
+            example=_MATCH_V3_BODY_EXAMPLE,
+        ),
+    ],
+    retrieve_top_k: Optional[int] = Query(
+        None,
+        ge=1,
+        le=500,
+        description=(
+            "Stage-1 concat cosine shortlist size. "
+            f"Default: COSINE_CROSS_ENCODER_RETRIEVE_TOP_K ({COSINE_CROSS_ENCODER_RETRIEVE_TOP_K})."
+        ),
+    ),
+    final_top_k: Optional[int] = Query(
+        None,
+        ge=1,
+        le=200,
+        description="Stage-2 cross-encoder slate size after rerank. Default: 30.",
+    ),
+):
+    """Gemini user concat embedding × Mongo job vectors → CE rerank.
+
+    Same JSON body as ``POST /match`` / ``POST /match_v2``: a JSON array of ``MatchRequest``.
+
+    **Database:** reads active jobs via ``MONGO_URL``, ``MONGO_DB_NAME``, ``MONGO_JOBS_COLLECTION``.
+    Stage-1 vectors may come from ``concat_skill_embedding_gemini.vector_bin`` **or** a numeric
+    ``job_embedding`` array of length **3072** (same dim as ``gemini-embedding-001`` user vectors).
+
+    **Does not** require ``x-api-key``. Users are embedded with ``GEMINI_API_KEY``.
+    """
+    try:
+        t_req = time.perf_counter()
+        if len(payload) > MATCH_V2_MAX_USERS_PER_REQUEST:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Too many users in one request (max {MATCH_V2_MAX_USERS_PER_REQUEST}).",
+            )
+        if not payload:
+            raise HTTPException(status_code=400, detail="Request body must be a non-empty JSON array.")
+
+        users = [u.model_dump() for u in payload]
+        rt = retrieve_top_k if retrieve_top_k is not None else COSINE_CROSS_ENCODER_RETRIEVE_TOP_K
+        ft = final_top_k if final_top_k is not None else 30
+
+        t_fetch = time.perf_counter()
+        jobs, mongo_timing = await get_all_jobs_with_timing(users=users)
+        fetch_wall_ms = _ms(t_fetch)
+
+        t_score = time.perf_counter()
+        raw = await asyncio.to_thread(
+            run_match_concat_gemini_ce,
+            users,
+            jobs,
+            retrieve_top_k=rt,
+            final_top_k=ft,
+            mongo_timing=mongo_timing,
+        )
+        score_ms = _ms(t_score)
+
+        out: List[MatchConcatGeminiCeResponse] = [MatchConcatGeminiCeResponse(**row) for row in raw]
+
+        log_match_step(
+            "http /match_v3",
+            "request (summary)",
+            n_users=len(users),
+            n_jobs=len(jobs),
+            n_occupation_rows=0,
+            fetch_parallel_wall_ms=fetch_wall_ms,
+            scoring_thread_pool_ms=score_ms,
+            request_total_ms=_ms(t_req),
+        )
+        return out
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.exception(e)
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception(e)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e.__class__.__name__}") from e

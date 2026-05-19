@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -233,6 +234,7 @@ _M_COUNTY = "classifier_metadata.county"
 # Inclusion projection for job find (must stay aligned with build_job_dict_from_ranked).
 RANKED_JOB_FIND_PROJECTION: Dict[str, int] = {
     "job_id": 1,
+    "job_fingerprint": 1,
     "is_active": 1,
     "classifier_metadata.city": 1,
     "classifier_metadata.county": 1,
@@ -248,6 +250,10 @@ RANKED_JOB_FIND_PROJECTION: Dict[str, int] = {
     "llm_job_attributes": 1,
     "onet_work_activities": 1,
     "skill_groups_origin_uuids": 1,
+    # Gemini concat NPZ sync (see gemini_vs_minilm.sync_gemini_embeddings_to_mongo)
+    "concat_skill_embedding_gemini": 1,
+    # Float array on ranked job docs (e.g. SouthAfricaJobs_V2.ranked_jobs); /match_v3 fallback if no vector_bin.
+    "job_embedding": 1,
 }
 
 
@@ -412,7 +418,10 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     closing_s = "" if raw_closing is None else str(raw_closing)
     et = meta.get("employment_type") or "full_time"
 
-    return {
+    job_fp = rd.get("job_fingerprint")
+    job_fp_s = str(job_fp).strip() if job_fp is not None else ""
+
+    out: Dict[str, Any] = {
         "uuid": job_id,
         "opportunity_title": meta.get("title") or "Unknown",
         "location": location,
@@ -431,6 +440,19 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "opportunity_description": meta.get("job_description") or meta.get("description") or "",
         "onet_work_activities": onet_wa,
     }
+    if job_fp_s:
+        out["job_fingerprint"] = job_fp_s
+    # Passthrough for concat-Gemini cosine (see POST /match_v3); not returned on HTTP envelopes.
+    gem_sub = rd.get("concat_skill_embedding_gemini")
+    if isinstance(gem_sub, dict) and gem_sub.get("vector_bin") is not None:
+        out["concat_skill_embedding_gemini"] = gem_sub
+    raw_je = rd.get("job_embedding")
+    if isinstance(raw_je, list) and raw_je:
+        from app.services.cross_encoder.gemini_embeddings import EMBEDDING_DIM as _gem_concat_dim
+
+        if len(raw_je) == _gem_concat_dim:
+            out["job_embedding"] = raw_je
+    return out
 
 
 async def get_all_jobs(users: Optional[Sequence[dict]] = None):
@@ -665,3 +687,20 @@ async def warmup_on_startup() -> None:
             logger.exception("WA lookup warmup failed")
     else:
         logger.info("WA lookup warmup skipped (enriched jobs carry onet_work_activities; set WARMUP_WA_LOOKUP=1 to force)")
+
+    if _env_warmup_flag("WARMUP_MATCH_V3_MODELS", False):
+        try:
+            from app.services.match_concat_gemini_ce_service import preload_match_v3_models
+
+            t0 = time.perf_counter()
+            timings = await asyncio.to_thread(preload_match_v3_models)
+            logger.info(
+                "/match_v3 model warmup: ok (total %.2f ms; matcher %.2f ms, cross-encoder %.2f ms)",
+                _ms(t0),
+                timings.get("cosine_skill_matcher_ms", 0.0),
+                timings.get("cross_encoder_ms", 0.0),
+            )
+        except Exception:
+            logger.exception("/match_v3 model warmup failed")
+    else:
+        logger.info("/match_v3 model warmup skipped (set WARMUP_MATCH_V3_MODELS=1 to preload CosineSkillMatcher + CrossEncoder at startup)")

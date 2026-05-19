@@ -179,3 +179,28 @@ class MatchV2Response(BaseModel):
     n_jobs_scored: int
     hybrid_recommendations: List[MatchV2JobRecommendation]
     hybrid_config_summary: Dict[str, Any] = Field(default_factory=dict)
+
+
+class MatchConcatGeminiCeJobRecommendation(BaseModel):
+    """One job after concat-Gemini cosine shortlist and cross-encoder rerank."""
+
+    rank: int
+    rank_cosine: Optional[int] = None
+    job_uuid: str
+    opportunity_title: str = ""
+    employer: Optional[str] = None
+    location: Optional[str] = None
+    URL: Optional[str] = None
+    concat_cosine_similarity: Optional[float] = None
+    cross_encoder_logit: Optional[float] = None
+    cross_encoder_score: Optional[float] = None
+
+
+class MatchConcatGeminiCeResponse(BaseModel):
+    """``POST /match_v3`` — Gemini user embed × Mongo job vectors → CE."""
+
+    user_id: str
+    n_jobs_scored: int
+    n_jobs_active_loaded: int
+    concat_gemini_ce_recommendations: List[MatchConcatGeminiCeJobRecommendation]
+    config_summary: Dict[str, Any] = Field(default_factory=dict)

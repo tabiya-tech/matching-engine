@@ -43,24 +43,44 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Matching Service", lifespan=lifespan)
+def _openapi_servers() -> list[dict[str, str]]:
+    """Swagger UI \"Try it out\" base URL.
+
+    Default ``/`` = same host + port as the page serving ``/docs`` (works when uvicorn uses
+    ``--port 8081`` etc. without setting ``PORT`` in env). Override with ``OPENAPI_SERVER_URL``
+    behind a gateway or for a fixed public base URL.
+    """
+    explicit = (os.getenv("OPENAPI_SERVER_URL") or "").strip().rstrip("/")
+    if explicit:
+        return [{"url": explicit, "description": "Configured (OPENAPI_SERVER_URL)"}]
+    return [{"url": "/", "description": "Same origin as /docs (recommended for local Swagger)"}]
+
+
+app = FastAPI(title="Matching Service", lifespan=lifespan, servers=_openapi_servers())
 
 logging.basicConfig(level=logging.INFO)
 
-origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS for browser clients (Swagger /docs, local frontends).
+# Dev: allow any localhost / 127.0.0.1 / 0.0.0.0 origin on any port (regex). Otherwise no Origin = no preflight (curl etc.).
+# Prod override: set CORS_ALLOW_ORIGINS (comma-separated full origins) in the environment.
+_allow_explicit = (os.getenv("CORS_ALLOW_ORIGINS") or "").strip()
+if _allow_explicit:
+    _origins = [o.strip() for o in _allow_explicit.split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$",
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 app.include_router(router)
 app.include_router(router_public)
@@ -68,4 +88,7 @@ app.include_router(router_public)
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    # Default 127.0.0.1 so /docs URLs work in the browser; use UVICORN_HOST=0.0.0.0 for Docker/LAN.
+    _host = (os.getenv("UVICORN_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    _port = int((os.getenv("PORT") or "8080").strip() or "8080")
+    uvicorn.run(app, host=_host, port=_port)
