@@ -29,6 +29,8 @@ from app.config import (
     COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
     CROSS_ENCODER_BATCH_SIZE,
     CROSS_ENCODER_MODEL_NAME,
+    FINAL_SCORE_COMBINER,
+    PREFERENCE_SCORER_MODE,
 )
 from app.services.cosine_similarity.run_cosine_matching import (
     _load_users,
@@ -38,10 +40,14 @@ from app.services.cosine_similarity.run_cosine_matching import (
 from app.services.cross_encoder.concat_embedding_text import user_skill_labels_for_concat
 from app.services.cross_encoder.gemini_embeddings import EMBEDDING_DIM, MODEL_NAME as GEMINI_EMBEDDING_MODEL_NAME
 from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
-from app.services.preference_score import PreferenceScorer
+from app.services.preference_score_v1 import get_preference_scorer
 
 from .match_v3_bridge import v3_recommendation_to_rec
-from .scoring import enrich_recommendations_with_preferences
+from .scoring import (
+    enrich_recommendations_with_preferences,
+    user_bws_summary,
+    user_preference_factors,
+)
 
 
 def _jobs_by_uuid(jobs: List[dict]) -> Dict[str, dict]:
@@ -65,6 +71,8 @@ def run_pipeline(
     mongo_filter_by_users: bool,
     cross_encoder_model: Optional[str],
     cross_encoder_batch_size: Optional[int],
+    jobs_limit: Optional[int] = None,
+    compare_final_combiners: bool = False,
 ) -> Dict[str, Any]:
     retrieve_top_k = max(1, int(retrieve_top_k))
     final_top_k = max(1, int(final_top_k))
@@ -73,14 +81,23 @@ def run_pipeline(
     jobs, mongo_timing = load_jobs(
         jobs_source, jobs_path, users, mongo_filter_by_users
     )
+    n_jobs_loaded = len(jobs)
+    if jobs_limit is not None and int(jobs_limit) > 0:
+        jobs = jobs[: int(jobs_limit)]
+        print(
+            f"[gemini_ce_pref] jobs capped to {len(jobs)} (from {n_jobs_loaded})",
+            file=sys.stderr,
+        )
     job_index = _jobs_by_uuid(jobs)
 
-    pref_scorer = PreferenceScorer()
+    pref_scorer = get_preference_scorer()
+    pref_cls = f"{pref_scorer.__class__.__module__}.{pref_scorer.__class__.__name__}"
 
     print(
         f"[gemini_ce_pref] users={len(users)} jobs={len(jobs)} "
         f"stage1=match_v3_concat_cosine retrieve_top_k={retrieve_top_k} "
-        f"final_top_k={final_top_k} scoring=u_hat*p_hat p_hat=concat_cosine",
+        f"final_top_k={final_top_k} preferences={PREFERENCE_SCORER_MODE} ({pref_cls}) "
+        f"scoring={FINAL_SCORE_COMBINER} p_hat=concat_cosine",
         file=sys.stderr,
     )
 
@@ -90,6 +107,8 @@ def run_pipeline(
         retrieve_top_k=retrieve_top_k,
         final_top_k=retrieve_top_k,
         mongo_timing=mongo_timing,
+        include_per_job_skill_detail=False,
+        skip_users_without_skills=True,
     )
 
     results: List[Dict[str, Any]] = []
@@ -106,25 +125,55 @@ def run_pipeline(
         # Column 1 export: CE order, p_hat = concat cosine only (no u_hat yet).
         ce_snapshot = copy.deepcopy(ce_pool)[:final_top_k]
 
-        # Column 2: u_hat per job, then final = u_hat × p_hat, re-sorted.
+        # Column 2: hybrid Part A only (no BWS / work activities).
+        attrs_only_recs = enrich_recommendations_with_preferences(
+            user,
+            ce_pool,
+            job_index,
+            preference_scorer=pref_scorer,
+            include_work_activities=False,
+        )[:final_top_k]
+
+        # Column 3: hybrid Part A + Part B (BWS × O*NET work activities) + configurable combiner.
         final_recs = enrich_recommendations_with_preferences(
             user,
             ce_pool,
             job_index,
             preference_scorer=pref_scorer,
-        )
-        final_recs = final_recs[:final_top_k]
+            include_work_activities=True,
+            final_score_combiner=FINAL_SCORE_COMBINER,
+        )[:final_top_k]
+
+        # Optional: also compute an alternate ranking for dashboards (no re-embedding).
+        alt_recs: Optional[list] = None
+        if compare_final_combiners:
+            other = "geometric_mean" if FINAL_SCORE_COMBINER == "product" else "product"
+            alt_recs = enrich_recommendations_with_preferences(
+                user,
+                ce_pool,
+                job_index,
+                preference_scorer=pref_scorer,
+                include_work_activities=True,
+                final_score_combiner=other,
+            )[:final_top_k]
 
         cfg_summary = v3_row.get("config_summary") or {}
+        skip_reason = (v3_row.get("config_summary") or {}).get("skip_reason")
         results.append({
             "user_id": user.get("user_id"),
             "city": user.get("city"),
             "province": user.get("province"),
             "n_user_concat_skills": len(user_concat_skills),
             "user_concat_skills": user_concat_skills,
+            "has_user_skills": bool(user_concat_skills),
+            "skip_reason": skip_reason,
+            "user_preference_factors": user_preference_factors(user),
+            "user_bws": user_bws_summary(user),
             "n_jobs_scored": v3_row.get("n_jobs_scored"),
             "cross_encoder_recommendations": ce_snapshot,
+            "recommendations_attrs_only": attrs_only_recs,
             "recommendations": final_recs,
+            "recommendations_alt": alt_recs,
         })
 
     v3_cfg0 = (v3_rows[0].get("config_summary") if v3_rows else {}) or {}
@@ -135,11 +184,18 @@ def run_pipeline(
         "final_top_k": final_top_k,
         "stage1_scorer": "match_v3_concat_gemini_cosine_mongo_job_vectors",
         "stage2_scorer": "cross_encoder_rerank",
-        "stage3_scorer": "u_hat_times_p_hat",
+        "stage3_scorer": "combine_u_hat_and_p_hat",
+        "stage3_variants": ["attrs_only", "attrs_plus_work_activities"],
         "scoring_mode": "multiplicative",
-        "final_formula": "u_hat * p_hat",
+        "final_score_combiner": FINAL_SCORE_COMBINER,
+        "final_formula": (
+            "u_hat * p_hat"
+            if FINAL_SCORE_COMBINER == "product"
+            else "sqrt(u_hat * p_hat)"
+        ),
         "p_hat_source": "concat_cosine_similarity",
-        "preference_module": "app.services.preference_score.PreferenceScorer",
+        "preference_scorer_mode": PREFERENCE_SCORER_MODE,
+        "preference_module": pref_cls,
         "match_v3_service": "app.services.match_concat_gemini_ce_service",
         "gemini_user_embed_model": v3_cfg0.get("gemini_user_embed_model") or GEMINI_EMBEDDING_MODEL_NAME,
         "cross_encoder_model": v3_cfg0.get("cross_encoder_model") or cross_encoder_model or CROSS_ENCODER_MODEL_NAME,
@@ -149,6 +205,11 @@ def run_pipeline(
         "embedding_dim": v3_cfg0.get("embedding_dim") or EMBEDDING_DIM,
         "n_jobs_with_stage1_embedding": v3_cfg0.get("n_jobs_with_stage1_embedding"),
         "max_per_job_skills_in_output": max_per_job_skills,
+        "include_per_job_skill_detail": False,
+        "skip_users_without_skills": True,
+        "jobs_limit": jobs_limit,
+        "n_jobs_loaded_before_limit": n_jobs_loaded,
+        "compare_final_combiners": compare_final_combiners,
     }
     if jobs_source == "file":
         config["jobs_path"] = str(jobs_path) if jobs_path else None
@@ -231,6 +292,17 @@ Requires GEMINI_API_KEY and jobs with job_embedding or concat_skill_embedding_ge
     )
     p.add_argument("--cross-encoder-model", type=str, default=None)
     p.add_argument("--cross-encoder-batch-size", type=int, default=None)
+    p.add_argument(
+        "--jobs-limit",
+        type=int,
+        default=None,
+        help="Cap active jobs loaded from Mongo/file (e.g. 100 for testing).",
+    )
+    p.add_argument(
+        "--compare-final-combiners",
+        action="store_true",
+        help="Also compute an alternate ranking using the other combiner (product vs geometric_mean).",
+    )
 
     args = p.parse_args(argv)
     jobs_source: Literal["file", "mongo"] = "mongo" if args.from_mongo else "file"
@@ -253,6 +325,8 @@ Requires GEMINI_API_KEY and jobs with job_embedding or concat_skill_embedding_ge
         mongo_filter_by_users=not args.mongo_all_active,
         cross_encoder_model=args.cross_encoder_model,
         cross_encoder_batch_size=args.cross_encoder_batch_size,
+        jobs_limit=args.jobs_limit,
+        compare_final_combiners=args.compare_final_combiners,
     )
     return 0
 

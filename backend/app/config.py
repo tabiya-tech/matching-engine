@@ -80,6 +80,13 @@ SCORING_MODE: str = _s("SCORING_MODE", "multiplicative")
 if SCORING_MODE not in ("multiplicative", "additive"):
     raise ValueError("SCORING_MODE must be 'multiplicative' or 'additive'")
 
+# How to combine u_hat and p_hat in "multiplicative" pipelines.
+# - product:        final = u_hat * p_hat
+# - geometric_mean: final = sqrt(u_hat * p_hat)
+FINAL_SCORE_COMBINER: str = _s("FINAL_SCORE_COMBINER", "product").strip().lower()
+if FINAL_SCORE_COMBINER not in ("product", "geometric_mean"):
+    raise ValueError("FINAL_SCORE_COMBINER must be 'product' or 'geometric_mean'")
+
 # Additive (legacy) weights
 GLOBAL_WEIGHTS: Dict[str, float] = {
     "w1_skills": _f("ADDITIVE_W1_SKILLS", 0.40),
@@ -186,6 +193,16 @@ DEMAND_SCORE_MAPPING: Dict[str, float] = {
 PREFERENCE_BASE_CONSTANT: float = _f("PREFERENCE_BASE_CONSTANT", 0.5)
 PREFERENCE_LEGACY_SCORE_SCALE: float = _f("PREFERENCE_LEGACY_SCORE_SCALE", 0.2)
 PREFERENCE_SIGMOID_NUMERATOR: float = _f("PREFERENCE_SIGMOID_NUMERATOR", 4.0)
+
+# preference_score (legacy) vs preference_score_v1 (hybrid PDF spec)
+PREFERENCE_SCORER_MODE: str = _s("PREFERENCE_SCORER_MODE", "legacy").strip().lower()
+if PREFERENCE_SCORER_MODE not in ("legacy", "hybrid_v1"):
+    raise ValueError("PREFERENCE_SCORER_MODE must be 'legacy' or 'hybrid_v1'")
+
+HYBRID_PREF_SIGMOID_FACTOR: float = _f("HYBRID_PREF_SIGMOID_FACTOR", 2.646)
+HYBRID_PREF_VIGNETTES_FOR_FULL_CONFIDENCE: int = _i("HYBRID_PREF_VIGNETTES_FOR_FULL_CONFIDENCE", 10)
+_hybrid_schema = _s("HYBRID_PREF_SCHEMA_PATH", "").strip()
+HYBRID_PREF_SCHEMA_PATH: str = _hybrid_schema if _hybrid_schema else ""
 
 PREFERENCE_CONFIG: Dict[str, Any] = {
     "base_constant": PREFERENCE_BASE_CONSTANT,
