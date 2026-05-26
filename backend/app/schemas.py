@@ -186,6 +186,7 @@ class MatchConcatGeminiCeJobRecommendation(BaseModel):
 
     rank: int
     rank_cosine: Optional[int] = None
+    rank_cross_encoder: Optional[int] = None
     job_uuid: str
     opportunity_title: str = ""
     employer: Optional[str] = None
@@ -194,10 +195,15 @@ class MatchConcatGeminiCeJobRecommendation(BaseModel):
     concat_cosine_similarity: Optional[float] = None
     cross_encoder_logit: Optional[float] = None
     cross_encoder_score: Optional[float] = None
+    # Stage 3 (``POST /match_v4`` only): hybrid preference × p_hat
+    u_hat: Optional[float] = None
+    p_hat: Optional[float] = None
+    final_score: Optional[float] = None
+    score_breakdown: Optional[Dict[str, Any]] = None
 
 
 class MatchConcatGeminiCeResponse(BaseModel):
-    """``POST /match_v3`` — Gemini user embed × Mongo job vectors → CE."""
+    """``POST /match_v3`` / ``POST /match_v4`` — Gemini concat × Mongo → CE (+ prefs on v4)."""
 
     user_id: str
     n_jobs_scored: int

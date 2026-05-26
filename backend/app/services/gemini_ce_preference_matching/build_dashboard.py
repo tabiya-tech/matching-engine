@@ -21,8 +21,13 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from app.services.gemini_ce_preference_matching.scoring import (
+    preference_details_for_dashboard,
+    work_activity_match_for_dashboard,
+)
+
 SCRIPT_NAME = "app.services.gemini_ce_preference_matching.build_dashboard"
-BRAND = "Gemini concat + CE + preferences"
+BRAND = "Kenya — p_hat (skills) vs preferences + BWS"
 
 _HTML_STYLE = """
   * { box-sizing: border-box; }
@@ -48,6 +53,23 @@ _HTML_STYLE = """
   .userhead .meta { color: #6b7280; font-size: 11px; margin-bottom: 8px; }
   .skills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; max-height: 140px; overflow-y: auto; }
   .skill { background: #eef2ff; color: #3730a3; border-radius: 10px; padding: 1px 8px; font-size: 10px; white-space: nowrap; }
+  .prefhead { font-size: 10px; font-weight: 600; color: #374151; text-transform: uppercase; letter-spacing: 0.04em; margin: 10px 0 4px 0; }
+  .preffactors { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; max-height: 100px; overflow-y: auto; }
+  .preffactor { background: #fef3c7; color: #92400e; border-radius: 10px; padding: 2px 8px; font-size: 10px; white-space: nowrap; }
+  .bwsfactor { background: #ecfdf5; color: #047857; border-radius: 10px; padding: 2px 8px; font-size: 10px; white-space: nowrap; }
+  .bwsfactor.neg { background: #fef2f2; color: #b91c1c; }
+  .bwsfactor.pos { background: #ecfdf5; color: #047857; }
+  .chip.wa { background: #ecfdf5; color: #047857; }
+  .chip.sa { background: #fffbeb; color: #b45309; }
+  .prefbreak { margin-top: 4px; color: #6b7280; font-size: 10px; }
+  table.wa { width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 6px; }
+  table.wa th, table.wa td { border: 1px solid #e5e7eb; padding: 3px 5px; text-align: left; vertical-align: top; }
+  table.wa th { background: #f0fdf4; font-weight: 600; }
+  .warn { color: #b45309; font-size: 11px; margin: 6px 0; }
+  table.pref { width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 6px; }
+  table.pref th, table.pref td { border: 1px solid #e5e7eb; padding: 3px 5px; text-align: left; vertical-align: top; }
+  table.pref th { background: #f9fafb; font-weight: 600; }
+  .umeta .warnbadge { color: #b45309; font-weight: 600; }
   .controls { display: flex; gap: 14px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; font-size: 11px; color: #4b5563; }
   .controls label { display: flex; align-items: center; gap: 6px; }
   .controls input[type=number] { width: 56px; padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 4px; }
@@ -71,7 +93,7 @@ _HTML_STYLE = """
   .chip.uh { background: #fffbeb; color: #b45309; }
   .detail { display: none; margin-top: 6px; padding-top: 6px; border-top: 1px dashed #e5e7eb; font-size: 10px; }
   .row.expanded { background: #ecfdf5; border: 1px solid #a7f3d0; }
-  .row.expanded.uxp { background: #f5f3ff; border: 1px solid #ddd6fe; }
+  .row.expanded.prefcol { background: #f5f3ff; border: 1px solid #ddd6fe; }
   .row.expanded .detail { display: block; }
   code.jobid { font-size: 9px; color: #6b7280; }
   .matchsec { margin-top: 8px; }
@@ -105,6 +127,13 @@ def _compact_row(raw: Dict[str, Any], *, include_uxp: bool) -> Dict[str, Any]:
         row["p_hat"] = raw.get("p_hat") if raw.get("p_hat") is not None else sb.get("p_hat")
         row["final_score"] = raw.get("final_score") if raw.get("final_score") is not None else sb.get("final_score")
         row["rank_cross_encoder"] = raw.get("rank_cross_encoder")
+        details = raw.get("preference_details") or raw.get("preference_match_rows")
+        row["pref_match"] = preference_details_for_dashboard(details)
+        row["wa_match"] = work_activity_match_for_dashboard(details)
+        if raw.get("work_activity_match"):
+            row["wa_match"] = raw.get("work_activity_match")
+        row["S_attrs"] = raw.get("S_attrs")
+        row["S_wa"] = raw.get("S_wa")
     return row
 
 
@@ -131,6 +160,10 @@ def build_dual_payload(results: Dict[str, Any], *, top_k: int) -> Dict[str, Any]
             "city": r.get("city"),
             "prov": r.get("province"),
             "user_skills": user_skills,
+            "has_skills": bool(r.get("has_user_skills", len(user_skills) > 0)),
+            "skip_reason": r.get("skip_reason"),
+            "user_prefs": list(r.get("user_preference_factors") or []),
+            "user_bws": r.get("user_bws") or {"has_bws": False, "rows": []},
             "ce_final": ce_rows,
             "uxp": uxp_rows,
         })
@@ -141,6 +174,8 @@ def build_dual_payload(results: Dict[str, Any], *, top_k: int) -> Dict[str, Any]
             "n_jobs": results.get("n_jobs"),
             "rows_per_column": top_k,
             "final_formula": cfg.get("final_formula") or "u_hat * p_hat",
+            "preference_scorer_mode": cfg.get("preference_scorer_mode"),
+            "preference_module": cfg.get("preference_module"),
             "stage1_scorer": cfg.get("stage1_scorer"),
             "cross_encoder_model": cfg.get("cross_encoder_model"),
         },
@@ -176,11 +211,86 @@ function uidMapFrom(arr) { return new Map(arr.map(u => [u.uid, u])); }
 function jobSkillsHtml(skills) {
   const labs = skills || [];
   if (!labs.length) {
-    return '<div class="matchsec"><div class="lbl">Job skills (concat text)</div>'
-      + '<p style="color:#9ca3af;font-size:10px;margin:4px 0 0;">No skills on job record.</p></div>';
+    return '<div class="matchsec"><div class="lbl">Job skills (concat)</div>'
+      + '<p style="color:#9ca3af;font-size:10px;margin:4px 0 0;">None listed on job.</p></div>';
   }
-  return '<div class="matchsec"><div class="lbl">Job skills (concat text)</div>'
-    + '<ul class="compact">' + labs.map(s => '<li>' + esc(s) + '</li>').join('') + '</ul></div>';
+  const show = labs.slice(0, 40);
+  const more = labs.length > show.length ? ' <span style="color:#9ca3af">+' + (labs.length - show.length) + ' more</span>' : '';
+  return '<div class="matchsec"><div class="lbl">Job skills (concat)</div>'
+    + '<ul class="compact">' + show.map(s => '<li>' + esc(s) + '</li>').join('') + '</ul>' + more + '</div>';
+}
+function prefMatchTable(rows) {
+  const rs = rows || [];
+  if (!rs.length) {
+    return '<div class="matchsec"><div class="lbl">Preference match</div>'
+      + '<p style="color:#9ca3af;font-size:10px;margin:4px 0 0;">No attribute details (job may lack llm_job_attributes).</p></div>';
+  }
+  const trs = rs.map(p => {
+    const raw = p.job_value || '\u2014';
+    const resolved = p.job_level_resolved || '';
+    let offer = '<code style="font-size:9px">' + esc(raw) + '</code>';
+    if (resolved && resolved !== raw) {
+      offer += '<br><span style="color:#6b7280;font-size:9px">scored as ' + esc(resolved) + '</span>';
+    }
+    return '<tr><td>' + esc(p.attr_label) + '</td><td>' + fmt(p.user_weight, 2)
+      + '</td><td>' + offer + '</td><td>' + fmt(p.encoded_value, 2)
+      + '</td><td>' + fmt(p.contribution, 3) + '</td></tr>';
+  }).join('');
+  return '<div class="matchsec"><div class="lbl">Preference match (importance \u00d7 job level id from Mongo)</div>'
+    + '<table class="pref"><thead><tr><th>Attribute</th><th>You care</th><th>Job level (raw)</th><th>Fit V</th><th>Contrib</th></tr></thead><tbody>'
+    + trs + '</tbody></table></div>';
+}
+function userPrefsHtml(factors) {
+  const fs = factors || [];
+  if (!fs.length) return '';
+  return '<div class="prefhead">Your importance (preference_vector)</div><div class="preffactors">'
+    + fs.map(f => '<span class="preffactor" title="' + esc(f.attribute) + '">'
+    + esc(f.label) + ' ' + fmt(f.importance, 2) + '</span>').join('') + '</div>';
+}
+function userBwsHtml(bws) {
+  const box = bws || {};
+  if (!box.has_bws || !(box.rows || []).length) {
+    return '<div class="prefhead">BWS (work activities)</div>'
+      + '<p style="color:#9ca3af;font-size:10px;margin:4px 0 8px;">No O*NET work-activity BWS on this user — Part B uses S_wa = 0.</p>';
+  }
+  const chips = (box.rows || []).map(r => {
+    const v = Number(r.bws);
+    const cls = v > 0 ? 'bwsfactor pos' : (v < 0 ? 'bwsfactor neg' : 'bwsfactor');
+    const sign = v > 0 ? '+' : '';
+    return '<span class="' + cls + '" title="' + esc(r.wa_code) + '">' + esc(r.wa_code) + ' ' + sign + fmt(v, 1) + '</span>';
+  }).join('');
+  return '<div class="prefhead">BWS (work activities you prefer / avoid)</div><div class="preffactors">' + chips + '</div>';
+}
+function waMatchTable(wa) {
+  const block = wa || {};
+  const rs = block.rows || [];
+  const summary = (block.S_wa != null)
+    ? '<div class="prefbreak">S_wa (mean BWS\u00d7importance\u00d7level) = <b>' + fmt(block.S_wa, 3) + '</b>'
+      + ' \u00b7 ' + (block.n_work_activities || 0) + ' job activities</div>' : '';
+  if (!rs.length) {
+    return '<div class="matchsec"><div class="lbl">Work activities (BWS)</div>'
+      + summary
+      + '<p style="color:#9ca3af;font-size:10px;margin:4px 0 0;">No onet_work_activities on this job.</p></div>';
+  }
+  const trs = rs.map(w => {
+    const bws = Number(w.user_bws);
+    const bwsCls = bws > 0 ? 'pos' : (bws < 0 ? 'neg' : '');
+    return '<tr><td><code style="font-size:9px">' + esc(w.wa_code) + '</code></td>'
+      + '<td>' + esc((w.wa_label || '').substring(0, 48)) + ((w.wa_label || '').length > 48 ? '\u2026' : '') + '</td>'
+      + '<td class="' + bwsCls + '">' + (bws > 0 ? '+' : '') + fmt(bws, 1) + '</td>'
+      + '<td>' + fmt(w.wa_importance, 2) + '</td><td>' + fmt(w.wa_level, 2) + '</td>'
+      + '<td>' + fmt(w.wa_contribution, 3) + '</td></tr>';
+  }).join('');
+  return '<div class="matchsec"><div class="lbl">Work activities (BWS \u00d7 job WA)</div>' + summary
+    + '<table class="wa"><thead><tr><th>Code</th><th>Activity</th><th>Your BWS</th><th>Job I/5</th><th>Job L/7</th><th>Contrib</th></tr></thead><tbody>'
+    + trs + '</tbody></table></div>';
+}
+function prefPartsHtml(r) {
+  const parts = [];
+  if (r.S_attrs != null) parts.push('S_attrs ' + fmt(r.S_attrs, 3));
+  if (r.S_wa != null && Number(r.S_wa) !== 0) parts.push('S_wa ' + fmt(r.S_wa, 3));
+  if (!parts.length) return '';
+  return '<div class="prefbreak">u_hat parts: ' + parts.join(' \u00b7 ') + ' \u2192 sigmoid(S_attrs + S_wa)</div>';
 }
 function pHatHeadline(r) {
   return fmt(r.concat_cosine_similarity, 3);
@@ -194,23 +304,37 @@ function renderCeRow(r) {
     + '<span class="title">' + esc(r.job_title) + '</span></div>'
     + '<span class="score ce">p_hat ' + pHatHeadline(r) + '</span></div>' +
     '<div class="submeta">' + esc(r.employer) + ' \u00b7 ' + esc(r.location) + ' ' + chips + '</div>' +
-    '<div class="detail"><code class="jobid">' + esc(r.job_uuid) + '</code>' + jobSkillsHtml(r.job_concat_skills) + '</div>' +
+    '<div class="detail"><code class="jobid">' + esc(r.job_uuid) + '</code>'
+    + jobSkillsHtml(r.job_concat_skills) + '</div>' +
     '</div>';
 }
-function uHatBlock(r) {
-  if (r.u_hat == null || !Number.isFinite(Number(r.u_hat))) return '';
-  return '<span class="score uh">u_hat ' + fmt(r.u_hat, 3) + '</span>';
+function prefScoreStack(r) {
+  const parts = [];
+  if (r.u_hat != null && Number.isFinite(Number(r.u_hat))) {
+    parts.push('<span class="score uh">u_hat ' + fmt(r.u_hat, 3) + '</span>');
+  }
+  if (r.p_hat != null && Number.isFinite(Number(r.p_hat))) {
+    parts.push('<span class="score ce" style="font-size:11px;font-weight:600">p_hat ' + fmt(r.p_hat, 3) + '</span>');
+  }
+  if (r.final_score != null && Number.isFinite(Number(r.final_score))) {
+    parts.push('<span class="score uxp">final ' + fmt(r.final_score, 3) + '</span>');
+  }
+  return parts.length ? '<div class="scores">' + parts.join('') + '</div>' : '';
 }
-function renderUxpRow(r) {
+function renderPrefRow(r) {
+  const waChip = (r.S_wa != null && Number(r.S_wa) !== 0)
+    ? '<span class="chip wa">S_wa ' + fmt(r.S_wa, 3) + '</span>' : '';
+  const saChip = (r.S_attrs != null) ? '<span class="chip sa">S_attrs ' + fmt(r.S_attrs, 3) + '</span>' : '';
   const chips =
-    '<span class="chip">p_hat ' + fmt(r.p_hat, 3) + '</span>' +
-    (r.rank_cross_encoder != null ? '<span class="chip">was #' + r.rank_cross_encoder + ' CE</span>' : '');
-  return '<div class="row uxp">' +
+    (r.rank_cross_encoder != null ? '<span class="chip">was #' + r.rank_cross_encoder + ' skills col</span>' : '') +
+    saChip + waChip;
+  return '<div class="row prefcol">' +
     '<div class="top"><div><span style="color:#9ca3af;font-weight:600">#' + r.rank + '</span> '
     + '<span class="title">' + esc(r.job_title) + '</span></div>'
-    + '<div class="scores"><span class="score uxp">final ' + fmt(r.final_score, 3) + '</span>' + uHatBlock(r) + '</div></div>' +
+    + prefScoreStack(r) + '</div>' +
     '<div class="submeta">' + esc(r.employer) + ' \u00b7 ' + esc(r.location) + ' ' + chips + '</div>' +
-    '<div class="detail"><code class="jobid">' + esc(r.job_uuid) + '</code>' + jobSkillsHtml(r.job_concat_skills) + '</div>' +
+    '<div class="detail"><code class="jobid">' + esc(r.job_uuid) + '</code>'
+    + prefPartsHtml(r) + prefMatchTable(r.pref_match) + waMatchTable(r.wa_match) + '</div>' +
     '</div>';
 }
 function setupWrap(wrap) {
@@ -238,27 +362,32 @@ function renderMain() {
   const u = uidMap.get(activeUid);
   const labs = u.user_skills || [];
   const sk = labs.slice(0, 400).map(s => '<span class="skill">' + esc(s) + '</span>').join('');
+  const warn = (!u.has_skills || u.skip_reason)
+    ? '<p class="warn">No user skills in concat text — skill retrieval skipped'
+      + (u.skip_reason ? ' (' + esc(u.skip_reason) + ').' : '.') + '</p>' : '';
   panel.innerHTML =
     '<div class="userhead"><h2>' + esc(u.uid) + '</h2>' +
-    '<div class="meta">' + esc(u.city) + ' \u00b7 ' + esc(u.prov) + ' \u00b7 ' + labs.length + ' skills in user concat text</div>' +
-    '<div class="skills">' + (sk || '<span style="color:#9ca3af;font-style:italic">no skills</span>') + '</div></div>' +
+    '<div class="meta">' + esc(u.city) + ' \u00b7 ' + esc(u.prov) + ' \u00b7 ' + labs.length + ' skills (concat)</div>' +
+    warn + userPrefsHtml(u.user_prefs) + userBwsHtml(u.user_bws) +
+    '<div class="prefhead">Your skills (concat text)</div>' +
+    '<div class="skills">' + (sk || '<span style="color:#9ca3af;font-style:italic">none</span>') + '</div></div>' +
     '<div class="controls"><label>Rows per column <input type="number" id="topNinp" min="1" max="500" value="' + topN + '"></label>'
-    + '<span style="color:#6b7280">Left: p_hat (concat cosine), CE order \u00b7 Right: u_hat then final = u_hat \u00d7 p_hat</span></div>' +
+    + '<span style="color:#6b7280">Left = p_hat only \u00b7 Right = preferences + work activities (ranked by u_hat \u00d7 p_hat)</span></div>' +
     '<div class="dual">' +
-    '<div class="col"><h3>Step 1–2: concat cosine + CE (p_hat)</h3><div class="colwrap" id="wCe"></div></div>' +
-    '<div class="col"><h3>Step 3: u_hat \u00d7 p_hat</h3><div class="colwrap" id="wUxp"></div></div></div>';
+    '<div class="col"><h3>Column 1 — Skills (p_hat, CE order)</h3><div class="colwrap" id="wCe"></div></div>' +
+    '<div class="col"><h3>Column 2 — Preferences + BWS / work activities</h3><div class="colwrap" id="wPref"></div></div></div>';
   document.getElementById('topNinp').onchange = e => {
     topN = Math.max(1, Math.min(500, parseInt(e.target.value, 10) || 10));
     renderMain();
   };
   const wCe = document.getElementById('wCe');
-  const wUxp = document.getElementById('wUxp');
+  const wPref = document.getElementById('wPref');
   const ceSlice = (u.ce_final || []).slice(0, topN);
-  const uxpSlice = (u.uxp || []).slice(0, topN);
+  const prefSlice = (u.uxp || []).slice(0, topN);
   wCe.innerHTML = ceSlice.length ? ceSlice.map(renderCeRow).join('') : '<div class="empty">none</div>';
-  wUxp.innerHTML = uxpSlice.length ? uxpSlice.map(renderUxpRow).join('') : '<div class="empty">none</div>';
+  wPref.innerHTML = prefSlice.length ? prefSlice.map(renderPrefRow).join('') : '<div class="empty">none</div>';
   setupWrap(wCe);
-  setupWrap(wUxp);
+  setupWrap(wPref);
 }
 function renderUserList(q) {
   const f = (q || '').toLowerCase().trim();
@@ -270,9 +399,10 @@ function renderUserList(q) {
     if (++n > 4000) break;
     const li = document.createElement('li');
     if (u.uid === activeUid) li.classList.add('active');
+    const skBadge = u.has_skills ? ((u.user_skills || []).length + ' sk') : '<span class="warnbadge">0 sk</span>';
     li.innerHTML = '<div class="uname">' + esc((u.uid || '').substring(0, 36)) + '</div>' +
-      '<div class="umeta">' + esc(u.city || '?') + ' \u00b7 ' + esc(u.prov || '?') +
-      ' \u00b7 p_hat <b>' + topCeHint(u) + '</b> \u00b7 top final <b>' + topUxpHint(u) + '</b> (u_hat <b>' + topUhatHint(u) + '</b>)</div>';
+      '<div class="umeta">' + esc(u.city || '?') + ' \u00b7 ' + esc(u.prov || '?') + ' \u00b7 ' + skBadge +
+      ' \u00b7 p_hat <b>' + topCeHint(u) + '</b> \u00b7 u_hat <b>' + topUhatHint(u) + '</b></div>';
     li.onclick = () => { activeUid = u.uid; renderUserList(f); renderMain(); };
     ul.appendChild(li);
   }
@@ -283,15 +413,19 @@ function init() {
     city: u.city,
     prov: u.prov,
     user_skills: u.user_skills || [],
+    has_skills: u.has_skills !== false,
+    skip_reason: u.skip_reason,
+    user_prefs: u.user_prefs || [],
+    user_bws: u.user_bws || { has_bws: false, rows: [] },
     ce_final: u.ce_final || [],
     uxp: u.uxp || [],
   }));
   topN = PAYLOAD.topN_default || 10;
   const m = PAYLOAD.meta || {};
   document.getElementById('pillMeta').textContent =
-    (m.n_users || usersArr.length) + ' users \u00b7 ' + (m.n_jobs ?? '?') + ' jobs \u00b7 2 columns';
+    (m.n_users || usersArr.length) + ' users \u00b7 ' + (m.n_jobs ?? '?') + ' jobs \u00b7 col1 p_hat \u00b7 col2 prefs+WA';
   document.getElementById('hdrstats').textContent =
-    (m.final_formula || 'u_hat * p_hat') + ' \u00b7 CE ' + (m.cross_encoder_model || '?');
+    (m.preference_scorer_mode || 'preferences') + ' \u00b7 ' + (m.final_formula || 'u_hat * p_hat') + ' \u00b7 CE ' + (m.cross_encoder_model || '?');
   activeUid = usersArr.length ? usersArr[0].uid : null;
   renderUserList('');
   renderMain();
@@ -300,10 +434,10 @@ function openKey() {
   document.getElementById('modal').innerHTML =
     '<button type="button" class="closebtn" onclick="document.getElementById(\'modalbg\').classList.remove(\'open\')">Close</button>' +
     '<h2>' + esc(BRAND) + ' \u2014 dashboard key</h2>' +
-    '<p>Skills are shown as <b>concat lists</b> (one embedded string per user/job in match_v3), not per-skill cosine pairs.</p>' +
-    '<p><b>Left (step 1–2):</b> match_v3 concat cosine \u2192 CE rerank. Headline = <b>p_hat</b> (raw cosine). No u_hat here.</p>' +
-    '<p><b>Right (step 3):</b> Same pool: compute <b>u_hat</b> (preferences), then <b>final = u_hat \u00d7 p_hat</b> and re-sort. '
-    + 'u_hat is the same for a given user+job wherever that job appears.</p>' +
+    '<p><b>Column 1:</b> <b>p_hat</b> headline; expand for <b>job concat skills</b>.</p>' +
+    '<p><b>Column 2:</b> Top scores: <b>u_hat</b>, <b>p_hat</b>, <b>final</b>; expand for attribute + BWS tables.</p>' +
+    '<p>Users with zero concat skills: column 1 empty.</p>' +
+    '<p>Requires <code>PREFERENCE_SCORER_MODE=hybrid_v1</code> when running <code>run_matching</code>.</p>' +
     '<p>Built by <code>' + esc(SCRIPT_REF) + '</code>.</p>';
   document.getElementById('modalbg').classList.add('open');
 }
@@ -318,7 +452,7 @@ init();
 
 
 def render_dual_page(b64: str) -> str:
-    title = f"{BRAND} — CE vs u×p"
+    title = f"{BRAND}"
     return f"""<!doctype html>
 <html lang="en">
 <head>

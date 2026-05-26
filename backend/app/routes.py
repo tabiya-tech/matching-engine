@@ -24,6 +24,9 @@ from app.database import get_all_jobs_with_timing, get_all_occupations_with_timi
 from app.match_timing_log import log_match_step
 from app.services.matching_service import match_user_with_data
 from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
+from app.services.match_concat_gemini_ce_preference_service import (
+    run_match_concat_gemini_ce_with_preferences,
+)
 
 api_key_auth = APIKeyHeader(
     scheme_name="gcp_api_key",
@@ -32,7 +35,7 @@ api_key_auth = APIKeyHeader(
 )
 
 router = APIRouter(dependencies=[Depends(api_key_auth)])
-# Public matching routes (no x-api-key): /match_v2 (hybrid BM25×cosine), /match_v3 (Gemini concat × Mongo CE).
+# Public: /match_v2 (BM25×cosine), /match_v3 (Gemini+CE), /match_v4 (Gemini+CE+preference final).
 router_public = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -417,6 +420,119 @@ async def match_v3(
 
         log_match_step(
             "http /match_v3",
+            "request (summary)",
+            n_users=len(users),
+            n_jobs=len(jobs),
+            n_occupation_rows=0,
+            fetch_parallel_wall_ms=fetch_wall_ms,
+            scoring_thread_pool_ms=score_ms,
+            request_total_ms=_ms(t_req),
+        )
+        return out
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.exception(e)
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception(e)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e.__class__.__name__}") from e
+
+
+@router_public.post(
+    "/match_v4",
+    tags=["matching"],
+    operation_id="match_v4",
+    response_model=List[MatchConcatGeminiCeResponse],
+    responses={
+        400: {"description": "Bad Request"},
+        500: {"description": "Internal Server Error"},
+    },
+)
+async def match_v4(
+    payload: Annotated[
+        List[MatchRequest],
+        Body(
+            ...,
+            description=(
+                "Same body as ``POST /match_v3``: JSON array of MatchRequest. "
+                "Requires ``PREFERENCE_SCORER_MODE=hybrid_v1`` for hybrid attribute + BWS scoring."
+            ),
+            example=_MATCH_V3_BODY_EXAMPLE,
+        ),
+    ],
+    retrieve_top_k: Optional[int] = Query(
+        None,
+        ge=1,
+        le=500,
+        description=(
+            "Stage-1 concat cosine shortlist size. "
+            f"Default: COSINE_CROSS_ENCODER_RETRIEVE_TOP_K ({COSINE_CROSS_ENCODER_RETRIEVE_TOP_K})."
+        ),
+    ),
+    final_top_k: Optional[int] = Query(
+        None,
+        ge=1,
+        le=200,
+        description="CE pool size and max preference-ranked rows returned. Default: 30.",
+    ),
+    final_score_combiner: Optional[str] = Query(
+        None,
+        description=(
+            "How to combine u_hat and p_hat: ``product`` (u_hat × p_hat) or "
+            "``geometric_mean`` (√(u_hat × p_hat)). Defaults to env FINAL_SCORE_COMBINER."
+        ),
+    ),
+):
+    """Gemini concat cosine + cross-encoder rerank, then hybrid preference final score.
+
+    Same JSON body and response envelope as ``POST /match_v3``. Each job row includes
+    ``u_hat``, ``p_hat``, and ``final_score``; ``concat_gemini_ce_recommendations`` is
+    sorted by ``final_score`` (desc). ``p_hat`` is raw stage-1 cosine, not CE min–max.
+
+    Does **not** require ``x-api-key``. Uses ``GEMINI_API_KEY`` for user embeddings.
+    """
+    try:
+        t_req = time.perf_counter()
+        if len(payload) > MATCH_V2_MAX_USERS_PER_REQUEST:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Too many users in one request (max {MATCH_V2_MAX_USERS_PER_REQUEST}).",
+            )
+        if not payload:
+            raise HTTPException(status_code=400, detail="Request body must be a non-empty JSON array.")
+
+        users = [u.model_dump() for u in payload]
+        rt = retrieve_top_k if retrieve_top_k is not None else COSINE_CROSS_ENCODER_RETRIEVE_TOP_K
+        ft = final_top_k if final_top_k is not None else 30
+        combiner = (final_score_combiner or "").strip().lower() or None
+        if combiner is not None and combiner not in ("product", "geometric_mean"):
+            raise HTTPException(
+                status_code=400,
+                detail="final_score_combiner must be 'product' or 'geometric_mean'",
+            )
+
+        t_fetch = time.perf_counter()
+        jobs, mongo_timing = await get_all_jobs_with_timing(users=users)
+        fetch_wall_ms = _ms(t_fetch)
+
+        t_score = time.perf_counter()
+        raw = await asyncio.to_thread(
+            run_match_concat_gemini_ce_with_preferences,
+            users,
+            jobs,
+            retrieve_top_k=rt,
+            final_top_k=ft,
+            mongo_timing=mongo_timing,
+            final_score_combiner=combiner,
+        )
+        score_ms = _ms(t_score)
+
+        out: List[MatchConcatGeminiCeResponse] = [MatchConcatGeminiCeResponse(**row) for row in raw]
+
+        log_match_step(
+            "http /match_v4",
             "request (summary)",
             n_users=len(users),
             n_jobs=len(jobs),
