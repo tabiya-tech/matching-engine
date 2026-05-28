@@ -27,6 +27,9 @@ class MatchRequest(BaseModel):
     skills_vector: SkillsVector = Field(default_factory=SkillsVector)
     skill_groups_origin_uuids: List[str] = Field(default_factory=list)
     preference_vector: PreferenceVector
+    any_post_secondary_educ: Optional[int] = None
+    number_post_secondary_educ: Optional[int] = None
+    total_duration_postsec: Optional[float] = None
 
 class SkillComponents(BaseModel):
     loc: float
