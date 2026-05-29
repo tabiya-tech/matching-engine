@@ -35,6 +35,10 @@ from app.services.cross_encoder.gemini_embeddings import (
 )
 from app.services.cross_encoder.reranker import CrossEncoderReranker, rerank_cosine_recommendations
 from app.services.cosine_similarity.skill_score import CosineSkillMatcher
+from app.services.education_eligibility import (
+    job_requires_post_secondary,
+    user_lacks_post_secondary,
+)
 
 __all__ = ["run_match_concat_gemini_ce", "preload_match_v3_models"]
 
@@ -159,6 +163,9 @@ def run_match_concat_gemini_ce(
         j.pop("concat_skill_embedding_gemini", None)
         j.pop("job_embedding", None)
 
+    # Post-secondary education gate: aligned with job_rows, used to skip candidates per user.
+    job_requires_ps = [job_requires_post_secondary(j) for j in job_rows]
+
     if not job_rows:
         empty_summary = {
             "stage1": "concat_gemini_cosine_mongo_job_vectors",
@@ -204,9 +211,12 @@ def run_match_concat_gemini_ce(
     for i, user in enumerate(users):
         sim_row = (u_norm[i : i + 1] @ j_norm.T).reshape(-1)
         order = _sorted_indices_desc(sim_row)
+        user_no_ps = user_lacks_post_secondary(user)
 
         cosine_recs: List[Dict[str, Any]] = []
         for ji in order:
+            if user_no_ps and job_requires_ps[int(ji)]:
+                continue  # job requires post-secondary education the user does not have
             jid = jid_list[int(ji)]
             job_obj = job_rows[int(ji)]
             job_plain = _strip_job_vectors(job_obj)

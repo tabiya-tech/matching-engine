@@ -107,8 +107,6 @@ def run_pipeline(
         retrieve_top_k=retrieve_top_k,
         final_top_k=retrieve_top_k,
         mongo_timing=mongo_timing,
-        include_per_job_skill_detail=False,
-        skip_users_without_skills=True,
     )
 
     results: List[Dict[str, Any]] = []
@@ -205,8 +203,10 @@ def run_pipeline(
         "embedding_dim": v3_cfg0.get("embedding_dim") or EMBEDDING_DIM,
         "n_jobs_with_stage1_embedding": v3_cfg0.get("n_jobs_with_stage1_embedding"),
         "max_per_job_skills_in_output": max_per_job_skills,
+        # run_match_concat_gemini_ce does not emit per-job skill detail nor skip
+        # skill-less users; labels reflect actual service behaviour.
         "include_per_job_skill_detail": False,
-        "skip_users_without_skills": True,
+        "skip_users_without_skills": False,
         "jobs_limit": jobs_limit,
         "n_jobs_loaded_before_limit": n_jobs_loaded,
         "compare_final_combiners": compare_final_combiners,

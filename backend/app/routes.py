@@ -273,6 +273,7 @@ async def match_v2(
 
         out: List[MatchV2Response] = []
         for row in envelope.get("results") or []:
+            # Post-secondary education gate is enforced inside hybrid_match_users_with_jobs.
             fused = row.get("column_fused_weighted_minmax") or []
             uid = str(row.get("user_id") or "")
             out.append(
