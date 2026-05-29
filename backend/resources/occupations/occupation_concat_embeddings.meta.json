@@ -1,0 +1,8 @@
+{
+  "model": "gemini-embedding-001",
+  "embedding_dim": 3072,
+  "n_occupations": 436,
+  "normalized": true,
+  "source": "C:\\Users\\jasmi\\OneDrive - Nexus365\\Documents\\GitHub\\shp-matching-algorithm\\backend\\resources\\occupations\\combined_occupation_database_with_wa.json",
+  "created_at": "2026-05-29T16:25:00.449316+00:00"
+}

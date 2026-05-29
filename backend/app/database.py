@@ -14,6 +14,7 @@ from app.config import (
     JOBS_RETRIEVAL_FILTER,
     JOBS_RETRIEVAL_LIMIT,
     MONGO_JOBS_COLLECTION,
+    OCCUPATION_CONCAT_EMBEDDINGS_PATH,
     OCCUPATION_JSON_PATH,
 )
 
@@ -533,6 +534,75 @@ async def get_all_jobs_with_timing(users: Optional[Sequence[dict]] = None):
 
 
 _cached_occupations = None
+_cached_occ_embeddings = None  # {occupation_code: np.ndarray(float32, EMBEDDING_DIM)}
+
+
+def _occ_skill_pairs(uuids: list, labels: list) -> List[Dict[str, str]]:
+    """Zip occupation skill uuids with their labels (from the occupation JSON; '' if absent)."""
+    pairs: List[Dict[str, str]] = []
+    for i, u in enumerate(uuids):
+        lab = labels[i] if i < len(labels) else ""
+        pairs.append({"id": str(u), "label": str(lab) if lab else ""})
+    return pairs
+
+
+def _load_occupation_embeddings() -> Dict[str, Any]:
+    """Lazy/cached load of the committed occupation concat-embeddings NPZ (code -> vector).
+
+    Returns {} (with a warning) if the artifact is missing/unreadable, so occupations are
+    simply skipped by the /match_v4 retrieval rather than crashing the request.
+    """
+    global _cached_occ_embeddings
+    if _cached_occ_embeddings is not None:
+        return _cached_occ_embeddings
+    out: Dict[str, Any] = {}
+    try:
+        import numpy as np
+
+        with np.load(OCCUPATION_CONCAT_EMBEDDINGS_PATH, allow_pickle=True) as data:
+            codes = [str(c) for c in data["codes"].tolist()]
+            vectors = np.asarray(data["vectors"], dtype=np.float32)
+        for code, vec in zip(codes, vectors):
+            out[code] = np.ascontiguousarray(vec, dtype=np.float32)
+        logger.info(
+            "Loaded %d occupation concat embeddings from %s",
+            len(out), OCCUPATION_CONCAT_EMBEDDINGS_PATH,
+        )
+    except FileNotFoundError:
+        logger.warning(
+            "Occupation embeddings NPZ not found at %s; /match_v4 occupations will be skipped. "
+            "Build it via `python -m app.services.cross_encoder.embed_occupations`.",
+            OCCUPATION_CONCAT_EMBEDDINGS_PATH,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(
+            "Failed to load occupation embeddings (%s): %s; occupations skipped.",
+            OCCUPATION_CONCAT_EMBEDDINGS_PATH, e,
+        )
+    _cached_occ_embeddings = out
+    return out
+
+
+def attach_occupation_embeddings(occupations: Sequence[dict]) -> List[dict]:
+    """Return occupation dicts with ``job_embedding`` (shared np.ndarray) attached by code.
+
+    Vector is shared across all county-rows of the same occupation code (skills are identical),
+    so memory stays at one array per code. Rows with no matching embedding are returned
+    unchanged (the v4 engine skips items without a stage-1 vector).
+    """
+    emb = _load_occupation_embeddings()
+    if not emb:
+        return list(occupations)
+    out: List[dict] = []
+    for occ in occupations:
+        vec = emb.get(str(occ.get("originUuid") or ""))
+        if vec is None:
+            out.append(occ)
+        else:
+            o = dict(occ)
+            o["job_embedding"] = vec
+            out.append(o)
+    return out
 
 
 async def get_all_occupations():
@@ -569,8 +639,12 @@ async def get_all_occupations_with_timing():
         for entry in raw_occupations:
                 occ = entry.get("occupation", {})
                 skills = entry.get("skills", {})
-                ess_uuids = skills.get("essential", {}).get("uuids", []) if isinstance(skills.get("essential"), dict) else []
-                opt_uuids = skills.get("optional", {}).get("uuids", []) if isinstance(skills.get("optional"), dict) else []
+                ess_block = skills.get("essential", {}) if isinstance(skills.get("essential"), dict) else {}
+                opt_block = skills.get("optional", {}) if isinstance(skills.get("optional"), dict) else {}
+                ess_uuids = ess_block.get("uuids", []) or []
+                opt_uuids = opt_block.get("uuids", []) or []
+                ess_labels = ess_block.get("labels", []) or []
+                opt_labels = opt_block.get("labels", []) or []
                 counties = entry.get("counties_data", [])
 
                 code = occ.get("code", "")
@@ -614,10 +688,9 @@ async def get_all_occupations_with_timing():
                     elif isinstance(attrs_raw, dict):
                         attributes = attrs_raw
 
-                    # Occupation JSON only carries bare skill UUIDs (no labels).
-                    # Wrap in the same {id, label} shape used by job dicts so
-                    # downstream consumers see one uniform contract; gap analysis
-                    # reads id directly without going through label resolution.
+                    # Wrap skills in the same {id, label} shape used by job dicts. Labels come
+                    # from the occupation JSON (skills.*.labels) when present, else empty; gap
+                    # analysis reads id directly without going through label resolution.
                     flattened.append({
                         "uuid": f"{code}_{county}" if county else code,
                         "originUuid": code,
@@ -627,8 +700,8 @@ async def get_all_occupations_with_timing():
                         "location": county,
                         "city": county,
                         "province": county,
-                        "essential_skills": [{"id": str(u), "label": ""} for u in ess_uuids],
-                        "optional_skills": [{"id": str(u), "label": ""} for u in opt_uuids],
+                        "essential_skills": _occ_skill_pairs(ess_uuids, ess_labels),
+                        "optional_skills": _occ_skill_pairs(opt_uuids, opt_labels),
                         "skill_groups_origin_uuids": [],
                         "attributes": attributes,
                         "requires_post_secondary": requires_post_secondary,
