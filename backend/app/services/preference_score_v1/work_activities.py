@@ -17,7 +17,7 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.preference_score import PreferenceScorer
-from .levels import attribute_label, ladder_position, resolve_schema_level_id
+from .levels import attribute_label, ladder_position, level_label, resolve_schema_level_id
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -92,7 +92,7 @@ def compute_dce_utility(
                 "attribute": attr,
                 "attr_label": attribute_label(attr, schema),
                 "job_value": resolved,
-                "job_value_label": attribute_label(attr, schema),
+                "job_value_label": level_label(attr, raw_level, schema),  # level label, e.g. "~70k"
                 "user_weight": round(v, 4),          # per-user [0,1] preference value v_k
                 "beta": round(beta_hat, 4),          # recovered signed coefficient β̂_k
                 "encoded_value": round(v_tilde, 4),  # graded ladder position ṽ_k
