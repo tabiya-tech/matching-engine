@@ -17,14 +17,14 @@ from app.config import (
 from app.database import get_all_jobs, get_all_occupations
 from app.match_timing_log import log_match_step
 from app.services.education_eligibility import filter_jobs_by_education
-from app.services.preference_score import PreferenceScorer
+from app.services.preference_score_v1 import get_preference_scorer
 from app.services.skill_gap_analysis import analyze_skill_gaps
 from app.services.skill_score import SkillScorer
 from app.services.success_propensity import SuccessPropensityScorer
 
 # Initialize scorers once at module level
 scorer_skill = SkillScorer()
-scorer_pref = PreferenceScorer()
+scorer_pref = get_preference_scorer()
 scorer_success = SuccessPropensityScorer()
 
 
@@ -41,6 +41,10 @@ def _split_pref_details(pref_details: list) -> tuple:
             wa_bws = {
                 "wa_score_sum": d.get("wa_score_sum", 0.0),
                 "details": d.get("wa_details", []),
+                "wa_aggregation": d.get("wa_aggregation"),
+                "n_work_activities": d.get("n_work_activities"),
+                "V_task": d.get("V_task"),
+                "V_task_hat": d.get("V_task_hat"),
             }
         else:
             standard.append(d)

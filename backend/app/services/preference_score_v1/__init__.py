@@ -1,16 +1,21 @@
-"""Hybrid preference scoring v1 (see README.md and PDF spec in this folder)."""
+"""Unified DCE + BWS preference scoring (additive-RUM). See README.md."""
 
 from app.config import PREFERENCE_SCORER_MODE
 
-from .scorer import HybridPreferenceScorer
+from .scorer import UnifiedPreferenceScorer
 
 
 def get_preference_scorer():
-    if PREFERENCE_SCORER_MODE == "hybrid_v1":
-        return HybridPreferenceScorer()
-    from app.services.preference_score import PreferenceScorer
+    """Return the configured preference scorer.
 
-    return PreferenceScorer()
+    Default ``unified`` → ``UnifiedPreferenceScorer`` (DCE attributes + BWS, additive-RUM).
+    ``legacy`` → the old hardcoded-beta ``PreferenceScorer`` (A/B escape hatch only).
+    """
+    if PREFERENCE_SCORER_MODE == "legacy":
+        from app.services.preference_score import PreferenceScorer
+
+        return PreferenceScorer()
+    return UnifiedPreferenceScorer()
 
 
-__all__ = ["HybridPreferenceScorer", "get_preference_scorer"]
+__all__ = ["UnifiedPreferenceScorer", "get_preference_scorer"]

@@ -194,15 +194,46 @@ PREFERENCE_BASE_CONSTANT: float = _f("PREFERENCE_BASE_CONSTANT", 0.5)
 PREFERENCE_LEGACY_SCORE_SCALE: float = _f("PREFERENCE_LEGACY_SCORE_SCALE", 0.2)
 PREFERENCE_SIGMOID_NUMERATOR: float = _f("PREFERENCE_SIGMOID_NUMERATOR", 4.0)
 
-# preference_score (legacy) vs preference_score_v1 (hybrid PDF spec)
-PREFERENCE_SCORER_MODE: str = _s("PREFERENCE_SCORER_MODE", "legacy").strip().lower()
-if PREFERENCE_SCORER_MODE not in ("legacy", "hybrid_v1"):
-    raise ValueError("PREFERENCE_SCORER_MODE must be 'legacy' or 'hybrid_v1'")
+# Unified DCE+BWS additive-RUM scorer (default) vs the old beta-config scorer (A/B escape hatch).
+PREFERENCE_SCORER_MODE: str = _s("PREFERENCE_SCORER_MODE", "unified").strip().lower()
+# "hybrid_v1" is the former name for the v1 scorer that the unified scorer replaces; accept it
+# as a deprecated alias so a stale env value doesn't crash startup.
+if PREFERENCE_SCORER_MODE == "hybrid_v1":
+    PREFERENCE_SCORER_MODE = "unified"
+if PREFERENCE_SCORER_MODE not in ("unified", "legacy"):
+    raise ValueError("PREFERENCE_SCORER_MODE must be 'unified' or 'legacy'")
 
 HYBRID_PREF_SIGMOID_FACTOR: float = _f("HYBRID_PREF_SIGMOID_FACTOR", 2.646)
 HYBRID_PREF_VIGNETTES_FOR_FULL_CONFIDENCE: int = _i("HYBRID_PREF_VIGNETTES_FOR_FULL_CONFIDENCE", 10)
 _hybrid_schema = _s("HYBRID_PREF_SCHEMA_PATH", "").strip()
 HYBRID_PREF_SCHEMA_PATH: str = _hybrid_schema if _hybrid_schema else ""
+
+# BWS work-activity preference integration into u_hat (additive-RUM).
+# u_hat = logistic(gamma * [alpha * V_task_hat + (1-alpha) * V_dce_hat]), each component in [-1,1].
+# alpha = task-vs-DCE weight (0.5 = equal after scale-harmonisation); gamma = logistic gain.
+BWS_ALPHA: float = min(1.0, max(0.0, _f("BWS_ALPHA", 0.5)))
+BWS_GAIN_GAMMA: float = _f("BWS_GAIN_GAMMA", 4.0)
+# "additive_rum" (new, default) | "legacy" (old importance x level x bws sum/mean) — escape hatch
+# for A/B comparison and the alpha sensitivity sweep.
+BWS_INTEGRATION_MODE: str = _s("BWS_INTEGRATION_MODE", "additive_rum").strip().lower()
+if BWS_INTEGRATION_MODE not in ("additive_rum", "legacy"):
+    raise ValueError("BWS_INTEGRATION_MODE must be 'additive_rum' or 'legacy'")
+
+# DCE-attribute utility (unified scorer). The per-user value v_k = sigmoid(beta_k) is
+# inverted via beta_hat = logit(clamp(v_k, eps, 1-eps)); eps bounds extreme values.
+DCE_LOGIT_EPS: float = _f("DCE_LOGIT_EPS", 0.01)
+# Optional per-attribute multiplicative scale on beta_hat (JSON object string), e.g.
+# '{"earnings_per_month": 5.0}' to compensate the near-neutral continuous earnings term.
+# Default: no scaling (every attribute = 1.0).
+import json as _json
+_dce_scale_raw = _s("DCE_ATTR_SCALE", "")
+try:
+    DCE_ATTR_SCALE: Dict[str, float] = (
+        {str(k): float(v) for k, v in _json.loads(_dce_scale_raw).items()}
+        if _dce_scale_raw else {}
+    )
+except (ValueError, TypeError, AttributeError):
+    DCE_ATTR_SCALE = {}
 
 PREFERENCE_CONFIG: Dict[str, Any] = {
     "base_constant": PREFERENCE_BASE_CONSTANT,

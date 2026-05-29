@@ -19,6 +19,10 @@ class PreferenceVector(BaseModel):
     social_meaning: Optional[float] = 0.0
     bws_scores: Optional[dict] = None
     top_10_bws: Optional[List[str]] = None
+    # Confidence in the elicited DCE preferences (shrinks the DCE term toward neutral when
+    # low). Either an explicit [0,1] confidence, or a vignette count. Absent ⇒ f = 1.0.
+    preference_confidence: Optional[float] = None
+    n_vignettes_completed: Optional[int] = None
 
 class MatchRequest(BaseModel):
     user_id: Optional[str] = None
@@ -98,10 +102,18 @@ class MatchedWorkActivity(BaseModel):
     norm_importance: float
     norm_level: float
     wa_contribution: float
+    # Additive-RUM diagnostics (BWS_INTEGRATION_MODE="additive_rum")
+    weight: Optional[float] = None  # ŵ_c = WA_Importance / Σ WA_Importance (Σ = 1)
+    beta: Optional[float] = None    # β_c = user BWS part-worth for this activity
 
 class WorkActivityBWS(BaseModel):
     wa_score_sum: float = 0.0
     details: List[MatchedWorkActivity] = Field(default_factory=list)
+    # Additive-RUM diagnostics
+    wa_aggregation: Optional[str] = None
+    n_work_activities: Optional[int] = None
+    V_task: Optional[float] = None
+    V_task_hat: Optional[float] = None
 
 class OpportunityRecommendation(BaseModel):
     uuid: str

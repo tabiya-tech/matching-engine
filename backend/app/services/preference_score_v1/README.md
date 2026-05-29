@@ -1,65 +1,77 @@
-# Hybrid preference scoring (v1)
+# Unified preference scoring (DCE + BWS, additive-RUM)
 
-Implements **Hybrid Preference Scoring (1).pdf** in this folder.
+One `u_hat` from two individual-level random-utility blocks, combined on a common harmonised scale.
 
-- **Part A (new):** DCE attributes — weighted match on demand **level tags** (bucket ids in `job.attributes`).
-- **Part B (existing logic):** O*NET work activities — same BWS × (I/5) × (L/7) as `preference_score.py`, aggregated with **mean** (1/N) not sum.
+- **Part A — DCE attributes:** reconstruct the DCE's own utility from the per-user betas on
+  graded job levels.
+- **Part B — BWS work activities:** importance-weighted work-activity part-worths.
+
+## What the per-user values are
+
+The elicitation engine estimates per-user MNL/DCE part-worths `β` and sends this repo
+`v_k = sigmoid(β_k) ∈ [0,1]` (in `preference_vector`). `0.5` = neutral; `>0.5` prefers the
+attribute's **target** level; `<0.5` prefers the **reference** level. BWS `bws_scores` are HB
+posterior part-worths (~[-2,2], 0 = neutral), keyed by O*NET WA codes.
 
 ## Formulas
 
-**Part A**
+**Part A — DCE attributes** (`work_activities.compute_dce_utility`)
 
 ```text
-V     = Σᵢ (wᵢ × Vⱼ) / Σᵢ wᵢ
-S_attrs = clamp(V × f, 0, 1)
+β̂_k = logit(clamp(v_k, eps, 1-eps)) · scale_k      # exact inverse of the sigmoid; v=0.5 → 0
+ṽ_k = ladder_position(reference→target) ∈ [0,1]     # reference level → 0 (DCE dummy-coding)
+V_dce = Σ_k β̂_k · ṽ_k ;  Ṽ_dce = f · clamp(V_dce / Σ_k|β̂_k|, -1, 1)
 ```
+Direction comes from the **sign of β̂_k**, so there is no gain/cost orientation; the schema's
+per-attribute level **ordering** fixes the reference (ladder 0) and target (ladder 1). `f` is the
+confidence factor (`preference_confidence` / `n_vignettes_completed`; absent ⇒ 1.0).
 
-- **wᵢ** — `user.preference_vector[i]` or `user.attributes[i].importance`
-- **Vⱼ** — from job level tag + **orientation** (client sign convention):
-
-| Orientation | Attributes | Formula |
-|-------------|------------|---------|
-| **Gain (+)** | earnings, career_growth, social_interaction, task_content, work_flexibility, social_meaning | V′ = ladder position (low→0, high→1) |
-| **Cost (−)** | physical_demand | V′ = **1 −** ladder position (`phys_light`→1, `phys_heavy`→0) |
-
-Ladder position = index / (n−1) on `job_attributes_schema (1).json` buckets.
-- **f** — `preference_confidence` or `vignette_count / HYBRID_PREF_VIGNETTES_FOR_FULL_CONFIDENCE`
-
-**Part B**
+**Part B — BWS work activities** (`work_activities.compute_task_utility`)
 
 ```text
-S_wa = (1/N) Σ_c [ BWS(c) × (I_c/5) × (L_c/7) ]
+V_task = Σ_c ŵ_c · β_c ,  ŵ_c ∝ WA_Importance (Σŵ = 1) ;  Ṽ_task = clamp(V_task/2, -1, 1)
 ```
 
-**Final**
+**Combination** (`work_activities.combine_utilities`)
 
 ```text
-raw   = S_attrs + S_wa
-u_hat = 1 / (1 + exp(-(raw × 2.646)))
+u_hat = logistic( γ · [ α·Ṽ_task + (1-α)·Ṽ_dce ] )   # α=BWS_ALPHA (0.5), γ=BWS_GAIN_GAMMA (4.0)
 ```
 
-Default sigmoid factor **2.646** (anchor: raw=2 → ~99.5%).
+## Schema (`job_attributes_schema.json`)
 
-## Demand side
+Each attribute's `levels` are ordered **reference (0) → target (1)**, aligned to the level whose
+part-worth the per-user value encodes. Level ids are the canonical job-side `selected_level_id`s
+(resolved directly by `levels.resolve_schema_level_id`). `HYBRID_PREF_SCHEMA_PATH` overrides the
+committed default.
 
-Uses existing **`job.attributes`** level id strings (LLM / enrichment “tags” / buckets). No new Mongo fields.
-
-## Enable
+## Config
 
 ```bash
-# backend/.env
-PREFERENCE_SCORER_MODE=hybrid_v1
+PREFERENCE_SCORER_MODE=unified   # default; 'legacy' = old PreferenceScorer (A/B escape hatch)
+BWS_ALPHA=0.5                    # task vs DCE weight (sensitivity sweep)
+BWS_GAIN_GAMMA=4.0               # logistic gain
+DCE_LOGIT_EPS=0.01               # clamps extreme v_k before logit
+DCE_ATTR_SCALE={}                # JSON, optional per-attribute β̂ scale (e.g. earnings)
 ```
 
-Default remains `legacy` → `PreferenceScorer`.
+`calculate_score(..., include_work_activities=False)` zeros Part B (`V_task=0`) for attrs-only dashboards.
 
-`calculate_score(..., include_work_activities=False)` skips Part B (`S_wa = 0`) for attrs-only comparison dashboards.
+## Caveats
+
+- **Earnings** is a continuous DCE term with a tiny coefficient, so `sigmoid(β)≈0.5` ⇒ `β̂≈0`: it
+  barely moves `V_dce` under the current contract. Use `DCE_ATTR_SCALE` to compensate, or fix upstream.
+- The DCE batch covers 4 attributes (earnings, physical_demand, social_interaction, career_growth);
+  others sit at 0.5 ⇒ 0 contribution.
+- Per-attribute **target-level** semantics (esp. `physical_demand`, `social_interaction`) are gated by
+  the directional tests in `backend/tests/test_dce_utility.py` / `test_preference_scorers.py`.
 
 ## Code
 
 | File | Role |
 |------|------|
-| `levels.py` | Level id → Vⱼ |
-| `work_activities.py` | Part B (mean BWS) |
-| `scorer.py` | `HybridPreferenceScorer` |
+| `levels.py` | level id → ladder position (reference→target) |
+| `work_activities.py` | `compute_dce_utility` (Part A), `compute_task_utility` (Part B), `combine_utilities` |
+| `scorer.py` | `UnifiedPreferenceScorer` |
 | `__init__.py` | `get_preference_scorer()` |
+| `job_attributes_schema.json` | committed attribute/level schema |
