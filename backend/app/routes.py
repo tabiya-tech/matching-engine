@@ -458,7 +458,7 @@ async def match_v4(
             ...,
             description=(
                 "Same body as ``POST /match_v3``: JSON array of MatchRequest. "
-                "Requires ``PREFERENCE_SCORER_MODE=hybrid_v1`` for hybrid attribute + BWS scoring."
+                "Preference scoring uses ``PREFERENCE_SCORER_MODE`` (default ``unified``: DCE attributes + BWS)."
             ),
             example=_MATCH_V3_BODY_EXAMPLE,
         ),

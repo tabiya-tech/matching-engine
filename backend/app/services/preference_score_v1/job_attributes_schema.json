@@ -1,0 +1,49 @@
+{
+  "_doc": "DCE attribute schema for the unified preference scorer. Each attribute's `levels` are ordered REFERENCE (ladder 0) -> TARGET (ladder 1). The user's preference_vector[attr] = sigmoid(beta of the TARGET level vs the reference), so beta_hat = logit(v) > 0 means the user prefers the target level. Level ids are the canonical job-side `selected_level_id` values emitted by the occupations DB / llm_job_attributes; resolve_schema_level_id matches them directly (no alias needed). Ordering choices are validated by the directional tests in backend/tests/test_dce_utility.py.",
+  "attributes": [
+    {
+      "name": "earnings_per_month",
+      "label": "Monthly Earnings",
+      "reference_level_id": "earn_15k",
+      "target_note": "continuous earnings; higher = target. v>0.5 => prefers higher pay.",
+      "levels": [
+        {"id": "earn_15k", "label": "~15k"},
+        {"id": "earn_30k", "label": "~30k"},
+        {"id": "earn_50k", "label": "~50k"},
+        {"id": "earn_70k", "label": "~70k"}
+      ]
+    },
+    {
+      "name": "career_growth",
+      "label": "Career Growth",
+      "reference_level_id": "growth_low",
+      "target_note": "value encodes growth_high part-worth. v>0.5 => prefers strong growth.",
+      "levels": [
+        {"id": "growth_low", "label": "Few prospects"},
+        {"id": "growth_med", "label": "Some prospects"},
+        {"id": "growth_high", "label": "Strong prospects"}
+      ]
+    },
+    {
+      "name": "physical_demand",
+      "label": "Physical Demand & Risk",
+      "reference_level_id": "phys_light",
+      "target_note": "value encodes phys_heavy part-worth (elicitation term physical_demand_phys_heavy). v<0.5 => dislikes heavy/risky work, so heavy jobs (ladder 1) get a negative contribution. CONFIRM against production mapping.",
+      "levels": [
+        {"id": "phys_light", "label": "Light / safe"},
+        {"id": "phys_heavy", "label": "Heavy / risky"}
+      ]
+    },
+    {
+      "name": "social_interaction",
+      "label": "Social Interaction",
+      "reference_level_id": "soc_alone",
+      "target_note": "ordered alone -> peers -> customers (increasing interaction). Under the current contract the user-side social_interaction value is typically 0.5 (neutral => no contribution); the exact target level the value encodes needs production confirmation.",
+      "levels": [
+        {"id": "soc_alone", "label": "Work alone"},
+        {"id": "soc_peers", "label": "With peers"},
+        {"id": "soc_customers", "label": "With customers"}
+      ]
+    }
+  ]
+}

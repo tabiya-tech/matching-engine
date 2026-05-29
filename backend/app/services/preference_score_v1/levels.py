@@ -43,12 +43,7 @@ COST_ORIENTED_ATTRIBUTES: frozenset[str] = frozenset(
     }
 )
 
-_SCHEMA_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "preferences_utility"
-    / "untitled folder"
-    / "job_attributes_schema (1).json"
-)
+_SCHEMA_PATH = Path(__file__).resolve().parent / "job_attributes_schema.json"
 
 
 @lru_cache(maxsize=1)
