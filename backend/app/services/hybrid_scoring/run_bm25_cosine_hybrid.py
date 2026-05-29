@@ -61,6 +61,10 @@ from app.services.cosine_similarity.run_cosine_matching import (
     _load_users,
 )
 from app.services.cosine_similarity.skill_score import CosineSkillMatcher, compact_cosine_matched_skill_lines
+from app.services.education_eligibility import (
+    job_requires_post_secondary,
+    user_lacks_post_secondary,
+)
 
 
 def _load_mrr_relevance(path: Path) -> Dict[str, Set[str]]:
@@ -556,30 +560,51 @@ def hybrid_match_users_with_jobs(
     matcher = get_cosine_matcher_singleton()
 
     cfg_skill = "CosineSkillMatcher.mean_best_cosine (embedding cosine on skills)"
+    # Post-secondary education gate: indexes are built over all jobs (shared across users),
+    # so we drop ineligible jobs from each user's output columns rather than pre-filtering jobs.
+    ps_required_uuids = {
+        str(j.get("uuid") or "") for j in jobs if job_requires_post_secondary(j)
+    }
+    _job_row_columns = (
+        "column_bm25",
+        "column_cosine_skills",
+        "column_legacy_u",
+        "column_common",
+        "column_fused_weighted_minmax",
+    )
     results: List[Dict[str, Any]] = []
     for u in users:
         uid_k = str(u.get("user_id") or "")
         rel = mrr_labels.get(uid_k) if mrr_labels is not None else None
-        results.append(
-            one_user_bundle(
-                u,
-                jobs,
-                skills_okapi,
-                full_okapi,
-                matcher,
-                variant_bm25=variant_bm25,
-                bm25_pool_k=bm25_pool_k,
-                cosine_pool_k=cosine_pool_k,
-                min_common=min_common,
-                max_fallback_pool=max_fallback_pool,
-                col_display_k=col_display_k,
-                alpha_on_cosine=alpha_on_cosine,
-                skills_weight=skills_weight,
-                text_weight=text_weight,
-                include_programme=include_programme,
-                relevance_ids=rel,
-            )
+        bundle = one_user_bundle(
+            u,
+            jobs,
+            skills_okapi,
+            full_okapi,
+            matcher,
+            variant_bm25=variant_bm25,
+            bm25_pool_k=bm25_pool_k,
+            cosine_pool_k=cosine_pool_k,
+            min_common=min_common,
+            max_fallback_pool=max_fallback_pool,
+            col_display_k=col_display_k,
+            alpha_on_cosine=alpha_on_cosine,
+            skills_weight=skills_weight,
+            text_weight=text_weight,
+            include_programme=include_programme,
+            relevance_ids=rel,
         )
+        if ps_required_uuids and user_lacks_post_secondary(u):
+            for col_key in _job_row_columns:
+                col = bundle.get(col_key)
+                if isinstance(col, list):
+                    bundle[col_key] = [
+                        r
+                        for r in col
+                        if str(r.get("job_uuid") or r.get("uuid") or "")
+                        not in ps_required_uuids
+                    ]
+        results.append(bundle)
 
     config: Dict[str, Any] = {
         "entrypoint": "hybrid_match_users_with_jobs",

@@ -16,6 +16,7 @@ from app.config import (
 )
 from app.database import get_all_jobs, get_all_occupations
 from app.match_timing_log import log_match_step
+from app.services.education_eligibility import filter_jobs_by_education
 from app.services.preference_score import PreferenceScorer
 from app.services.skill_gap_analysis import analyze_skill_gaps
 from app.services.skill_score import SkillScorer
@@ -406,6 +407,8 @@ def _match_items(
     t0 = time.perf_counter()
     if MATCH_APPLY_LOCATION_FILTER:
         items = [item for item in items if _job_matches_user_location(item, user)]
+    # Post-secondary education gate (no-op for occupations, which lack the field).
+    items = filter_jobs_by_education(user, items)
     filter_ms = _ms(t0)
 
     empty_timing: dict = {

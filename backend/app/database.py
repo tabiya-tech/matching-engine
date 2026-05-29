@@ -437,6 +437,9 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "optional_skills": optional_skills,
         "skill_groups_origin_uuids": skill_groups,
         "attributes": attributes,
+        # Post-secondary education gate (see app.services.education_eligibility).
+        # llm_job_attributes is fully projected, so this subfield is already loaded.
+        "requires_post_secondary": attributes.get("requires_post_secondary"),
         "opportunity_description": meta.get("job_description") or meta.get("description") or "",
         "onet_work_activities": onet_wa,
     }
@@ -574,6 +577,12 @@ async def get_all_occupations_with_timing():
                 label = occ.get("preferred_label", "Unknown")
                 description = occ.get("description", "")
 
+                # Post-secondary education gate (see app.services.education_eligibility):
+                # occupation-level flag, applied to all of this occupation's county rows.
+                requires_post_secondary = occ.get("requires_post_secondary")
+                if requires_post_secondary is None:
+                    requires_post_secondary = entry.get("requires_post_secondary")
+
                 raw_wa = entry.get("onet_work_activities", [])
                 onet_wa = []
                 for w in raw_wa:
@@ -622,6 +631,7 @@ async def get_all_occupations_with_timing():
                         "optional_skills": [{"id": str(u), "label": ""} for u in opt_uuids],
                         "skill_groups_origin_uuids": [],
                         "attributes": attributes,
+                        "requires_post_secondary": requires_post_secondary,
                         "onet_work_activities": onet_wa,
                 })
 
