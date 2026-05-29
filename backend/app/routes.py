@@ -19,14 +19,20 @@ from app.config import (
     MATCH_V2_HYBRID_TOP_K,
     MATCH_V2_MAX_USERS_PER_REQUEST,
     COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
+    MATCH_TOP_K_SKILL_GAPS,
 )
-from app.database import get_all_jobs_with_timing, get_all_occupations_with_timing
+from app.database import (
+    attach_occupation_embeddings,
+    get_all_jobs_with_timing,
+    get_all_occupations_with_timing,
+)
 from app.match_timing_log import log_match_step
 from app.services.matching_service import match_user_with_data
 from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
 from app.services.match_concat_gemini_ce_preference_service import (
     run_match_concat_gemini_ce_with_preferences,
 )
+from app.services.match_v4_full_service import run_match_v4_full
 
 api_key_auth = APIKeyHeader(
     scheme_name="gcp_api_key",
@@ -445,7 +451,7 @@ async def match_v3(
     "/match_v4",
     tags=["matching"],
     operation_id="match_v4",
-    response_model=List[MatchConcatGeminiCeResponse],
+    response_model=List[MatchResponse],
     responses={
         400: {"description": "Bad Request"},
         500: {"description": "Internal Server Error"},
@@ -485,12 +491,15 @@ async def match_v4(
             "``geometric_mean`` (√(u_hat × p_hat)). Defaults to env FINAL_SCORE_COMBINER."
         ),
     ),
+    skill_gap_top_k: Optional[int] = Query(
+        None, ge=1, le=50, description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
+    ),
 ):
-    """Gemini concat cosine + cross-encoder rerank, then hybrid preference final score.
+    """Full `MatchResponse` (occupations + opportunities + skill-gaps) via the Gemini engine.
 
-    Same JSON body and response envelope as ``POST /match_v3``. Each job row includes
-    ``u_hat``, ``p_hat``, and ``final_score``; ``concat_gemini_ce_recommendations`` is
-    sorted by ``final_score`` (desc). ``p_hat`` is raw stage-1 cosine, not CE min–max.
+    Same JSON body as ``POST /match_v3``. Opportunities **and** occupations are matched with the v4
+    Gemini concat-cosine → cross-encoder → ``u_hat × p_hat`` engine (occupations use precomputed
+    concat embeddings); skill gaps reuse the existing analysis. Returns ``List[MatchResponse]``.
 
     Does **not** require ``x-api-key``. Uses ``GEMINI_API_KEY`` for user embeddings.
     """
@@ -515,29 +524,35 @@ async def match_v4(
             )
 
         t_fetch = time.perf_counter()
-        jobs, mongo_timing = await get_all_jobs_with_timing(users=users)
+        (jobs, mongo_timing), (occ, _occ_timing) = await asyncio.gather(
+            get_all_jobs_with_timing(users=users),
+            get_all_occupations_with_timing(),
+        )
+        occ = attach_occupation_embeddings(occ)
         fetch_wall_ms = _ms(t_fetch)
 
         t_score = time.perf_counter()
         raw = await asyncio.to_thread(
-            run_match_concat_gemini_ce_with_preferences,
+            run_match_v4_full,
             users,
             jobs,
+            occ,
             retrieve_top_k=rt,
             final_top_k=ft,
-            mongo_timing=mongo_timing,
             final_score_combiner=combiner,
+            skill_gap_top_k=skill_gap_top_k if skill_gap_top_k is not None else MATCH_TOP_K_SKILL_GAPS,
+            mongo_timing=mongo_timing,
         )
         score_ms = _ms(t_score)
 
-        out: List[MatchConcatGeminiCeResponse] = [MatchConcatGeminiCeResponse(**row) for row in raw]
+        out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
 
         log_match_step(
             "http /match_v4",
             "request (summary)",
             n_users=len(users),
             n_jobs=len(jobs),
-            n_occupation_rows=0,
+            n_occupation_rows=len(occ),
             fetch_parallel_wall_ms=fetch_wall_ms,
             scoring_thread_pool_ms=score_ms,
             request_total_ms=_ms(t_req),

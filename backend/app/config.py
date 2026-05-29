@@ -235,6 +235,21 @@ try:
 except (ValueError, TypeError, AttributeError):
     DCE_ATTR_SCALE = {}
 
+# --- /match_v4 full-response (MatchResponse via the Gemini-embeddings engine) ---
+# Per-skill cosine threshold used for MatchedSkill.meets_threshold and the is_eligible gate.
+V4_FULL_SIM_THRESHOLD: float = _f("V4_FULL_SIM_THRESHOLD", 0.6)
+# Min share of a job's essential skills meeting the threshold for is_eligible=True.
+# Lenient default (0.0) => every retrieved item is eligible (education gate already applied upstream).
+V4_FULL_MIN_ESS_SHARE: float = _f("V4_FULL_MIN_ESS_SHARE", 0.0)
+# Top-k occupations returned by /match_v4's full response.
+MATCH_V4_TOP_K_OCCUPATIONS: int = _i("MATCH_V4_TOP_K_OCCUPATIONS", 10)
+# Committed NPZ of occupation concat-Gemini embeddings (codes + float32 vectors), built offline
+# by app.services.cross_encoder.embed_occupations. Missing => occupations skipped (logged).
+OCCUPATION_CONCAT_EMBEDDINGS_PATH: str = _s(
+    "OCCUPATION_CONCAT_EMBEDDINGS_PATH",
+    str(_RESOURCES / "occupations" / "occupation_concat_embeddings.npz"),
+)
+
 PREFERENCE_CONFIG: Dict[str, Any] = {
     "base_constant": PREFERENCE_BASE_CONSTANT,
     "attributes": {

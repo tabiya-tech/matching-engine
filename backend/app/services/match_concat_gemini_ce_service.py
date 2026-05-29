@@ -110,7 +110,12 @@ def _job_stage1_embedding_vector(job: Dict[str, Any]) -> Optional[np.ndarray]:
                 return arr
 
     je = job.get("job_embedding")
-    if isinstance(je, list) and je:
+    # Accept a float list (Mongo job docs) or a numpy array (occupation embeddings attached
+    # in-process by app.database.attach_occupation_embeddings).
+    if isinstance(je, np.ndarray):
+        if je.ndim == 1 and je.size == EMBEDDING_DIM:
+            return je.astype(np.float32, copy=False)
+    elif isinstance(je, list) and je:
         arr = np.asarray(je, dtype=np.float32)
         if arr.ndim == 1 and arr.size == EMBEDDING_DIM:
             return arr
@@ -128,6 +133,25 @@ def _sorted_indices_desc(sim_row: np.ndarray) -> np.ndarray:
     return np.argsort(-sim_row, kind="stable")
 
 
+def embed_user_unit_vectors(users: List[Dict[str, Any]]) -> np.ndarray:
+    """Gemini concat embeddings for users, L2-normalised (float64 [n_users, EMBEDDING_DIM]).
+
+    Lets a caller embed users ONCE and reuse the matrix across multiple corpora (jobs +
+    occupations) via ``run_match_concat_gemini_ce(..., user_unit_vectors=...)``.
+    """
+    api_key = _gemini_api_key()
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY is not set (required for user concat embeddings)")
+    texts = []
+    for u in users:
+        t = user_concat_embedding_text(u).strip()
+        texts.append(t if t else " ")
+    u_emb = embed_text_list(texts, api_key=api_key, batch_size=100, sleep_s=0.12)
+    if u_emb.shape[0] != len(users):
+        raise RuntimeError("Gemini embed returned unexpected row count")
+    return l2_normalize_rows(u_emb.astype(np.float32)).astype(np.float64)
+
+
 def run_match_concat_gemini_ce(
     users: List[Dict[str, Any]],
     jobs: List[Dict[str, Any]],
@@ -135,12 +159,13 @@ def run_match_concat_gemini_ce(
     retrieve_top_k: int,
     final_top_k: int,
     mongo_timing: Optional[Dict[str, Any]] = None,
+    user_unit_vectors: Optional[np.ndarray] = None,
 ) -> List[Dict[str, Any]]:
-    """Return one result dict per user (keys align with ``MatchConcatGeminiCeResponse``)."""
+    """Return one result dict per user (keys align with ``MatchConcatGeminiCeResponse``).
 
-    api_key = _gemini_api_key()
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not set (required for user concat embeddings)")
+    ``user_unit_vectors`` (optional) supplies precomputed, L2-normalised user embeddings so the
+    caller can embed users once and reuse them across corpora; if omitted they are embedded here.
+    """
 
     if not users:
         return []
@@ -194,15 +219,14 @@ def run_match_concat_gemini_ce(
     j_norm = l2_normalize_rows(j_mat.astype(np.float32)).astype(np.float64)
     jid_list = [str(j.get("uuid") or "") for j in job_rows]
 
-    texts = []
-    for u in users:
-        t = user_concat_embedding_text(u).strip()
-        texts.append(t if t else " ")
-
-    u_emb = embed_text_list(texts, api_key=api_key, batch_size=100, sleep_s=0.12)
-    if u_emb.shape[0] != len(users):
-        raise RuntimeError("Gemini embed returned unexpected row count")
-    u_norm = l2_normalize_rows(u_emb.astype(np.float32)).astype(np.float64)
+    if user_unit_vectors is not None:
+        u_norm = np.asarray(user_unit_vectors, dtype=np.float64)
+        if u_norm.ndim != 2 or u_norm.shape[0] != len(users) or u_norm.shape[1] != EMBEDDING_DIM:
+            raise RuntimeError(
+                f"user_unit_vectors shape {u_norm.shape} != ({len(users)}, {EMBEDDING_DIM})"
+            )
+    else:
+        u_norm = embed_user_unit_vectors(users)
 
     matcher = _get_matcher()
     reranker = _get_reranker()

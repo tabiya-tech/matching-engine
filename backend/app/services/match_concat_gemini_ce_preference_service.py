@@ -60,8 +60,13 @@ def run_match_concat_gemini_ce_with_preferences(
     mongo_timing: Optional[Dict[str, Any]] = None,
     final_score_combiner: Optional[str] = None,
     include_work_activities: bool = True,
+    user_unit_vectors: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
-    """Return one dict per user (``MatchConcatGeminiCeResponse`` + preference fields)."""
+    """Return one dict per user (``MatchConcatGeminiCeResponse`` + preference fields).
+
+    ``user_unit_vectors`` (optional) lets a caller embed users once and reuse the matrix across
+    corpora (jobs + occupations); passed straight through to ``run_match_concat_gemini_ce``.
+    """
 
     combiner = (final_score_combiner or FINAL_SCORE_COMBINER).strip().lower()
     if combiner not in ("product", "geometric_mean"):
@@ -73,6 +78,7 @@ def run_match_concat_gemini_ce_with_preferences(
         retrieve_top_k=retrieve_top_k,
         final_top_k=final_top_k,
         mongo_timing=mongo_timing,
+        user_unit_vectors=user_unit_vectors,
     )
     users_by_id = {str(u.get("user_id") or ""): u for u in users}
     job_index = _jobs_by_uuid(jobs)
