@@ -27,18 +27,18 @@
     {
       "name": "physical_demand",
       "label": "Physical Demand & Risk",
-      "reference_level_id": "phys_light",
-      "target_note": "value encodes phys_heavy part-worth (elicitation term physical_demand_phys_heavy). v<0.5 => dislikes heavy/risky work, so heavy jobs (ladder 1) get a negative contribution. CONFIRM against production mapping.",
+      "reference_level_id": "phys_heavy",
+      "target_note": "CONFIRMED via Compass elicitation (schema_loader.extract_term_features + agent._sync_*): the physical_demand_phys_heavy feature is flipped (direction=negative), so the matcher value encodes preference for LIGHT/SAFE work: v>0.5 => prefers light. Hence target=phys_light (ladder 1), reference=phys_heavy (ladder 0): a light job rewards a light-preferring user; a heavy job is the 0 baseline.",
       "levels": [
-        {"id": "phys_light", "label": "Light / safe"},
-        {"id": "phys_heavy", "label": "Heavy / risky"}
+        {"id": "phys_heavy", "label": "Heavy / risky"},
+        {"id": "phys_light", "label": "Light / safe"}
       ]
     },
     {
       "name": "social_interaction",
       "label": "Social Interaction",
       "reference_level_id": "soc_alone",
-      "target_note": "ordered alone -> peers -> customers (increasing interaction). Under the current contract the user-side social_interaction value is typically 0.5 (neutral => no contribution); the exact target level the value encodes needs production confirmation.",
+      "target_note": "reference=alone; v>0.5 means preference for more interaction vs alone (no direction flip). CAVEAT: under the current Compass->matcher field mapping the matcher's social_interaction value is typically left neutral (0.5) — the elicited social signal routes to task_content/social_meaning, which have no job-side attribute — so this usually contributes 0. Also the pilot found peers (+0.36) > customers (+0.08), so the single alone->peers->customers ladder is an approximation of a non-monotone preference.",
       "levels": [
         {"id": "soc_alone", "label": "Work alone"},
         {"id": "soc_peers", "label": "With peers"},
