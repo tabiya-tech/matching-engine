@@ -132,6 +132,7 @@ def deploy_backend(*,
         location=gcp_project_region,
         ingress="INGRESS_TRAFFIC_ALL",
         template=gcp.cloudrunv2.ServiceTemplateArgs(
+            timeout="300s",
             containers=[
                 gcp.cloudrunv2.ServiceTemplateContainerArgs(
                     image=image.repo_digest,
