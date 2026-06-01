@@ -52,6 +52,7 @@ class EnvKeys:
     SKILLS_CSV_PATH = "SKILLS_CSV_PATH"
     SKILL_GROUPS_CSV_PATH = "SKILL_GROUPS_CSV_PATH"
     SKILL_HIERARCHY_CSV_PATH = "SKILL_HIERARCHY_CSV_PATH"
+    GEMINI_API_KEY="GEMINI_API_KEY"
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,7 @@ class EnvVars:
     skills_csv_path: str
     skill_groups_csv_path: str
     skill_hierarchy_csv_path: str
+    gemini_api_key: str
 
     def get_env_vars(self) -> list[gcp.cloudrunv2.ServiceTemplateContainerEnvArgs]:
         return [
@@ -167,6 +169,8 @@ class EnvVars:
                                                            value=self.skill_groups_csv_path),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.SKILL_HIERARCHY_CSV_PATH,
                                                            value=self.skill_hierarchy_csv_path),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.GEMINI_API_KEY,
+                                                           value=self.gemini_api_key),
         ]
 
     @staticmethod
@@ -211,4 +215,5 @@ class EnvVars:
             skills_csv_path=get_env(EnvKeys.SKILLS_CSV_PATH),
             skill_groups_csv_path=get_env(EnvKeys.SKILL_GROUPS_CSV_PATH),
             skill_hierarchy_csv_path=get_env(EnvKeys.SKILL_HIERARCHY_CSV_PATH),
+            gemini_api_key=get_env(EnvKeys.GEMINI_API_KEY)
         )
