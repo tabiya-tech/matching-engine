@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+from networkx import exception
 
 from app.config import CROSS_ENCODER_BATCH_SIZE, CROSS_ENCODER_MODEL_NAME
 
@@ -13,6 +15,7 @@ from .text_pairs import build_job_passage_from_cosine_rec, build_user_query_text
 
 logger = logging.getLogger(__name__)
 
+current_dir = __file__.rpartition("/")[0]
 
 def _non_empty_skill_text(raw: str, *, side: str) -> str:
     s = (raw or "").strip()
@@ -24,11 +27,9 @@ class CrossEncoderReranker:
 
     def __init__(
         self,
-        model_name: Optional[str] = None,
         *,
         batch_size: Optional[int] = None,
     ) -> None:
-        self.model_name = (model_name or CROSS_ENCODER_MODEL_NAME).strip()
         self.batch_size = int(batch_size or CROSS_ENCODER_BATCH_SIZE)
         self._model = None
 
@@ -42,9 +43,15 @@ class CrossEncoderReranker:
                 "Cross-encoder reranking requires sentence-transformers. "
                 "Install backend dependencies: pip install sentence-transformers"
             ) from e
-        logger.info("Loading cross-encoder model %s", self.model_name)
-        self._model = CrossEncoder(self.model_name)
-
+        try:
+            logger.info(f"Current dir {current_dir}")
+            path_name = Path(current_dir).joinpath("..").joinpath("..").joinpath("..").joinpath("resources").joinpath("models").joinpath("cross-encoder")
+            logger.info("Loading cross-encoder model %s", path_name)
+            self._model = CrossEncoder(path_name)
+        except Exception as e:
+            logger.exception(e)
+            logger.info("Loading cross-encoder model %s", CROSS_ENCODER_MODEL_NAME)
+            self._model = CrossEncoder(CROSS_ENCODER_MODEL_NAME)
     def warmup(self) -> None:
         """Load the Hugging Face model once (can take tens of seconds on first use)."""
 

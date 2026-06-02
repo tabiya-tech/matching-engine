@@ -56,6 +56,7 @@ cd backend
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+./setup.sh
 uvicorn app.main:app --reload
 ```
 

@@ -69,7 +69,6 @@ def _get_reranker() -> CrossEncoderReranker:
         with _reranker_lock:
             if _reranker_instance is None:
                 inst = CrossEncoderReranker(
-                    model_name=CROSS_ENCODER_MODEL_NAME,
                     batch_size=CROSS_ENCODER_BATCH_SIZE,
                 )
                 inst.warmup()

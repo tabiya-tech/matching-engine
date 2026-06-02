@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from app.match_timing_log import init_match_timing_log
 from app.routes import router, router_public
-
+from app.services.match_concat_gemini_ce_service import _get_reranker
 
 load_dotenv()
 init_match_timing_log()
@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI):
         )
     else:
         await _warmup_safe()
+    _get_reranker()
     yield
 
 

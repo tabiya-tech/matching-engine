@@ -12,8 +12,11 @@ RUN pip install --no-cache-dir torch==2.10.0 --index-url https://download.pytorc
 
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY setup.sh setup.sh
+
 COPY app/ app/
 COPY resources/ resources/
+RUN ["sh", "./setup.sh"]
 
 ENV PYTHONUNBUFFERED=1
 
