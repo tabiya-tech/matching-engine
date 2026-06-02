@@ -1,5 +1,20 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Any, Dict, List, Optional
+
+
+def _strip_county_suffix(s: str) -> str:
+    """Normalize Kenyan county names so user locations match occupation/job locations.
+
+    Occupations/jobs store bare county names ("Nairobi"); consumers often send the official
+    "Nairobi County". The Mongo job prefilter matches the user string AS A SUBSTRING of the job
+    field, so "nairobi county" would not match a job stored as "Nairobi". Trimming a trailing
+    " County" (case-insensitive) to "Nairobi" matches both bare and suffixed job values, and is
+    harmless for the (bidirectional) occupation location check.
+    """
+    s = (s or "").strip()
+    if s.lower().endswith(" county"):
+        s = s[: -len(" county")].strip()
+    return s
 
 class Skill(BaseModel):
     preferredLabel: Optional[str] = None
@@ -37,11 +52,19 @@ class MatchRequest(BaseModel):
     number_post_secondary_educ: Optional[int] = None
     total_duration_postsec: Optional[float] = None
 
+    @field_validator("city", "province", mode="before")
+    @classmethod
+    def _normalize_location(cls, v: Any) -> Any:
+        # Strip a trailing " County" so "Nairobi County" matches occupation/job "Nairobi".
+        return _strip_county_suffix(v) if isinstance(v, str) else v
+
 class SkillComponents(BaseModel):
-    loc: float
-    ess: float
-    opt: float
-    grp: float
+    # Optional so /match_v4 can emit a partial, interpretable breakdown (ess/opt in [0,1];
+    # loc/grp null = "not computed"). The legacy Node2Vec /match path still fills all four.
+    loc: Optional[float] = None
+    ess: Optional[float] = None
+    opt: Optional[float] = None
+    grp: Optional[float] = None
 
 class PHatComponents(BaseModel):
     gate: float = 0.0
@@ -119,11 +142,13 @@ class WorkActivityBWS(BaseModel):
 
 class OpportunityRecommendation(BaseModel):
     uuid: str
+    originUuid: Optional[str] = None
     URL: Optional[str] = None
     rank: int
     opportunity_title: str
     opportunity_isco_occupation_group: Optional[str] = None
     opportunity_isco_occupation_group_id: Optional[str] = None
+    related_occupation_id: Optional[str] = None
     location: Optional[str] = None
     employer: Optional[str] = None
     employment_type: Optional[str] = None
@@ -131,6 +156,7 @@ class OpportunityRecommendation(BaseModel):
     required_education: Optional[str] = None
     required_experience: Optional[str] = None
     closing_date: Optional[str] = None
+    posted_date: Optional[str] = None
     is_eligible: bool
     justification: str
     opportunity_description: Optional[str] = None
@@ -150,6 +176,9 @@ class OccupationRecommendation(BaseModel):
     is_eligible: bool
     justification: str
     occupation_description: Optional[str] = None
+    salary_range: Optional[str] = None
+    typical_tasks: List[str] = Field(default_factory=list)
+    career_path_next_steps: List[str] = Field(default_factory=list)
     final_score: float
     score_breakdown: ScoreBreakdown
     matched_skills: MatchedSkills

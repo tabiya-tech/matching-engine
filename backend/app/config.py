@@ -182,9 +182,12 @@ SKILL_RESCALE_TARGET: float = _f("SKILL_RESCALE_TARGET", 0.0)
 DEMAND_SCORE_MAPPING: Dict[str, float] = {
     "Very Low Expected Demand": 0.10,
     "Low Expected Demand": 0.25,
+    "Below Average Expected Demand": 0.40,
     "Moderate Expected Demand": 0.5,
+    "Above Average Expected Demand": 0.60,
     "High Expected Demand": 0.75,
     "Very High Expected Demand": 1.0,
+    "Extremely High Expected Demand": 1.0,
 }
 
 # ---------------------------------------------------------------------------
@@ -243,6 +246,10 @@ V4_FULL_SIM_THRESHOLD: float = _f("V4_FULL_SIM_THRESHOLD", 0.6)
 V4_FULL_MIN_ESS_SHARE: float = _f("V4_FULL_MIN_ESS_SHARE", 0.0)
 # Top-k occupations returned by /match_v4's full response.
 MATCH_V4_TOP_K_OCCUPATIONS: int = _i("MATCH_V4_TOP_K_OCCUPATIONS", 10)
+# Demand tilt applied to /match_v4 OCCUPATION final_score ONLY (opportunities are never tilted):
+# final *= M ** gamma, with M = expected-demand score in [0,1] (neutral 1.0 when absent/unknown).
+# Mirrors the legacy p_hat market factor (PHAT_GAMMA_MARKET=0.3). Set 0.0 to disable.
+MATCH_V4_OCC_DEMAND_GAMMA: float = _f("MATCH_V4_OCC_DEMAND_GAMMA", 0.3)
 # Committed NPZ of occupation concat-Gemini embeddings (codes + float32 vectors), built offline
 # by app.services.cross_encoder.embed_occupations. Missing => occupations skipped (logged).
 OCCUPATION_CONCAT_EMBEDDINGS_PATH: str = _s(

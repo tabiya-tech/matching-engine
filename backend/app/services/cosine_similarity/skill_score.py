@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import json
 import csv
+import re
 
 import numpy as np
 import torch
@@ -19,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 def _canon(label: str) -> str:
     return " ".join(label.strip().lower().split())
+
+
+# ESCO origin UUID (embedded in the ORIGINURI URL) or any historical UUID (UUIDHISTORY column).
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 def compact_cosine_matched_skill_lines(
@@ -71,6 +76,8 @@ class CosineSkillMatcher:
         self.skill_labels: Dict[str, str] = {}
         self._preferred_to_id: Dict[str, str] = {}
         self._altlabel_to_id: Dict[str, str] = {}
+        # ESCO origin/history UUID -> canonical skill id (drift-tolerant fallback resolver).
+        self._originuuid_to_id: Dict[str, str] = {}
         self._preferred_collisions = 0
 
         try:
@@ -93,6 +100,10 @@ class CosineSkillMatcher:
                         if not canon or canon in self._preferred_to_id:
                             continue
                         self._altlabel_to_id.setdefault(canon, str(sid))
+                    # Secondary resolver: current ESCO origin UUID + every historical UUID -> same id.
+                    for col in ("ORIGINURI", "UUIDHISTORY"):
+                        for m in _UUID_RE.findall((row.get(col) or "").lower()):
+                            self._originuuid_to_id.setdefault(m, str(sid))
         except FileNotFoundError:
             self.skill_labels = {}
 
@@ -123,6 +134,17 @@ class CosineSkillMatcher:
             return sid
         self._missed_labels[label] += 1
         return None
+
+    def _resolve_origin_uuid(self, origin_uuid: Optional[str]) -> Optional[str]:
+        """Drift-tolerant fallback resolver: map an ESCO origin UUID (the current ORIGINURI
+        value or ANY historical UUIDHISTORY value) to the SAME canonical skill id that label
+        resolution returns. Labels stay the primary trust anchor (see ``_resolve_label``); this
+        only recovers matches a renamed/missing label would otherwise lose. ``None`` if unknown.
+        """
+        if not origin_uuid:
+            return None
+        key = _canon(str(origin_uuid))
+        return self._originuuid_to_id.get(key) if key else None
 
     def get_resolution_stats(self) -> Dict[str, Any]:
         return {
@@ -173,8 +195,12 @@ class CosineSkillMatcher:
                 continue
             lab = s.get("preferredLabel") or s.get("label")
             sid = self._resolve_label(str(lab) if lab else None)
+            if sid is None:  # fallback: ESCO origin/history UUID -> same canonical id
+                sid = self._resolve_origin_uuid(
+                    s.get("originUUID") or s.get("origin_uuid") or s.get("originUuid")
+                )
             if sid is not None:
-                out.append((sid, str(lab)))
+                out.append((sid, str(lab) if lab else (self.skill_labels.get(sid) or "")))
         return out
 
     def _job_skill_pairs(self, job_posting: Dict[str, Any]) -> List[Tuple[str, str]]:
@@ -186,8 +212,12 @@ class CosineSkillMatcher:
                     continue
                 lab = s.get("label")
                 sid = self._resolve_label(str(lab) if lab else None)
+                if sid is None:  # fallback: ESCO origin/history UUID -> same canonical id
+                    sid = self._resolve_origin_uuid(
+                        s.get("originUuid") or s.get("origin_uuid") or s.get("id")
+                    )
                 if sid is not None:
-                    out.append((sid, str(lab)))
+                    out.append((sid, str(lab) if lab else (self.skill_labels.get(sid) or "")))
 
         _consume(job_posting.get("essential_skills"))
         _consume(job_posting.get("optional_skills"))

@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from app.config import (
     FINAL_SCORE_COMBINER,
     MATCH_TOP_K_SKILL_GAPS,
+    MATCH_V4_OCC_DEMAND_GAMMA,
     MATCH_V4_TOP_K_OCCUPATIONS,
     V4_FULL_MIN_ESS_SHARE,
     V4_FULL_SIM_THRESHOLD,
@@ -56,7 +57,8 @@ def _user_matches_any_county(user: Dict[str, Any], counties: List[str]) -> bool:
 
 
 def _enriched_recs(
-    user, v3_row, item_index, pref_scorer, combiner, *, location_filter=True, location_user=None
+    user, v3_row, item_index, pref_scorer, combiner, *, location_filter=True, location_user=None,
+    include_demand: bool = False, demand_gamma: float = 0.0,
 ) -> List[Dict[str, Any]]:
     """CE recs for one user -> preference-enriched, final-score-sorted recs (rich; with details).
 
@@ -86,6 +88,8 @@ def _enriched_recs(
         preference_scorer=pref_scorer,
         include_work_activities=True,
         final_score_combiner=combiner,
+        include_demand=include_demand,
+        demand_gamma=demand_gamma,
     )
 
 
@@ -208,7 +212,8 @@ def run_match_v4_full(
         occupations_out: List[Dict[str, Any]] = []
         seen_codes: set = set()
         for rec in _enriched_recs(
-            user, occ_v3_by_uid.get(uid), occ_index, pref_scorer, combiner, location_user=loc_user
+            user, occ_v3_by_uid.get(uid), occ_index, pref_scorer, combiner, location_user=loc_user,
+            include_demand=True, demand_gamma=MATCH_V4_OCC_DEMAND_GAMMA,
         ):
             item = occ_index.get(str(rec.get("job_uuid") or ""))
             if not item:

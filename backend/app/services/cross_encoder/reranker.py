@@ -15,7 +15,6 @@ from .text_pairs import build_job_passage_from_cosine_rec, build_user_query_text
 
 logger = logging.getLogger(__name__)
 
-current_dir = __file__.rpartition("/")[0]
 
 def _non_empty_skill_text(raw: str, *, side: str) -> str:
     s = (raw or "").strip()
@@ -44,10 +43,12 @@ class CrossEncoderReranker:
                 "Install backend dependencies: pip install sentence-transformers"
             ) from e
         try:
-            logger.info(f"Current dir {current_dir}")
-            path_name = Path(current_dir).joinpath("..").joinpath("..").joinpath("..").joinpath("resources").joinpath("models").joinpath("cross-encoder")
+            # backend/app/services/cross_encoder/reranker.py -> parents[3] == backend/
+            path_name = Path(__file__).resolve().parents[3] / "resources" / "models" / "cross-encoder"
             logger.info("Loading cross-encoder model %s", path_name)
-            self._model = CrossEncoder(path_name)
+            # sentence-transformers needs a str (it does `"\\" in name` / `name.count("/")`
+            # checks); a Path raises "argument of type 'WindowsPath' is not iterable".
+            self._model = CrossEncoder(str(path_name))
         except Exception as e:
             logger.exception(e)
             logger.info("Loading cross-encoder model %s", CROSS_ENCODER_MODEL_NAME)
