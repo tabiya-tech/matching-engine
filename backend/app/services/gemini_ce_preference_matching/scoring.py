@@ -6,9 +6,13 @@ import inspect
 from typing import Any, Dict, List, Tuple
 
 from app.services.preference_score import PreferenceScorer
+from app.services.demand_score import DemandScorer
 from app.config import FINAL_SCORE_COMBINER
 from app.services.preference_score_v1.final_score import combine_final_score
 from app.services.preference_score_v1.levels import attribute_label, load_attribute_schema
+
+# Engine-agnostic demand scorer (reads item attributes["expected_demand"]); torch-free.
+_DEMAND_SCORER = DemandScorer()
 
 
 def user_preference_factors(user: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -186,12 +190,19 @@ def enrich_recommendations_with_preferences(
     preference_scorer,
     include_work_activities: bool = True,
     final_score_combiner: str | None = None,
+    include_demand: bool = False,
+    demand_gamma: float = 0.0,
 ) -> list[Dict[str, Any]]:
     """
     Stage 3 only: compute u_hat per job, p_hat from stage 1–2 cosine, re-rank by u_hat × p_hat.
 
     Input ``recs`` must stay in CE order for ``cross_encoder_recommendations`` export;
     this function returns a new list sorted by ``final_score``.
+
+    ``include_demand`` (with ``demand_gamma`` > 0) applies an occupation-only labour-market tilt:
+    ``final *= M ** demand_gamma`` where M = expected-demand score in [0,1] (neutral 1.0 when the
+    item has no/unknown demand). Opportunities call with ``include_demand=False`` (the default),
+    so their ranking is unaffected.
     """
     scored: list[tuple[float, float, int, Dict[str, Any]]] = []
 
@@ -211,6 +222,19 @@ def enrich_recommendations_with_preferences(
         final, breakdown = compute_final_score(
             pref, p_hat, p_hat_source=p_hat_source, combiner=combiner
         )
+
+        # Occupation-only demand tilt (opportunities pass include_demand=False): multiply the
+        # final score by M**gamma — M = expected-demand score in [0,1], neutral 1.0 when the item
+        # has no/unknown demand. Mirrors the legacy p_hat market factor; this re-ranks occupations.
+        if include_demand and demand_gamma > 0:
+            dres = _DEMAND_SCORER.calculate_score(job)
+            if dres.get("present"):
+                m = max(0.0, min(1.0, float(dres.get("score") or 0.0)))
+                final = final * (m ** demand_gamma)
+                breakdown["final_score"] = round(final, 4)
+                breakdown["demand_score"] = round(m, 4)
+                breakdown["demand_label"] = dres.get("label")
+                breakdown["demand_gamma"] = round(float(demand_gamma), 4)
 
         row = dict(rec)
         row["rank_cross_encoder"] = rec.get("rank")

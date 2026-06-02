@@ -247,6 +247,12 @@ RANKED_JOB_FIND_PROJECTION: Dict[str, int] = {
     "classifier_metadata.application_url": 1,
     "classifier_metadata.job_description": 1,
     "classifier_metadata.description": 1,
+    # Opportunity passthrough (consumer contract). Best-effort candidate names — absent fields
+    # are simply not returned by Mongo; confirm exact names against the live collection.
+    "classifier_metadata.posted_date": 1,
+    "classifier_metadata.date_posted": 1,
+    "classifier_metadata.isco_occupation_group": 1,
+    "classifier_metadata.isco_occupation_group_id": 1,
     "llm_classified_skills": 1,
     "llm_job_attributes": 1,
     "onet_work_activities": 1,
@@ -422,8 +428,17 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     job_fp = rd.get("job_fingerprint")
     job_fp_s = str(job_fp).strip() if job_fp is not None else ""
 
+    # Opportunity passthrough for the consumer contract. originUuid uses the stable
+    # content fingerprint (falls back to job_id); posted_date / occupation classification are
+    # best-effort from candidate Mongo fields and stay None when the document lacks them.
+    posted_date = _str_or_empty(
+        meta.get("posted_date") or meta.get("date_posted") or meta.get("posted_at")
+    ) or None
+    isco_group = meta.get("isco_occupation_group")
+    isco_group_id = meta.get("isco_occupation_group_id")
     out: Dict[str, Any] = {
         "uuid": job_id,
+        "originUuid": (rd.get("origin_uuid") or rd.get("originUuid") or job_fp_s or job_id) or None,
         "opportunity_title": meta.get("title") or "Unknown",
         "location": location,
         "city": city,
@@ -432,6 +447,10 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "employment_type": meta.get("employment_type"),
         "salary_text": meta.get("salary"),
         "closing_date": closing_s,
+        "posted_date": posted_date,
+        "opportunity_isco_occupation_group": isco_group,
+        "opportunity_isco_occupation_group_id": isco_group_id,
+        "related_occupation_id": (rd.get("related_occupation_id") or isco_group_id) or None,
         "contract_type": et,
         "url": meta.get("application_url"),
         "essential_skills": essential_skills,
@@ -688,6 +707,12 @@ async def get_all_occupations_with_timing():
                     elif isinstance(attrs_raw, dict):
                         attributes = attrs_raw
 
+                    # Demand label so DemandScorer can read attributes["expected_demand"]
+                    # (engine-agnostic; powers score_breakdown.demand_* on /match_v4).
+                    expected_demand = (cd.get("labor_demand") or {}).get("expected_demand")
+                    if expected_demand:
+                        attributes = {**attributes, "expected_demand": expected_demand}
+
                     # Wrap skills in the same {id, label} shape used by job dicts. Labels come
                     # from the occupation JSON (skills.*.labels) when present, else empty; gap
                     # analysis reads id directly without going through label resolution.
@@ -706,6 +731,9 @@ async def get_all_occupations_with_timing():
                         "attributes": attributes,
                         "requires_post_secondary": requires_post_secondary,
                         "onet_work_activities": onet_wa,
+                        # Occupation-specific tasks (sparse in source); formatter falls back to
+                        # O*NET WA labels when absent. See match_v4_formatting._typical_tasks.
+                        "included_tasks": occ.get("included_tasks") or "",
                 })
 
         flatten_ms = _ms(t1)
