@@ -35,6 +35,7 @@ from app.services.match_concat_gemini_ce_preference_service import (
     run_match_concat_gemini_ce_with_preferences,
 )
 from app.services.match_v2_full_service import run_match_v2_full
+from app.services.match_v3_full_service import run_match_v3_full
 from app.services.match_v4_full_service import run_match_v4_full
 
 api_key_auth = APIKeyHeader(
@@ -322,7 +323,7 @@ _MATCH_V3_BODY_EXAMPLE: List[Dict[str, Any]] = [
     "/experiments/v3/match",
     tags=["experiments"],
     operation_id="match_v3",
-    response_model=List[MatchConcatGeminiCeResponse],
+    response_model=List[MatchResponse],
     responses={
         400: {"description": "Bad Request"},
         500: {"description": "Internal Server Error"},
@@ -356,10 +357,18 @@ async def match_v3(
         le=200,
         description="Stage-2 cross-encoder slate size after rerank. Default: 30.",
     ),
+    skill_gap_top_k: Optional[int] = Query(
+        None, ge=1, le=50, description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
+    ),
 ):
-    """Gemini user concat embedding × Mongo job vectors → CE rerank.
+    """Gemini concat-cosine → CE rerank, returned in the full ``MatchResponse`` shape.
 
-    Same JSON body as ``POST /match`` / ``POST /match_v2``: a JSON array of ``MatchRequest``.
+    **Matching logic is unchanged from the original v3 engine** (Gemini user concat embedding ×
+    Mongo job vectors → cross-encoder rerank); only the response is reshaped to match
+    ``POST /match_v4``: opportunities, occupations and skill gaps. Occupations are scored with the
+    **same** v3 engine over the occupation corpus (county-scoped like v4). ``final_score`` is the
+    raw concat cosine similarity; v4-only ``u_hat``/``p_hat``/preference fields are empty (the v3
+    engine produces no such signal).
 
     **Database:** reads active jobs via ``MONGO_URL``, ``MONGO_DB_NAME``, ``MONGO_JOBS_COLLECTION``.
     Stage-1 vectors may come from ``concat_skill_embedding_gemini.vector_bin`` **or** a numeric
@@ -382,28 +391,33 @@ async def match_v3(
         ft = final_top_k if final_top_k is not None else 30
 
         t_fetch = time.perf_counter()
-        jobs, mongo_timing = await get_all_jobs_with_timing(users=users)
+        (jobs, _mongo_timing), (occ, _occ_timing) = await asyncio.gather(
+            get_all_jobs_with_timing(users=users),
+            get_all_occupations_with_timing(),
+        )
+        occ = attach_occupation_embeddings(occ)
         fetch_wall_ms = _ms(t_fetch)
 
         t_score = time.perf_counter()
         raw = await asyncio.to_thread(
-            run_match_concat_gemini_ce,
+            run_match_v3_full,
             users,
             jobs,
+            occ,
             retrieve_top_k=rt,
             final_top_k=ft,
-            mongo_timing=mongo_timing,
+            skill_gap_top_k=skill_gap_top_k if skill_gap_top_k is not None else MATCH_TOP_K_SKILL_GAPS,
         )
         score_ms = _ms(t_score)
 
-        out: List[MatchConcatGeminiCeResponse] = [MatchConcatGeminiCeResponse(**row) for row in raw]
+        out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
 
         log_match_step(
-            "http /match_v3",
+            "http /experiments/v3/match",
             "request (summary)",
             n_users=len(users),
             n_jobs=len(jobs),
-            n_occupation_rows=0,
+            n_occupation_rows=len(occ),
             fetch_parallel_wall_ms=fetch_wall_ms,
             scoring_thread_pool_ms=score_ms,
             request_total_ms=_ms(t_req),
