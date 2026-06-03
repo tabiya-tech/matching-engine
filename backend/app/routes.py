@@ -43,7 +43,7 @@ api_key_auth = APIKeyHeader(
 )
 
 router = APIRouter(dependencies=[Depends(api_key_auth)])
-# Public: /match_v2 (BM25×cosine), /match_v3 (Gemini+CE), /match_v4 (Gemini+CE+preference final).
+# Public: /experiments/v2/match (BM25×cosine), /experiments/v3/match (Gemini+CE), /match_v4 (Gemini+CE+preference final).
 router_public = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -177,8 +177,8 @@ async def match(payload: List[MatchRequest]):
 
 
 @router_public.post(
-    "/match_v2",
-    tags=["matching"],
+    "/experiments/v2/match",
+    tags=["experiments"],
     operation_id="match_v2",
     response_model=List[MatchV2Response],
     responses={
@@ -348,8 +348,8 @@ _MATCH_V3_BODY_EXAMPLE: List[Dict[str, Any]] = [
 
 
 @router_public.post(
-    "/match_v3",
-    tags=["matching"],
+    "/experiments/v3/match",
+    tags=["experiments"],
     operation_id="match_v3",
     response_model=List[MatchConcatGeminiCeResponse],
     responses={
