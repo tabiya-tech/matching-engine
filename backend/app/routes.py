@@ -34,6 +34,7 @@ from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_
 from app.services.match_concat_gemini_ce_preference_service import (
     run_match_concat_gemini_ce_with_preferences,
 )
+from app.services.match_v2_full_service import run_match_v2_full
 from app.services.match_v4_full_service import run_match_v4_full
 
 api_key_auth = APIKeyHeader(
@@ -180,7 +181,7 @@ async def match(payload: List[MatchRequest]):
     "/experiments/v2/match",
     tags=["experiments"],
     operation_id="match_v2",
-    response_model=List[MatchV2Response],
+    response_model=List[MatchResponse],
     responses={
         400: {"description": "Bad Request"},
         500: {"description": "Internal Server Error"},
@@ -193,7 +194,7 @@ async def match_v2(
         ge=1,
         le=500,
         description=(
-            "Max hybrid fused rows per user (pool min–max ranking). "
+            "Max hybrid fused opportunities per user (pool min–max ranking). "
             f"Defaults to MATCH_V2_HYBRID_TOP_K ({MATCH_V2_HYBRID_TOP_K})."
         ),
     ),
@@ -206,15 +207,19 @@ async def match_v2(
             "Overrides env HYBRID_ALPHA_ON_COSINE when set."
         ),
     ),
+    skill_gap_top_k: Optional[int] = Query(
+        None, ge=1, le=50, description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
+    ),
 ):
-    """Hybrid BM25 × cosine-skill embeddings: fused rankings over the Mongo job corpus.
+    """Hybrid BM25 × cosine-skill embeddings, returned in the full ``MatchResponse`` shape.
 
-    Loads **all active jobs** (``is_active`` only) — **no per-user Mongo location prefilter** and no
-    retrieval sort/limit, so BM25 indexes align with ``JOBS_RETRIEVAL_FILTER=0`` / CLI ``--mongo-all-active``.
-    This avoids the filtered job slice used by ``POST /match``.
+    **Matching formula is unchanged from the original v2 engine** (BM25 × embedding-cosine pool
+    min–max fusion); only the response is reshaped to match ``POST /match_v4``: opportunities,
+    occupations and skill gaps. Opportunities load **all active jobs** (``is_active`` only) — no
+    per-user Mongo location prefilter — and occupations are scored with the **same** hybrid engine
+    over the occupation corpus (county-scoped like v4). ``final_score`` is the hybrid fusion score;
+    v4-only ``u_hat``/``p_hat``/preference fields are empty (the v2 engine produces no such signal).
 
-    Does **not** run occupations, skill gaps, or ``SkillScorer`` / ``p_hat``.
-    Returns ``column_fused_weighted_minmax`` style rows as ``hybrid_recommendations``.
     Does **not** require ``x-api-key`` (temporary; gated separately from ``POST /match``).
     """
 
@@ -238,69 +243,35 @@ async def match_v2(
         alpha = alpha_on_cosine if alpha_on_cosine is not None else (env_alpha if env_alpha is not None else 0.5)
 
         t_fetch = time.perf_counter()
-        # Full active catalog — no union location filter or retrieval cap on this endpoint.
-        jobs, mongo_timing = await get_all_jobs_with_timing(users=None)
+        # Full active catalog (no union location filter) + occupation corpus, in parallel.
+        (jobs, _mongo_timing), (occ, _occ_timing) = await asyncio.gather(
+            get_all_jobs_with_timing(users=None),
+            get_all_occupations_with_timing(),
+        )
         fetch_wall_ms = _ms(t_fetch)
 
-        if len(jobs) == 0:
-            empty_summary = {"fusion": "weighted_minmax_on_candidate_pool_bm25_cosine_only", "n_jobs": 0}
-            return [
-                MatchV2Response(
-                    user_id=str(u.get("user_id") or ""),
-                    n_jobs_scored=0,
-                    hybrid_recommendations=[],
-                    hybrid_config_summary=empty_summary,
-                )
-                for u in users
-            ]
-
         t_score = time.perf_counter()
-        envelope = await asyncio.to_thread(_execute_hybrid_http, users, jobs, fusion_top_k=fk, alpha_on_cosine=alpha)
-        hybrid_ms = _ms(t_score)
+        raw = await asyncio.to_thread(
+            run_match_v2_full,
+            users,
+            jobs,
+            occ,
+            fusion_top_k=fk,
+            alpha_on_cosine=alpha,
+            skill_gap_top_k=skill_gap_top_k if skill_gap_top_k is not None else MATCH_TOP_K_SKILL_GAPS,
+        )
+        score_ms = _ms(t_score)
 
-        job_index = _jobs_by_uuid(jobs)
-        idx = envelope.get("index_stats") or {}
-        cfg_slice = {
-            k: envelope["config"].get(k)
-            for k in (
-                "scorer",
-                "fusion",
-                "alpha_on_cosine_skill",
-                "variant_bm25",
-                "bm25_pool_k",
-                "cosine_pool_k",
-                "column_display_rows",
-            )
-            if k in (envelope.get("config") or {})
-        }
-        cfg_slice["n_jobs"] = idx.get("n_jobs", len(jobs))
-        cfg_slice["embedding_dim"] = idx.get("embedding_dim")
-        if mongo_timing is not None:
-            cfg_slice["mongo_retrieval_filter_applied"] = mongo_timing.get("jobs_retrieval_filter_applied")
-            cfg_slice["mongo_ranked_find_ms"] = mongo_timing.get("mongo_ranked_find_ms")
-
-        out: List[MatchV2Response] = []
-        for row in envelope.get("results") or []:
-            # Post-secondary education gate is enforced inside hybrid_match_users_with_jobs.
-            fused = row.get("column_fused_weighted_minmax") or []
-            uid = str(row.get("user_id") or "")
-            out.append(
-                MatchV2Response(
-                    user_id=uid,
-                    n_jobs_scored=len(jobs),
-                    hybrid_recommendations=_fused_rows_to_match_v2_jobs(fused, job_index),
-                    hybrid_config_summary=cfg_slice,
-                )
-            )
+        out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
 
         log_match_step(
-            "http /match_v2",
+            "http /experiments/v2/match",
             "request (summary)",
             n_users=n_users,
             n_jobs=len(jobs),
-            n_occupation_rows=0,
+            n_occupation_rows=len(occ),
             fetch_parallel_wall_ms=fetch_wall_ms,
-            scoring_thread_pool_ms=hybrid_ms,
+            scoring_thread_pool_ms=score_ms,
             request_total_ms=_ms(t_req),
         )
         return out
