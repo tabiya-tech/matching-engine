@@ -14,6 +14,8 @@ from app.schemas import (
     MatchV2Response,
     MatchV2JobRecommendation,
     MatchConcatGeminiCeResponse,
+    MatchRequestV5,
+    MatchResponseV5,
 )
 from app.config import (
     MATCH_V2_HYBRID_TOP_K,
@@ -549,6 +551,137 @@ async def match_v4(
 
         log_match_step(
             "http /match_v4",
+            "request (summary)",
+            n_users=len(users),
+            n_jobs=len(jobs),
+            n_occupation_rows=len(occ),
+            fetch_parallel_wall_ms=fetch_wall_ms,
+            scoring_thread_pool_ms=score_ms,
+            request_total_ms=_ms(t_req),
+        )
+        return out
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.exception(e)
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception(e)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e.__class__.__name__}") from e
+
+
+# ---------------------------------------------------------------------------
+# Experiment: /experiments/v5/match
+# ---------------------------------------------------------------------------
+
+def _zqf_annotation(user_zqf, job_zqf_min):
+    """(zqf_eligible, zqf_gap) or (None, None) when either side is missing."""
+    if user_zqf is not None and isinstance(job_zqf_min, int):
+        return (user_zqf >= job_zqf_min, abs(user_zqf - job_zqf_min))
+    return (None, None)
+
+
+@router_public.post(
+    "/experiments/v5/match",
+    tags=["experiments"],
+    operation_id="match_v5_experiment",
+    response_model=List[MatchResponseV5],
+    responses={
+        400: {"description": "Bad Request"},
+        500: {"description": "Internal Server Error"},
+    },
+)
+async def match_v5(
+    payload: Annotated[
+        List[MatchRequestV5],
+        Body(
+            ...,
+            description=(
+                "Same body as ``POST /match_v4`` plus ``zqf_level`` (optional int). "
+                "Returns results with ZQF eligibility annotation on opportunities."
+            ),
+            example=_MATCH_V3_BODY_EXAMPLE,
+        ),
+    ],
+    retrieve_top_k: Optional[int] = Query(
+        None, ge=1, le=500,
+        description=f"Stage-1 concat cosine shortlist size. Default: {COSINE_CROSS_ENCODER_RETRIEVE_TOP_K}.",
+    ),
+    final_top_k: Optional[int] = Query(
+        None, ge=1, le=200,
+        description="CE pool size and max preference-ranked rows returned. Default: 30.",
+    ),
+    final_score_combiner: Optional[str] = Query(
+        None,
+        description="How to combine u_hat and p_hat: 'product' or 'geometric_mean'.",
+    ),
+    skill_gap_top_k: Optional[int] = Query(
+        None, ge=1, le=50, description="Number of skill-gap recommendations.",
+    ),
+):
+    """Experiment: matching with ZQF education annotation on opportunities.
+
+    Runs the full matching pipeline then annotates each opportunity with ``zqf_eligible``
+    and ``zqf_gap`` based on the user's ``zqf_level`` and the job's ``zqf_min``.
+    """
+    try:
+        t_req = time.perf_counter()
+        if len(payload) > MATCH_V2_MAX_USERS_PER_REQUEST:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Too many users in one request (max {MATCH_V2_MAX_USERS_PER_REQUEST}).",
+            )
+        if not payload:
+            raise HTTPException(status_code=400, detail="Request body must be a non-empty JSON array.")
+
+        users = [u.model_dump() for u in payload]
+        rt = retrieve_top_k if retrieve_top_k is not None else COSINE_CROSS_ENCODER_RETRIEVE_TOP_K
+        ft = final_top_k if final_top_k is not None else 30
+        combiner = (final_score_combiner or "").strip().lower() or None
+        if combiner is not None and combiner not in ("product", "geometric_mean"):
+            raise HTTPException(
+                status_code=400,
+                detail="final_score_combiner must be 'product' or 'geometric_mean'",
+            )
+
+        t_fetch = time.perf_counter()
+        (jobs, mongo_timing), (occ, _occ_timing) = await asyncio.gather(
+            get_all_jobs_with_timing(users=users),
+            get_all_occupations_with_timing(),
+        )
+        occ = attach_occupation_embeddings(occ)
+        fetch_wall_ms = _ms(t_fetch)
+
+        job_uuid_index = _jobs_by_uuid(jobs)
+
+        t_score = time.perf_counter()
+        raw = await asyncio.to_thread(
+            run_match_v4_full,
+            users,
+            jobs,
+            occ,
+            retrieve_top_k=rt,
+            final_top_k=ft,
+            final_score_combiner=combiner,
+            skill_gap_top_k=skill_gap_top_k if skill_gap_top_k is not None else MATCH_TOP_K_SKILL_GAPS,
+            mongo_timing=mongo_timing,
+        )
+        score_ms = _ms(t_score)
+
+        for row, user in zip(raw, users):
+            user_zqf = user.get("zqf_level")
+            for opp in row.get("opportunity_recommendations") or []:
+                job = job_uuid_index.get(str(opp.get("uuid") or ""))
+                job_zqf_min = job.get("zqf_min") if job else None
+                eligible, gap = _zqf_annotation(user_zqf, job_zqf_min)
+                opp["zqf_eligible"] = eligible
+                opp["zqf_gap"] = gap
+
+        out: List[MatchResponseV5] = [MatchResponseV5(**row) for row in raw]
+
+        log_match_step(
+            "http /experiments/v5/match",
             "request (summary)",
             n_users=len(users),
             n_jobs=len(jobs),

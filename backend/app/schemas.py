@@ -256,3 +256,24 @@ class MatchConcatGeminiCeResponse(BaseModel):
     n_jobs_active_loaded: int
     concat_gemini_ce_recommendations: List[MatchConcatGeminiCeJobRecommendation]
     config_summary: Dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# v5 experiment
+# ---------------------------------------------------------------------------
+
+class MatchRequestV5(MatchRequest):
+    """request extended with the user's ZQF qualification level."""
+    zqf_level: Optional[int] = None
+
+class OpportunityRecommendationV5(OpportunityRecommendation):
+    """opportunity extended with ZQF eligibility annotation."""
+    zqf_eligible: Optional[bool] = None
+    zqf_gap: Optional[int] = None
+
+class MatchResponseV5(BaseModel):
+    """response with ZQF-annotated opportunities."""
+    user_id: str
+    occupation_recommendations: List[OccupationRecommendation] = Field(default_factory=list)
+    opportunity_recommendations: List[OpportunityRecommendationV5] = Field(default_factory=list)
+    skill_gap_recommendations: List[SkillGapRecommendation] = Field(default_factory=list)
