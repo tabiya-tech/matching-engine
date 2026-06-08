@@ -57,7 +57,9 @@ def build_occupation_texts(occupations_path: Path) -> tuple[List[str], List[str]
     """Return (codes, concat_texts) — one per unique occupation code."""
     raw = json.loads(occupations_path.read_text(encoding="utf-8"))
     if not isinstance(raw, list):
-        raise ValueError(f"{occupations_path}: expected a JSON list of occupation entries")
+        raise ValueError(
+            f"{occupations_path}: expected a JSON list of occupation entries"
+        )
 
     codes: List[str] = []
     texts: List[str] = []
@@ -76,7 +78,9 @@ def build_occupation_texts(occupations_path: Path) -> tuple[List[str], List[str]
     return codes, texts
 
 
-def run(occupations_path: Path, npz_out: Path, *, api_key: str, normalize: bool = True) -> None:
+def run(
+    occupations_path: Path, npz_out: Path, *, api_key: str, normalize: bool = True
+) -> None:
     codes, texts = build_occupation_texts(occupations_path)
     n_empty = sum(1 for t in texts if not t.strip())
     print(
@@ -117,15 +121,25 @@ def run(occupations_path: Path, npz_out: Path, *, api_key: str, normalize: bool 
 
 def main() -> None:
     load_dotenv()
-    ap = argparse.ArgumentParser(description="Embed occupations via Gemini concat embeddings.")
-    ap.add_argument("--occupations", default=OCCUPATION_JSON_PATH, help="Occupations JSON path.")
-    ap.add_argument("--output", default=OCCUPATION_CONCAT_EMBEDDINGS_PATH, help="Output NPZ path.")
-    ap.add_argument("--no-normalize", action="store_true", help="Skip L2 normalisation.")
+    ap = argparse.ArgumentParser(
+        description="Embed occupations via Gemini concat embeddings."
+    )
+    ap.add_argument(
+        "--occupations", default=OCCUPATION_JSON_PATH, help="Occupations JSON path."
+    )
+    ap.add_argument(
+        "--output", default=OCCUPATION_CONCAT_EMBEDDINGS_PATH, help="Output NPZ path."
+    )
+    ap.add_argument(
+        "--no-normalize", action="store_true", help="Skip L2 normalisation."
+    )
     args = ap.parse_args()
 
     key = (os.environ.get("GEMINI_API_KEY") or "").strip()
     if not key:
-        raise SystemExit("[embed_occupations] Set GEMINI_API_KEY in backend/.env or the environment")
+        raise SystemExit(
+            "[embed_occupations] Set GEMINI_API_KEY in backend/.env or the environment"
+        )
 
     run(
         Path(args.occupations),

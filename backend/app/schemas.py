@@ -16,13 +16,16 @@ def _strip_county_suffix(s: str) -> str:
         s = s[: -len(" county")].strip()
     return s
 
+
 class Skill(BaseModel):
     preferredLabel: Optional[str] = None
     originUUID: str
     proficiency: Optional[float] = None
 
+
 class SkillsVector(BaseModel):
     top_skills: List[Skill] = Field(default_factory=list)
+
 
 class PreferenceVector(BaseModel):
     # All fields optional: a consumer may send a subset. Missing/0.5 = neutral in the DCE contract
@@ -37,6 +40,7 @@ class PreferenceVector(BaseModel):
     social_meaning: Optional[float] = 0.5
     bws_scores: Optional[dict] = None
     top_10_bws: Optional[List[str]] = None
+
 
 class MatchRequest(BaseModel):
     # Every field is optional so future consumers can send a subset and still get a valid response.
@@ -58,6 +62,7 @@ class MatchRequest(BaseModel):
         # Strip a trailing " County" so "Nairobi County" matches occupation/job "Nairobi".
         return _strip_county_suffix(v) if isinstance(v, str) else v
 
+
 class SkillComponents(BaseModel):
     # Optional so /match_v4 can emit a partial, interpretable breakdown (ess/opt in [0,1];
     # loc/grp null = "not computed"). The legacy Node2Vec /match path still fills all four.
@@ -66,11 +71,13 @@ class SkillComponents(BaseModel):
     opt: Optional[float] = None
     grp: Optional[float] = None
 
+
 class PHatComponents(BaseModel):
     gate: float = 0.0
     essential_fit: float = 0.0
     recruiter_readiness: float = 0.0
     market_opportunity: float = 0.0
+
 
 class ScoreBreakdown(BaseModel):
     # --- Multiplicative (paper-aligned) fields ---
@@ -91,6 +98,7 @@ class ScoreBreakdown(BaseModel):
     essential_coverage: Optional[float] = None
     skill_match_level: Optional[str] = None
 
+
 class MatchedSkill(BaseModel):
     job_skill_id: str
     job_skill_label: Optional[str] = None
@@ -100,18 +108,22 @@ class MatchedSkill(BaseModel):
     meets_threshold: bool
     match_tier: Optional[str] = None  # exact | embedding | none (v4 whitened gate)
 
+
 class OptionalSkillMatch(BaseModel):
     skill_id: str
     skill_label: Optional[str] = None
+
 
 class SkillGroupMatch(BaseModel):
     skill_group_id: str
     skill_group_label: Optional[str] = None
 
+
 class MatchedSkills(BaseModel):
     essential_skill_matches: List[MatchedSkill] = Field(default_factory=list)
     optional_exact_matches: List[OptionalSkillMatch] = Field(default_factory=list)
     skill_group_matches: List[SkillGroupMatch] = Field(default_factory=list)
+
 
 class MatchedPreference(BaseModel):
     attribute: str
@@ -122,6 +134,7 @@ class MatchedPreference(BaseModel):
     encoded_value: float
     contribution: float
     matched: bool
+
 
 class MatchedWorkActivity(BaseModel):
     wa_code: str
@@ -134,7 +147,8 @@ class MatchedWorkActivity(BaseModel):
     wa_contribution: float
     # Additive-RUM diagnostics (BWS_INTEGRATION_MODE="additive_rum")
     weight: Optional[float] = None  # ŵ_c = WA_Importance / Σ WA_Importance (Σ = 1)
-    beta: Optional[float] = None    # β_c = user BWS part-worth for this activity
+    beta: Optional[float] = None  # β_c = user BWS part-worth for this activity
+
 
 class WorkActivityBWS(BaseModel):
     wa_score_sum: float = 0.0
@@ -144,6 +158,7 @@ class WorkActivityBWS(BaseModel):
     n_work_activities: Optional[int] = None
     V_task: Optional[float] = None
     V_task_hat: Optional[float] = None
+
 
 class OpportunityRecommendation(BaseModel):
     uuid: str
@@ -172,6 +187,7 @@ class OpportunityRecommendation(BaseModel):
     matched_preferences: List[MatchedPreference] = Field(default_factory=list)
     matched_work_activities: Optional[WorkActivityBWS] = None
 
+
 class OccupationRecommendation(BaseModel):
     uuid: str
     originUuid: Optional[str] = None
@@ -190,6 +206,7 @@ class OccupationRecommendation(BaseModel):
     matched_preferences: List[MatchedPreference] = Field(default_factory=list)
     matched_work_activities: Optional[WorkActivityBWS] = None
 
+
 class SkillGapRecommendation(BaseModel):
     skill_id: str
     skill_label: str
@@ -198,11 +215,18 @@ class SkillGapRecommendation(BaseModel):
     combined_score: float
     reasoning: str
 
+
 class MatchResponse(BaseModel):
     user_id: str
-    occupation_recommendations: List[OccupationRecommendation] = Field(default_factory=list)
-    opportunity_recommendations: List[OpportunityRecommendation] = Field(default_factory=list)
-    skill_gap_recommendations: List[SkillGapRecommendation] = Field(default_factory=list)
+    occupation_recommendations: List[OccupationRecommendation] = Field(
+        default_factory=list
+    )
+    opportunity_recommendations: List[OpportunityRecommendation] = Field(
+        default_factory=list
+    )
+    skill_gap_recommendations: List[SkillGapRecommendation] = Field(
+        default_factory=list
+    )
 
 
 class MatchV2JobRecommendation(BaseModel):
@@ -267,18 +291,30 @@ class MatchConcatGeminiCeResponse(BaseModel):
 # v5 experiment
 # ---------------------------------------------------------------------------
 
+
 class MatchRequestV5(MatchRequest):
     """request extended with the user's ZQF qualification level."""
+
     zqf_level: Optional[int] = None
+
 
 class OpportunityRecommendationV5(OpportunityRecommendation):
     """opportunity extended with ZQF eligibility annotation."""
+
     zqf_eligible: Optional[bool] = None
     zqf_gap: Optional[int] = None
 
+
 class MatchResponseV5(BaseModel):
     """response with ZQF-annotated opportunities."""
+
     user_id: str
-    occupation_recommendations: List[OccupationRecommendation] = Field(default_factory=list)
-    opportunity_recommendations: List[OpportunityRecommendationV5] = Field(default_factory=list)
-    skill_gap_recommendations: List[SkillGapRecommendation] = Field(default_factory=list)
+    occupation_recommendations: List[OccupationRecommendation] = Field(
+        default_factory=list
+    )
+    opportunity_recommendations: List[OpportunityRecommendationV5] = Field(
+        default_factory=list
+    )
+    skill_gap_recommendations: List[SkillGapRecommendation] = Field(
+        default_factory=list
+    )

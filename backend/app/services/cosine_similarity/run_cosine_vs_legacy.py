@@ -163,7 +163,9 @@ def run_comparison(
         labels = matcher.resolved_user_skill_labels_ordered(user_raw)
         skinny: List[Dict[str, Any]] = []
         for job in jobs:
-            skinny.append(_one_row_skeleton(matcher, scorer, user_raw, user_legacy, job))
+            skinny.append(
+                _one_row_skeleton(matcher, scorer, user_raw, user_legacy, job)
+            )
 
         cos_ranked = _attach_global_ranks(
             skinny,
@@ -211,16 +213,18 @@ def run_comparison(
             [str(r["job_uuid"]) for r in top_legacy],
         )
 
-        results_out.append({
-            "user_id": user_raw.get("user_id"),
-            "city": user_raw.get("city"),
-            "province": user_raw.get("province"),
-            "n_resolved_user_skills": len(labels),
-            "resolved_user_skill_labels": labels,
-            "overlap_jaccard_top_cosine_vs_legacy": round(jacc, 4),
-            "top_pooled_cosine": top_cosine,
-            "top_legacy_U": top_legacy,
-        })
+        results_out.append(
+            {
+                "user_id": user_raw.get("user_id"),
+                "city": user_raw.get("city"),
+                "province": user_raw.get("province"),
+                "n_resolved_user_skills": len(labels),
+                "resolved_user_skill_labels": labels,
+                "overlap_jaccard_top_cosine_vs_legacy": round(jacc, 4),
+                "top_pooled_cosine": top_cosine,
+                "top_legacy_U": top_legacy,
+            }
+        )
 
     config: Dict[str, Any] = {
         "users_path": str(users_path),

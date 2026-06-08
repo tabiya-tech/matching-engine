@@ -65,7 +65,9 @@ def _concat_text_nonempty(row: Dict[str, Any]) -> str:
     return txt if txt else " "
 
 
-def _npz_job_key_from_row(row: Dict[str, Any], job_key: Literal["uuid", "fingerprint"]) -> str:
+def _npz_job_key_from_row(
+    row: Dict[str, Any], job_key: Literal["uuid", "fingerprint"]
+) -> str:
     """Stable row id stored in NPZ ``job_uuids`` (historical name — may hold fingerprint hex)."""
 
     jk = job_key.strip().lower()
@@ -115,7 +117,7 @@ def _embed_chunk(
             last_err = e
             if attempt == MAX_RETRIES - 1:
                 break
-            wait = 2 ** attempt
+            wait = 2**attempt
             detail = str(e).strip() or repr(e)
             if len(detail) > 280:
                 detail = detail[:277] + "…"
@@ -125,7 +127,9 @@ def _embed_chunk(
                 file=sys.stderr,
             )
             time.sleep(wait)
-    raise RuntimeError(f"Gemini embed_content failed after {MAX_RETRIES} attempts: {last_err}")
+    raise RuntimeError(
+        f"Gemini embed_content failed after {MAX_RETRIES} attempts: {last_err}"
+    )
 
 
 def embed_text_list(
@@ -170,7 +174,10 @@ def embed_text_list(
         if b < n_batches - 1 and sleep_s > 0:
             time.sleep(sleep_s)
     elapsed = time.perf_counter() - t0
-    print(f"[gemini_embeddings] embedded {n} texts in {elapsed:.1f}s ({n/elapsed:.1f}/s)", file=sys.stderr)
+    print(
+        f"[gemini_embeddings] embedded {n} texts in {elapsed:.1f}s ({n / elapsed:.1f}/s)",
+        file=sys.stderr,
+    )
     return out
 
 
@@ -222,9 +229,13 @@ def run(
         file=sys.stderr,
     )
     print("[gemini_embeddings] embedding user texts…", file=sys.stderr)
-    u_emb = embed_text_list(user_texts, api_key=key, batch_size=batch_size, sleep_s=sleep_s)
+    u_emb = embed_text_list(
+        user_texts, api_key=key, batch_size=batch_size, sleep_s=sleep_s
+    )
     print("[gemini_embeddings] embedding job texts…", file=sys.stderr)
-    j_emb = embed_text_list(job_texts, api_key=key, batch_size=batch_size, sleep_s=sleep_s)
+    j_emb = embed_text_list(
+        job_texts, api_key=key, batch_size=batch_size, sleep_s=sleep_s
+    )
 
     if normalize:
         u_emb = l2_normalize_rows(u_emb)
@@ -267,7 +278,10 @@ def run(
                 "[gemini_embeddings] warning: --job-key uuid but --mongo-match-field is job_fingerprint",
                 file=sys.stderr,
             )
-        print(f"[gemini_embeddings] writing job embeddings to Mongo (match {mfm})…", file=sys.stderr)
+        print(
+            f"[gemini_embeddings] writing job embeddings to Mongo (match {mfm})…",
+            file=sys.stderr,
+        )
         client, coll = _mongo_client_and_collection()
         try:
             mj = np.asarray(job_ids, dtype=object)
@@ -317,7 +331,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     def_inp = _backend_root() / "experiments/concat_text/njila_users_jobs_concat.json"
 
-    p = argparse.ArgumentParser(description="Gemini embeddings for concat user/job texts export JSON.")
+    p = argparse.ArgumentParser(
+        description="Gemini embeddings for concat user/job texts export JSON."
+    )
     p.add_argument(
         "--input",
         type=Path,
@@ -429,7 +445,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             mongo_bulk_chunk=max(1, int(args.mongo_bulk_chunk)),
         )
     except ImportError as e:
-        print(f"[gemini_embeddings] {e}; install: pip install google-genai", file=sys.stderr)
+        print(
+            f"[gemini_embeddings] {e}; install: pip install google-genai",
+            file=sys.stderr,
+        )
         return 2
     return 0
 

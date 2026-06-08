@@ -60,7 +60,8 @@ def _filter_essential_skill_matches(match_details: dict) -> list[dict]:
     """Keep only essential skill matches whose similarity passes response threshold."""
     essential = match_details.get("essential_skill_matches", [])
     return [
-        m for m in essential
+        m
+        for m in essential
         if float(m.get("similarity", 0.0)) >= MATCH_RESPONSE_SKILL_MIN_SCORE
     ]
 
@@ -68,7 +69,8 @@ def _filter_essential_skill_matches(match_details: dict) -> list[dict]:
 def _filter_skill_gap_recommendations(skill_gaps: list[dict]) -> list[dict]:
     """Keep only skill-gap rows whose proximity passes response threshold."""
     return [
-        g for g in skill_gaps
+        g
+        for g in skill_gaps
         if float(g.get("proximity_score", 0.0)) >= MATCH_RESPONSE_SKILL_MIN_SCORE
     ][:MATCH_TOP_K_SKILL_GAPS]
 
@@ -97,7 +99,9 @@ def _job_matches_user_location(job: Dict[str, Any], user: Dict[str, Any]) -> boo
         return True
 
     # Check Province Match (Lenient)
-    if job_province and (user_province in job_province or job_province in user_province):
+    if job_province and (
+        user_province in job_province or job_province in user_province
+    ):
         return True
 
     # Fallback to location string match
@@ -107,19 +111,34 @@ def _job_matches_user_location(job: Dict[str, Any], user: Dict[str, Any]) -> boo
     return False
 
 
-def _build_justification(match_details: dict, pref_details: list, demand_label: str, score: float) -> str:
+def _build_justification(
+    match_details: dict, pref_details: list, demand_label: str, score: float
+) -> str:
     """Build a human-readable justification for a match."""
     top_prefs = [p for p in pref_details if p.get("matched", False)][:3]
-    pref_text = "; ".join([
-        f"{p['attribute'].replace('_', ' ').title()}: {p.get('job_value_label', 'N/A')}"
-        for p in top_prefs
-    ]) if top_prefs else ""
+    pref_text = (
+        "; ".join(
+            [
+                f"{p['attribute'].replace('_', ' ').title()}: {p.get('job_value_label', 'N/A')}"
+                for p in top_prefs
+            ]
+        )
+        if top_prefs
+        else ""
+    )
 
     top_skills = match_details.get("essential_skill_matches", [])[:2]
-    skill_text = ". ".join([
-        f"{s.get('best_user_skill_label', 'Unknown')} \u2194 {s.get('job_skill_label', 'Unknown')} (sim {s.get('similarity', 0)})"
-        for s in top_skills if s.get('meets_threshold')
-    ]) if top_skills else ""
+    skill_text = (
+        ". ".join(
+            [
+                f"{s.get('best_user_skill_label', 'Unknown')} \u2194 {s.get('job_skill_label', 'Unknown')} (sim {s.get('similarity', 0)})"
+                for s in top_skills
+                if s.get("meets_threshold")
+            ]
+        )
+        if top_skills
+        else ""
+    )
 
     parts = []
     if skill_text:
@@ -149,26 +168,40 @@ def _create_score_breakdown_multiplicative(
         "p_hat_components": {
             "gate": round(float(components.get("gate", 0.0)), 4),
             "essential_fit": round(float(components.get("essential_fit", 0.0)), 4),
-            "recruiter_readiness": round(float(components.get("recruiter_readiness", 0.0)), 4),
-            "market_opportunity": round(float(components.get("market_opportunity", 0.0)), 4),
+            "recruiter_readiness": round(
+                float(components.get("recruiter_readiness", 0.0)), 4
+            ),
+            "market_opportunity": round(
+                float(components.get("market_opportunity", 0.0)), 4
+            ),
         },
         "total_skill_utility": round(float(skill_details.get("U_final", 0.0)), 4),
-        "skill_components": skill_details.get("components", {"loc": 0.0, "ess": 0.0, "opt": 0.0, "grp": 0.0}),
+        "skill_components": skill_details.get(
+            "components", {"loc": 0.0, "ess": 0.0, "opt": 0.0, "grp": 0.0}
+        ),
         "skill_penalty_applied": round(float(skill_details.get("penalty", 0.0)), 4),
         "preference_score": round(float(pref_score_legacy), 4),
     }
     if include_demand:
         demand_label = p_hat_result.get("demand_label")
-        breakdown["demand_score"] = round(float(DEMAND_SCORE_MAPPING.get(demand_label, 0.5)), 4) if demand_label else 0.5
+        breakdown["demand_score"] = (
+            round(float(DEMAND_SCORE_MAPPING.get(demand_label, 0.5)), 4)
+            if demand_label
+            else 0.5
+        )
         breakdown["demand_label"] = demand_label
     return breakdown
 
 
-def _create_score_breakdown_additive(skill_details: dict, pref_score: float, demand_score: float, demand_label: str) -> dict:
+def _create_score_breakdown_additive(
+    skill_details: dict, pref_score: float, demand_score: float, demand_label: str
+) -> dict:
     """Legacy additive score breakdown (kept for A/B testing)."""
     return {
         "total_skill_utility": round(float(skill_details.get("U_final", 0.0)), 4),
-        "skill_components": skill_details.get("components", {"loc": 0.0, "ess": 0.0, "opt": 0.0, "grp": 0.0}),
+        "skill_components": skill_details.get(
+            "components", {"loc": 0.0, "ess": 0.0, "opt": 0.0, "grp": 0.0}
+        ),
         "skill_penalty_applied": round(float(skill_details.get("penalty", 0.0)), 4),
         "preference_score": round(float(pref_score), 4),
         "demand_score": round(float(demand_score), 4),
@@ -201,11 +234,17 @@ def _format_opportunity(item: dict, rank: int, recommendation: dict) -> dict:
 
     return {
         "uuid": item.get("uuid"),
-        "URL": item.get("url") or item.get("URL") or f"www.example.com/{item.get('uuid')}",
+        "URL": item.get("url")
+        or item.get("URL")
+        or f"www.example.com/{item.get('uuid')}",
         "rank": rank,
         "opportunity_title": item.get("opportunity_title"),
-        "opportunity_isco_occupation_group": item.get("opportunity_isco_occupation_group"),
-        "opportunity_isco_occupation_group_id": item.get("opportunity_isco_occupation_group_id"),
+        "opportunity_isco_occupation_group": item.get(
+            "opportunity_isco_occupation_group"
+        ),
+        "opportunity_isco_occupation_group_id": item.get(
+            "opportunity_isco_occupation_group_id"
+        ),
         "location": item.get("location"),
         "employer": item.get("employer"),
         "employment_type": item.get("employment_type"),
@@ -220,7 +259,8 @@ def _format_opportunity(item: dict, rank: int, recommendation: dict) -> dict:
             recommendation.get("demand_label", "Unknown"),
             recommendation["score"],
         ),
-        "opportunity_description": item.get("opportunity_description") or item.get("contract_type", "full_time"),
+        "opportunity_description": item.get("opportunity_description")
+        or item.get("contract_type", "full_time"),
         "contract_type": item.get("contract_type"),
         "final_score": round(float(recommendation["score"]), 4),
         "score_breakdown": breakdown,
@@ -234,7 +274,9 @@ def _format_opportunity(item: dict, rank: int, recommendation: dict) -> dict:
     }
 
 
-def _format_opportunity_dashboard_row(item: dict, rank: int, recommendation: dict) -> dict:
+def _format_opportunity_dashboard_row(
+    item: dict, rank: int, recommendation: dict
+) -> dict:
     """Compact opportunity row for static comparison dashboards (embedded JSON in HTML).
 
     Unlike :func:`_format_opportunity`, includes *all* essential skill match rows in ``ms``,
@@ -298,7 +340,11 @@ def _format_opportunity_dashboard_row(item: dict, rank: int, recommendation: dic
 
     u_hat = float(recommendation.get("u_hat", breakdown.get("u_hat", 0.5)))
     if scoring_mode == "multiplicative":
-        p_hat = float(breakdown.get("p_hat", recommendation.get("p_hat_result", {}).get("p_hat", 0.0)))
+        p_hat = float(
+            breakdown.get(
+                "p_hat", recommendation.get("p_hat_result", {}).get("p_hat", 0.0)
+            )
+        )
     else:
         p_hat = float(recommendation.get("p_hat_result", {}).get("p_hat", 0.0))
 
@@ -373,7 +419,8 @@ def _format_occupation(item: dict, rank: int, recommendation: dict) -> dict:
             recommendation.get("demand_label", "Unknown"),
             recommendation["score"],
         ),
-        "occupation_description": item.get("occupation_description") or item.get("description"),
+        "occupation_description": item.get("occupation_description")
+        or item.get("description"),
         "final_score": round(float(recommendation["score"]), 4),
         "score_breakdown": breakdown,
         "matched_skills": {
@@ -449,6 +496,7 @@ def _match_items(
     _demand_scorer = None
     if scoring_mode != "multiplicative":
         from app.services.demand_score import DemandScorer
+
         _demand_scorer = DemandScorer()
 
     t_score = time.perf_counter()
@@ -479,18 +527,22 @@ def _match_items(
             p_hat = p_hat_result.get("p_hat", 0.0)
             final_score = u_hat * p_hat
 
-            recommendations.append({
-                "item": item,
-                "score": final_score,
-                "scoring_mode": scoring_mode,
-                "u_hat": u_hat,
-                "p_hat_result": p_hat_result,
-                "skill_details": skill,
-                "match_details": feasibility.get("match_details", skill.get("match_details", {})),
-                "pref_details": pref.get("details", []),
-                "pref_details_score": pref.get("score", 0.0),
-                "demand_label": p_hat_result.get("demand_label", "Unknown"),
-            })
+            recommendations.append(
+                {
+                    "item": item,
+                    "score": final_score,
+                    "scoring_mode": scoring_mode,
+                    "u_hat": u_hat,
+                    "p_hat_result": p_hat_result,
+                    "skill_details": skill,
+                    "match_details": feasibility.get(
+                        "match_details", skill.get("match_details", {})
+                    ),
+                    "pref_details": pref.get("details", []),
+                    "pref_details_score": pref.get("score", 0.0),
+                    "demand_label": p_hat_result.get("demand_label", "Unknown"),
+                }
+            )
         else:
             # Legacy additive: skill utility only (no feasibility / p_hat)
             t_s = time.perf_counter()
@@ -520,19 +572,25 @@ def _match_items(
                 + w2 * pref.get("score", 0.0)
                 + w3 * demand_score_val
             )
-            recommendations.append({
-                "item": item,
-                "score": final_score,
-                "scoring_mode": scoring_mode,
-                "u_hat": pref.get("u_hat", 0.5),
-                "p_hat_result": {"p_hat": 0.0, "components": {}, "demand_label": demand.get("label", "Unknown")},
-                "skill_details": skill,
-                "match_details": skill.get("match_details", {}),
-                "pref_details": pref.get("details", []),
-                "pref_details_score": pref.get("score", 0.0),
-                "demand_score": demand_score_val,
-                "demand_label": demand.get("label", "Unknown"),
-            })
+            recommendations.append(
+                {
+                    "item": item,
+                    "score": final_score,
+                    "scoring_mode": scoring_mode,
+                    "u_hat": pref.get("u_hat", 0.5),
+                    "p_hat_result": {
+                        "p_hat": 0.0,
+                        "components": {},
+                        "demand_label": demand.get("label", "Unknown"),
+                    },
+                    "skill_details": skill,
+                    "match_details": skill.get("match_details", {}),
+                    "pref_details": pref.get("details", []),
+                    "pref_details_score": pref.get("score", 0.0),
+                    "demand_score": demand_score_val,
+                    "demand_label": demand.get("label", "Unknown"),
+                }
+            )
 
     # Sort by final score; use demand as tie-breaker in multiplicative mode
     if scoring_mode == "multiplicative":
@@ -665,7 +723,9 @@ def match_user_opportunities_for_dashboard(
     Each row matches the client's embedded schema (keys ``r``, ``t``, ``e``, ``ms``, …).
     """
     k = top_k if top_k is not None else MATCH_TOP_K_OPPORTUNITIES
-    rows, _timing = _match_items(user, jobs, item_type="opportunity", top_k=k, format_for_dashboard=True)
+    rows, _timing = _match_items(
+        user, jobs, item_type="opportunity", top_k=k, format_for_dashboard=True
+    )
     return rows
 
 

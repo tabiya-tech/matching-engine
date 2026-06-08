@@ -30,7 +30,9 @@ def _compact_fused_row(raw: Dict[str, Any], *, max_msk: int) -> Dict[str, Any]:
         "t": str(raw.get("job_title") or "")[:280],
         "e": str(raw.get("employer") or "")[:180],
         "l": str(raw.get("location") or "")[:200],
-        "fus": float(raw.get("fusion_score") or raw.get("weighted_minmax_fusion") or 0.0),
+        "fus": float(
+            raw.get("fusion_score") or raw.get("weighted_minmax_fusion") or 0.0
+        ),
         "bn": raw.get("bm25_norm_within_candidates"),
         "cn": raw.get("cos_norm_within_candidates"),
         "mbr": raw.get("mean_best_cosine_raw"),
@@ -46,7 +48,11 @@ def _compact_user(
     max_rows: int,
     max_msk: int,
 ) -> Dict[str, Any]:
-    labs = row.get("user_skill_labels_for_display") or row.get("resolved_user_skill_labels") or []
+    labs = (
+        row.get("user_skill_labels_for_display")
+        or row.get("resolved_user_skill_labels")
+        or []
+    )
     if not labs:
         labs = []
     fu = row.get("column_fused_weighted_minmax") or []
@@ -334,8 +340,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Build standalone HTML dashboard from bm25_cosine_hybrid JSON output.",
     )
-    parser.add_argument("--input", type=Path, required=True, help="results_*.json from run_bm25_cosine_hybrid")
-    parser.add_argument("--output", type=Path, required=True, help="path to write .html")
+    parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="results_*.json from run_bm25_cosine_hybrid",
+    )
+    parser.add_argument(
+        "--output", type=Path, required=True, help="path to write .html"
+    )
     parser.add_argument(
         "--max-rows-per-column",
         type=int,
@@ -367,7 +380,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     first = res[0]
     if "column_fused_weighted_minmax" not in first:
-        print("[4col_dashboard] results[0] missing column_fused_weighted_minmax — pass output from run_bm25_cosine_hybrid", file=sys.stderr)
+        print(
+            "[4col_dashboard] results[0] missing column_fused_weighted_minmax — pass output from run_bm25_cosine_hybrid",
+            file=sys.stderr,
+        )
         return 2
 
     html_doc = build_html(

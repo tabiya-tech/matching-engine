@@ -32,11 +32,13 @@ def _compact_rec(raw: Dict[str, Any], *, max_matched_skills: int) -> Dict[str, A
     for d in raw.get("matched_skills_detail") or []:
         if not isinstance(d, dict):
             continue
-        ov_compact.append({
-            "p": str(d.get("phrase_token") or ""),
-            "u": str(d.get("user_label") or "")[:200],
-            "j": str(d.get("job_label") or "")[:200],
-        })
+        ov_compact.append(
+            {
+                "p": str(d.get("phrase_token") or ""),
+                "u": str(d.get("user_label") or "")[:200],
+                "j": str(d.get("job_label") or "")[:200],
+            }
+        )
     ov_full_n = len(ov_compact)
     ov_take = ov_compact[:max_matched_skills]
     return {
@@ -52,15 +54,9 @@ def _compact_rec(raw: Dict[str, Any], *, max_matched_skills: int) -> Dict[str, A
             else None
         ),
         "tsr": (
-            float(raw["bm25_text_score_raw"])
-            if "bm25_text_score_raw" in raw
-            else None
+            float(raw["bm25_text_score_raw"]) if "bm25_text_score_raw" in raw else None
         ),
-        "sr": (
-            float(raw["bm25_score_raw"])
-            if "bm25_score_raw" in raw
-            else None
-        ),
+        "sr": (float(raw["bm25_score_raw"]) if "bm25_score_raw" in raw else None),
         "msk": [s[:120] for s in msk_take],
         "n_msk": len(msk_full),
         "msk_trunc": len(msk_full) > max_matched_skills,
@@ -116,8 +112,7 @@ def build_html(payload_raw: Dict[str, Any], *, max_matched_skills: int = 120) ->
     # Avoid prematurely closing the embedding <script>: </ -> <\/ in any string.
     safe = data_json.replace("</", "<\\/")
 
-    tpl = (
-        """<!doctype html>
+    tpl = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -152,9 +147,7 @@ let topN = 50;
 %(js)s
 </script>
 </body>
-</html>"""
-        % {"css": _CSS, "data": safe, "js": _JS}
-    )
+</html>""" % {"css": _CSS, "data": safe, "js": _JS}
     return tpl.strip() + "\n"
 
 
@@ -436,12 +429,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(
         description="Embed BM25 results into a standalone HTML dashboard."
     )
-    p.add_argument("--input", type=Path, required=True,
-                   help="Path to *_results.json from bm25library")
-    p.add_argument("--output", type=Path, required=True,
-                   help="Output .html path")
-    p.add_argument("--max-matched-skills", type=int, default=120,
-                   help="Max matched taxonomy skill strings to embed per job")
+    p.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Path to *_results.json from bm25library",
+    )
+    p.add_argument("--output", type=Path, required=True, help="Output .html path")
+    p.add_argument(
+        "--max-matched-skills",
+        type=int,
+        default=120,
+        help="Max matched taxonomy skill strings to embed per job",
+    )
     args = p.parse_args(argv)
 
     payload = json.loads(args.input.read_text(encoding="utf-8"))

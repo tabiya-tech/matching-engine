@@ -102,7 +102,7 @@ def resolve_schema_level_id(
     if raw_level_id is None:
         return None
     raw = str(raw_level_id).strip()
-    if not raw or raw in ("—", "-", "â€", "â€\""):
+    if not raw or raw in ("—", "-", "â€", 'â€"'):
         return None
 
     spec = _schema_spec(attr_name, schema)

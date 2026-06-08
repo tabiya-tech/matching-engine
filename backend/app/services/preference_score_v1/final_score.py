@@ -12,7 +12,9 @@ from typing import Literal
 FinalScoreCombiner = Literal["product", "geometric_mean"]
 
 
-def combine_final_score(u_hat: float, p_hat: float, *, combiner: FinalScoreCombiner) -> float:
+def combine_final_score(
+    u_hat: float, p_hat: float, *, combiner: FinalScoreCombiner
+) -> float:
     """Return a final score in [0, 1] (inputs assumed in [0, 1])."""
 
     u = float(u_hat)
@@ -25,4 +27,3 @@ def combine_final_score(u_hat: float, p_hat: float, *, combiner: FinalScoreCombi
     if combiner == "geometric_mean":
         return math.sqrt(u * p)
     raise ValueError(f"Unknown combiner: {combiner!r}")
-

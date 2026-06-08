@@ -58,7 +58,9 @@ def _occ_to_hybrid_item(o: Dict[str, Any]) -> Dict[str, Any]:
     present and used as-is. The original occupation dict is untouched (used later for formatting).
     """
     item = dict(o)
-    item.setdefault("opportunity_title", o.get("occupation_label") or o.get("preferredLabel") or "")
+    item.setdefault(
+        "opportunity_title", o.get("occupation_label") or o.get("preferredLabel") or ""
+    )
     item.setdefault("opportunity_description", o.get("description") or "")
     return item
 
@@ -146,7 +148,9 @@ def run_match_v2_full(
         )
         occ_by_uid = _fused_rows(occ_env)
 
-    occ_counties = sorted({str(o.get("province")) for o in occupations if o.get("province")})
+    occ_counties = sorted(
+        {str(o.get("province")) for o in occupations if o.get("province")}
+    )
 
     out: List[Dict[str, Any]] = []
     for user in users:
@@ -160,9 +164,13 @@ def run_match_v2_full(
             per, ess_ids = _skill_detail(matcher, user, item)
             opportunities.append(
                 fmt.build_opportunity_row(
-                    _v2_rec(row), item, per, ess_ids,
+                    _v2_rec(row),
+                    item,
+                    per,
+                    ess_ids,
                     rank=len(opportunities) + 1,
-                    sim_threshold=V4_FULL_SIM_THRESHOLD, min_ess_share=V4_FULL_MIN_ESS_SHARE,
+                    sim_threshold=V4_FULL_SIM_THRESHOLD,
+                    min_ess_share=V4_FULL_MIN_ESS_SHARE,
                 )
             )
 
@@ -175,7 +183,10 @@ def run_match_v2_full(
             loc_user = {"city": fallback, "province": fallback, "location": fallback}
             logger.warning(
                 "User %r province=%r matches no occupation county %s; using random fallback county %r.",
-                uid, user.get("province"), occ_counties, fallback,
+                uid,
+                user.get("province"),
+                occ_counties,
+                fallback,
             )
         loc = loc_user or user
 
@@ -194,9 +205,13 @@ def run_match_v2_full(
             per, ess_ids = _skill_detail(matcher, user, item)
             occupations_out.append(
                 fmt.build_occupation_row(
-                    _v2_rec(row), item, per, ess_ids,
+                    _v2_rec(row),
+                    item,
+                    per,
+                    ess_ids,
                     rank=len(occupations_out) + 1,
-                    sim_threshold=V4_FULL_SIM_THRESHOLD, min_ess_share=V4_FULL_MIN_ESS_SHARE,
+                    sim_threshold=V4_FULL_SIM_THRESHOLD,
+                    min_ess_share=V4_FULL_MIN_ESS_SHARE,
                 )
             )
             if len(occupations_out) >= MATCH_V4_TOP_K_OCCUPATIONS:
@@ -207,7 +222,9 @@ def run_match_v2_full(
                 "user_id": uid,
                 "occupation_recommendations": occupations_out,
                 "opportunity_recommendations": opportunities,
-                "skill_gap_recommendations": _skill_gaps_for(user, jobs, skill_gap_top_k),
+                "skill_gap_recommendations": _skill_gaps_for(
+                    user, jobs, skill_gap_top_k
+                ),
             }
         )
 

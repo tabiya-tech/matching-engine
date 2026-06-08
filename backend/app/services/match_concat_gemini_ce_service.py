@@ -37,7 +37,10 @@ from app.services.cross_encoder.gemini_embeddings import (
     embed_text_list,
     l2_normalize_rows,
 )
-from app.services.cross_encoder.reranker import CrossEncoderReranker, rerank_cosine_recommendations
+from app.services.cross_encoder.reranker import (
+    CrossEncoderReranker,
+    rerank_cosine_recommendations,
+)
 from app.services.cosine_similarity.skill_score import CosineSkillMatcher
 from app.services.education_eligibility import (
     job_requires_post_secondary,
@@ -217,7 +220,9 @@ def embed_user_unit_vectors(users: List[Dict[str, Any]]) -> np.ndarray:
     """
     api_key = _gemini_api_key()
     if not api_key:
-        raise ValueError("GEMINI_API_KEY is not set (required for user concat embeddings)")
+        raise ValueError(
+            "GEMINI_API_KEY is not set (required for user concat embeddings)"
+        )
     texts = []
     for u in users:
         t = user_concat_embedding_text(u).strip()
@@ -278,8 +283,12 @@ def run_match_concat_gemini_ce(
             "n_jobs_active_loaded": n_active,
         }
         if mongo_timing:
-            empty_summary["mongo_ranked_find_ms"] = mongo_timing.get("mongo_ranked_find_ms")
-            empty_summary["jobs_retrieval_filter_applied"] = mongo_timing.get("jobs_retrieval_filter_applied")
+            empty_summary["mongo_ranked_find_ms"] = mongo_timing.get(
+                "mongo_ranked_find_ms"
+            )
+            empty_summary["jobs_retrieval_filter_applied"] = mongo_timing.get(
+                "jobs_retrieval_filter_applied"
+            )
         return [
             {
                 "user_id": str(u.get("user_id") or ""),
@@ -297,7 +306,11 @@ def run_match_concat_gemini_ce(
 
     if user_unit_vectors is not None:
         u_norm = np.asarray(user_unit_vectors, dtype=np.float64)
-        if u_norm.ndim != 2 or u_norm.shape[0] != len(users) or u_norm.shape[1] != EMBEDDING_DIM:
+        if (
+            u_norm.ndim != 2
+            or u_norm.shape[0] != len(users)
+            or u_norm.shape[1] != EMBEDDING_DIM
+        ):
             raise RuntimeError(
                 f"user_unit_vectors shape {u_norm.shape} != ({len(users)}, {EMBEDDING_DIM})"
             )
@@ -384,7 +397,9 @@ def run_match_concat_gemini_ce(
         }
         if mongo_timing:
             cfg["mongo_ranked_find_ms"] = mongo_timing.get("mongo_ranked_find_ms")
-            cfg["jobs_retrieval_filter_applied"] = mongo_timing.get("jobs_retrieval_filter_applied")
+            cfg["jobs_retrieval_filter_applied"] = mongo_timing.get(
+                "jobs_retrieval_filter_applied"
+            )
 
         out_results.append(
             {

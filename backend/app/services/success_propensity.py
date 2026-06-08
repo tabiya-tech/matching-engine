@@ -23,7 +23,6 @@ from app.config import DEMAND_SCORE_MAPPING, SUCCESS_PROPENSITY_CONFIG
 
 
 class SuccessPropensityScorer:
-
     def __init__(self):
         self.cfg = SUCCESS_PROPENSITY_CONFIG
         self.demand_mapping = DEMAND_SCORE_MAPPING
@@ -145,7 +144,7 @@ class SuccessPropensityScorer:
         r_ij = max(r_ij, 0.01)
         m_ij = max(m_ij, 0.01)
 
-        p_hat = g_ij * (e_ij ** alpha) * (r_ij ** beta) * (m_ij ** gamma)
+        p_hat = g_ij * (e_ij**alpha) * (r_ij**beta) * (m_ij**gamma)
 
         return {
             "p_hat": round(p_hat, 4),

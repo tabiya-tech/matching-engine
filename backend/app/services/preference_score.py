@@ -13,7 +13,6 @@ from app.config import (
 
 
 class PreferenceScorer:
-
     @staticmethod
     def detect_bws_score_type(bws_scores: dict) -> str:
         """
@@ -30,20 +29,22 @@ class PreferenceScorer:
         if any(work_activity_id_pattern.match(k) for k in keys):
             return "work_activity_id"
         return "unknown"
+
     def __init__(self):
         self.config = PREFERENCE_CONFIG
         self.base_constant = self.config["base_constant"]
 
         self._enabled_attrs = {
-            k: v for k, v in self.config["attributes"].items()
-            if v.get("enabled", True)
+            k: v for k, v in self.config["attributes"].items() if v.get("enabled", True)
         }
 
         # Dynamic sigmoid scaling: sigmoid(max_raw * factor) ≈ 0.98
         # so a perfect match on all enabled attributes reaches ~0.98.
         max_positive_sum = sum(abs(s["beta"]) for s in self._enabled_attrs.values())
         self._sigmoid_factor = (
-            PREFERENCE_SIGMOID_NUMERATOR / max_positive_sum if max_positive_sum > 0 else 2.0
+            PREFERENCE_SIGMOID_NUMERATOR / max_positive_sum
+            if max_positive_sum > 0
+            else 2.0
         )
         # Analytic normaliser for the additive-RUM DCE term: max achievable |Σ β·w·x|
         # (each of w, x ∈ [0,1]) ⇒ Σ|β|. Harmonises V_dce → [-1,1].
@@ -57,7 +58,7 @@ class PreferenceScorer:
         prefixes = ("earn_", "task_", "phys_", "flex_", "soc_", "growth_", "mean_")
         for p in prefixes:
             if text.startswith(p):
-                text = text[len(p):]
+                text = text[len(p) :]
                 break
         text = text.replace("_", " ").strip()
         return text.title() if text else None
@@ -73,14 +74,10 @@ class PreferenceScorer:
 
         # BWS scores may be at top level or nested inside preference_vector
         bws_scores = (
-            user_profile.get("bws_scores")
-            or user_weights.get("bws_scores")
-            or {}
+            user_profile.get("bws_scores") or user_weights.get("bws_scores") or {}
         )
         top_10_bws = (
-            user_profile.get("top_10_bws")
-            or user_weights.get("top_10_bws")
-            or []
+            user_profile.get("top_10_bws") or user_weights.get("top_10_bws") or []
         )
         bws_score_type = self.detect_bws_score_type(bws_scores)
 
@@ -160,25 +157,33 @@ class PreferenceScorer:
                     norm_level = wa_level / 7.0 if wa_level else 0.0
                     wa_contribution = user_bws * norm_importance * norm_level
                     wa_contributions.append(wa_contribution)
-                    wa_details.append({
-                        "wa_code": wa_code,
-                        "user_bws": user_bws,
-                        "wa_importance": wa_importance,
-                        "wa_level": wa_level,
-                        "norm_importance": round(norm_importance, 4),
-                        "norm_level": round(norm_level, 4),
-                        "wa_contribution": round(wa_contribution, 4),
-                    })
+                    wa_details.append(
+                        {
+                            "wa_code": wa_code,
+                            "user_bws": user_bws,
+                            "wa_importance": wa_importance,
+                            "wa_level": wa_level,
+                            "norm_importance": round(norm_importance, 4),
+                            "norm_level": round(norm_level, 4),
+                            "wa_contribution": round(wa_contribution, 4),
+                        }
+                    )
                 wa_score_sum = sum(wa_contributions)
                 raw_score_sum += wa_score_sum
-                details.append({
-                    "attribute": "work_activity_bws",
-                    "wa_details": wa_details,
-                    "wa_score_sum": round(wa_score_sum, 4),
-                })
+                details.append(
+                    {
+                        "attribute": "work_activity_bws",
+                        "wa_details": wa_details,
+                        "wa_score_sum": round(wa_score_sum, 4),
+                    }
+                )
 
             sigmoid_input = raw_score_sum * self._sigmoid_factor
-            u_hat = 1.0 / (1.0 + math.exp(-sigmoid_input)) if abs(sigmoid_input) < 500 else (1.0 if sigmoid_input > 0 else 0.0)
+            u_hat = (
+                1.0 / (1.0 + math.exp(-sigmoid_input))
+                if abs(sigmoid_input) < 500
+                else (1.0 if sigmoid_input > 0 else 0.0)
+            )
 
         # Legacy score kept for backward compatibility (attribute-only; ranking uses u_hat).
         scaled_sum_legacy = dce_sum * PREFERENCE_LEGACY_SCORE_SCALE

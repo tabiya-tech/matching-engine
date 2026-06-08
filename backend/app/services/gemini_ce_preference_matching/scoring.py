@@ -9,7 +9,10 @@ from app.services.preference_score import PreferenceScorer
 from app.services.demand_score import DemandScorer
 from app.config import FINAL_SCORE_COMBINER
 from app.services.preference_score_v1.final_score import combine_final_score
-from app.services.preference_score_v1.levels import attribute_label, load_attribute_schema
+from app.services.preference_score_v1.levels import (
+    attribute_label,
+    load_attribute_schema,
+)
 
 # Engine-agnostic demand scorer (reads item attributes["expected_demand"]); torch-free.
 _DEMAND_SCORER = DemandScorer()
@@ -102,7 +105,10 @@ def work_activity_match_for_dashboard(details: Any) -> Dict[str, Any]:
                 }
             )
         wa_rows.sort(
-            key=lambda r: (-abs(float(r.get("wa_contribution") or 0)), str(r.get("wa_code") or ""))
+            key=lambda r: (
+                -abs(float(r.get("wa_contribution") or 0)),
+                str(r.get("wa_code") or ""),
+            )
         )
         return {
             "S_wa": d.get("wa_score_sum"),
@@ -238,7 +244,7 @@ def enrich_recommendations_with_preferences(
             dres = _DEMAND_SCORER.calculate_score(job)
             if dres.get("present"):
                 m = max(0.0, min(1.0, float(dres.get("score") or 0.0)))
-                final = final * (m ** demand_gamma)
+                final = final * (m**demand_gamma)
                 breakdown["final_score"] = round(final, 4)
                 breakdown["demand_score"] = round(m, 4)
                 breakdown["demand_label"] = dres.get("label")
@@ -263,8 +269,12 @@ def enrich_recommendations_with_preferences(
         row["u_hat"] = pref.get("u_hat")
         row["preference_score"] = pref.get("score")
         row["preference_details"] = pref.get("details", [])
-        row["preference_match_rows"] = preference_details_for_dashboard(pref.get("details"))
-        row["work_activity_match"] = work_activity_match_for_dashboard(pref.get("details"))
+        row["preference_match_rows"] = preference_details_for_dashboard(
+            pref.get("details")
+        )
+        row["work_activity_match"] = work_activity_match_for_dashboard(
+            pref.get("details")
+        )
         row["S_attrs"] = pref.get("S_attrs")
         row["S_wa"] = pref.get("S_wa")
         row["preference_include_work_activities"] = include_work_activities

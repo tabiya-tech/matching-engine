@@ -60,7 +60,10 @@ from app.services.cosine_similarity.run_cosine_matching import (
     load_jobs as load_jobs_cosine,
     _load_users,
 )
-from app.services.cosine_similarity.skill_score import CosineSkillMatcher, compact_cosine_matched_skill_lines
+from app.services.cosine_similarity.skill_score import (
+    CosineSkillMatcher,
+    compact_cosine_matched_skill_lines,
+)
 from app.services.education_eligibility import (
     job_requires_post_secondary,
     user_lacks_post_secondary,
@@ -162,12 +165,14 @@ def cosine_scores_for_jobs(
     for i, job in enumerate(jobs):
         sp = matcher.score_pair(user_raw, job)
         vals[i] = float(sp.get("mean_best_cosine") or 0.0)
-        details.append({
-            "mean_best_cosine": round(float(vals[i]), 4),
-            "min_best_cosine": sp.get("min_best_cosine"),
-            "n_user_skills_embedded": sp.get("n_user_skills_embedded"),
-            "n_job_skills_embedded": sp.get("n_job_skills_embedded"),
-        })
+        details.append(
+            {
+                "mean_best_cosine": round(float(vals[i]), 4),
+                "min_best_cosine": sp.get("min_best_cosine"),
+                "n_user_skills_embedded": sp.get("n_user_skills_embedded"),
+                "n_job_skills_embedded": sp.get("n_job_skills_embedded"),
+            }
+        )
     return vals, details
 
 
@@ -335,12 +340,11 @@ def one_user_bundle(
         b_n = _min_max_1d(b_sel)
         cos_n = _min_max_1d(cos_sel)
         fus = (
-            float(alpha_on_cosine) * cos_n
-            + (1.0 - float(alpha_on_cosine)) * b_n
+            float(alpha_on_cosine) * cos_n + (1.0 - float(alpha_on_cosine)) * b_n
         ).astype(np.float64, copy=False)
         order_f = np.argsort(-fus)
 
-        for fr, ix in enumerate(order_f.flat[: col_display_k], start=1):
+        for fr, ix in enumerate(order_f.flat[:col_display_k], start=1):
             cand_slot = int(ix)
             ji = int(cand_arr[cand_slot])
             job = jobs[ji]
@@ -351,31 +355,35 @@ def one_user_bundle(
                 emb_sp.get("per_job_skill") or [],
                 limit=40,
             )
-            fused_preview.append({
-                "rank": fr,
-                "fusion_method": "hybrid_pool_minmax",
-                "fusion_score": round(float(fus[cand_slot]), 6),
-                "weighted_minmax_fusion": round(float(fus[cand_slot]), 6),
-                "legacy_U_norm_within_candidates": round(float(cos_n[cand_slot]), 6),
-                "cos_norm_within_candidates": round(float(cos_n[cand_slot]), 6),
-                "bm25_norm_within_candidates": round(float(b_n[cand_slot]), 6),
-                "mean_best_cosine_raw": round(float(cosine_v[ji]), 4),
-                "legacy_U_final_raw": round(float(cosine_v[ji]), 4),
-                "bm25_score_raw": round(float(combined[ji]), 4),
-                "rank_bm25_global": int(bm25_rank_full[ji]),
-                "rank_legacy_global": int(cosine_rank_full[ji]),
-                "rank_cosine_global": int(cosine_rank_full[ji]),
-                "was_in_bm25_legacy_pure_intersection": k in intersect_keys,
-                "was_in_bm25_cosine_pure_intersection": k in intersect_keys,
-                "legacy_components": {},
-                "cosine_detail": det,
-                "job_uuid": job.get("uuid") or job.get("_id"),
-                "job_title": job.get("opportunity_title"),
-                "employer": job.get("employer"),
-                "location": job.get("location"),
-                "matched_skills": matched_skill_phrases(user_raw, job)[:12],
-                "matched_skills_cosine": matched_cos_lines,
-            })
+            fused_preview.append(
+                {
+                    "rank": fr,
+                    "fusion_method": "hybrid_pool_minmax",
+                    "fusion_score": round(float(fus[cand_slot]), 6),
+                    "weighted_minmax_fusion": round(float(fus[cand_slot]), 6),
+                    "legacy_U_norm_within_candidates": round(
+                        float(cos_n[cand_slot]), 6
+                    ),
+                    "cos_norm_within_candidates": round(float(cos_n[cand_slot]), 6),
+                    "bm25_norm_within_candidates": round(float(b_n[cand_slot]), 6),
+                    "mean_best_cosine_raw": round(float(cosine_v[ji]), 4),
+                    "legacy_U_final_raw": round(float(cosine_v[ji]), 4),
+                    "bm25_score_raw": round(float(combined[ji]), 4),
+                    "rank_bm25_global": int(bm25_rank_full[ji]),
+                    "rank_legacy_global": int(cosine_rank_full[ji]),
+                    "rank_cosine_global": int(cosine_rank_full[ji]),
+                    "was_in_bm25_legacy_pure_intersection": k in intersect_keys,
+                    "was_in_bm25_cosine_pure_intersection": k in intersect_keys,
+                    "legacy_components": {},
+                    "cosine_detail": det,
+                    "job_uuid": job.get("uuid") or job.get("_id"),
+                    "job_title": job.get("opportunity_title"),
+                    "employer": job.get("employer"),
+                    "location": job.get("location"),
+                    "matched_skills": matched_skill_phrases(user_raw, job)[:12],
+                    "matched_skills_cosine": matched_cos_lines,
+                }
+            )
 
     common_rows_sorted: List[Dict[str, Any]] = []
     for ji in cand_ji:
@@ -410,7 +418,14 @@ def one_user_bundle(
     for pos, ji in enumerate(bm_top_idx[:col_display_k], start=1):
         col_bm25.append(
             _bm25_rec_fields(
-                ji, combined, skills_v, text_v, variant_bm25, jobs[ji], user_raw, rank=pos
+                ji,
+                combined,
+                skills_v,
+                text_v,
+                variant_bm25,
+                jobs[ji],
+                user_raw,
+                rank=pos,
             )
         )
 
@@ -418,20 +433,22 @@ def one_user_bundle(
     for pos, ji in enumerate(cos_top_idx[:col_display_k], start=1):
         j = jobs[ji]
         det = cosine_details[ji]
-        col_cos.append({
-            "rank": pos,
-            "job_uuid": j.get("uuid") or j.get("_id"),
-            "job_title": j.get("opportunity_title"),
-            "employer": j.get("employer"),
-            "location": j.get("location"),
-            "mean_best_cosine": det.get("mean_best_cosine"),
-            "legacy_U_final": det.get("mean_best_cosine"),
-            "min_best_cosine": det.get("min_best_cosine"),
-            "legacy_components": {},
-            "rank_bm25_global": int(bm25_rank_full[ji]),
-            "rank_cosine_global": int(cosine_rank_full[ji]),
-            "rank_legacy_global": int(cosine_rank_full[ji]),
-        })
+        col_cos.append(
+            {
+                "rank": pos,
+                "job_uuid": j.get("uuid") or j.get("_id"),
+                "job_title": j.get("opportunity_title"),
+                "employer": j.get("employer"),
+                "location": j.get("location"),
+                "mean_best_cosine": det.get("mean_best_cosine"),
+                "legacy_U_final": det.get("mean_best_cosine"),
+                "min_best_cosine": det.get("min_best_cosine"),
+                "legacy_components": {},
+                "rank_bm25_global": int(bm25_rank_full[ji]),
+                "rank_cosine_global": int(cosine_rank_full[ji]),
+                "rank_legacy_global": int(cosine_rank_full[ji]),
+            }
+        )
 
     labels = matcher.resolved_user_skill_labels_ordered(user_raw)[:200]
     if not labels:
@@ -468,8 +485,14 @@ def one_user_bundle(
         mrr_first_relevant = {
             "n_relevant_in_labels": len(relevance_ids),
             "bm25_global": {"reciprocal_rank": bm25_g_rr, "first_hit_rank": bm25_g_rnk},
-            "cosine_skills_global": {"reciprocal_rank": cos_g_rr, "first_hit_rank": cos_g_rnk},
-            "legacy_u_global": {"reciprocal_rank": cos_g_rr, "first_hit_rank": cos_g_rnk},
+            "cosine_skills_global": {
+                "reciprocal_rank": cos_g_rr,
+                "first_hit_rank": cos_g_rnk,
+            },
+            "legacy_u_global": {
+                "reciprocal_rank": cos_g_rr,
+                "first_hit_rank": cos_g_rnk,
+            },
             "fused_global_weighted_minmax": {
                 "reciprocal_rank": fus_g_rr,
                 "first_hit_rank": fus_g_rnk,
@@ -551,7 +574,9 @@ def hybrid_match_users_with_jobs(
 
     _require_rank_bm25()
     if not jobs:
-        raise ValueError("hybrid_match_users_with_jobs requires at least one job document")
+        raise ValueError(
+            "hybrid_match_users_with_jobs requires at least one job document"
+        )
 
     skills_corpus, full_corpus = build_corpora(jobs)
     skills_okapi, full_okapi = build_okapi_indexes(
@@ -717,12 +742,14 @@ def run(
     )
 
     cfg_skill = "CosineSkillMatcher.mean_best_cosine (embedding cosine on skills)"
-    payload["config"].update({
-        "users_path": str(users_path),
-        "jobs_source": jobs_source,
-        "mongo_filter_by_users": mongo_filter_by_users,
-        "legacy_skill_model": cfg_skill,
-    })
+    payload["config"].update(
+        {
+            "users_path": str(users_path),
+            "jobs_source": jobs_source,
+            "mongo_filter_by_users": mongo_filter_by_users,
+            "legacy_skill_model": cfg_skill,
+        }
+    )
     if jobs_source == "file":
         payload["config"]["jobs_path"] = str(jobs_path) if jobs_path else None
     if mrr_relevance_path is not None:
@@ -896,7 +923,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             file=sys.stderr,
         )
         return 2
-    if args.alpha_cos is None and args.alpha_leg is None and env_alpha is not None and env_key:
+    if (
+        args.alpha_cos is None
+        and args.alpha_leg is None
+        and env_alpha is not None
+        and env_key
+    ):
         print(
             f"[bm25_cosine_hybrid] using alpha_on_cosine={alpha_c} from env {env_key}",
             file=sys.stderr,
@@ -910,7 +942,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     jp = None if js == "mongo" else args.jobs
 
     if js == "file" and jp is not None and not jp.expanduser().is_file():
-        print("[bm25_cosine_hybrid] jobs file not found — use --from-mongo.", file=sys.stderr)
+        print(
+            "[bm25_cosine_hybrid] jobs file not found — use --from-mongo.",
+            file=sys.stderr,
+        )
         return 2
 
     try:

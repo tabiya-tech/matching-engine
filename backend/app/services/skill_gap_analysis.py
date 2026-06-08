@@ -12,6 +12,7 @@ from typing import List, Dict, Optional, Set
 
 from app.config import SKILL_RESCALE_TARGET
 
+
 def _ms(t0: float) -> float:
     return (time.perf_counter() - t0) * 1000.0
 
@@ -29,7 +30,7 @@ def analyze_skill_gaps(
     Analyzes skill gaps for a user by finding skills that:
     1. Are close to their existing skills in embedding space
     2. Would unlock or improve matches with jobs in the database
-    
+
     Args:
         user_profile: User profile dict with skills_vector.top_skills
         all_jobs: List of all job postings (demand.jsonl)
@@ -38,13 +39,12 @@ def analyze_skill_gaps(
         top_k: Number of recommendations to return
         resolve_id: Optional callable to translate external IDs (ESCO)
                      to the embedding model's internal ID space.
-    
+
     Returns:
-        List of dicts with skill_id, skill_label, proximity_score, 
+        List of dicts with skill_id, skill_label, proximity_score,
         job_unlock_count, and reasoning
     """
     t_total = time.perf_counter()
-    uid = str(user_profile.get("user_id", "?"))
     n_jobs = len(all_jobs)
     # `resolve_id` is the SkillScorer's label-primary resolver. The historical
     # parameter name predates the UUID→label switch; it now takes a preferredLabel.
@@ -62,7 +62,7 @@ def analyze_skill_gaps(
             continue
         user_skill_ids.add(resolved)
         user_skill_labels[resolved] = label
-    
+
     if not user_skill_ids:
         if timing_out is not None:
             timing_out.update(
@@ -83,14 +83,22 @@ def analyze_skill_gaps(
     _ess_sets: List[Set[str]] = []
     _opt_sets: List[Set[str]] = []
     for job in all_jobs:
-        ess_resolved = {s["id"] for s in job.get("essential_skills", []) if isinstance(s, dict) and s.get("id")}
-        opt_resolved = {s["id"] for s in job.get("optional_skills", []) if isinstance(s, dict) and s.get("id")}
+        ess_resolved = {
+            s["id"]
+            for s in job.get("essential_skills", [])
+            if isinstance(s, dict) and s.get("id")
+        }
+        opt_resolved = {
+            s["id"]
+            for s in job.get("optional_skills", [])
+            if isinstance(s, dict) and s.get("id")
+        }
         _ess_sets.append(ess_resolved)
         _opt_sets.append(opt_resolved)
         candidate_skills.update(ess_resolved | opt_resolved)
-    
+
     candidate_skills -= user_skill_ids
-    
+
     if not candidate_skills:
         if timing_out is not None:
             timing_out.update(
@@ -115,6 +123,7 @@ def analyze_skill_gaps(
 
     _target = SKILL_RESCALE_TARGET
     _rescale_enabled = _target > 0.0
+
     def _rescale_value(v: float) -> float:
         return min(1.0, v / _target) if _rescale_enabled else v
 
@@ -133,7 +142,7 @@ def analyze_skill_gaps(
             closest_user_skill_id = user_skill_ids_list[argmax_idx]
             proximity_scores[cand_id] = max_sim
             closest_user_skills[cand_id] = (closest_user_skill_id, max_sim)
-    
+
     # 4. Compute job unlock potential for each candidate (using pre-resolved sets)
     job_unlock_counts: Dict[str, int] = {}
     for cand_id in candidate_skills:
@@ -144,36 +153,40 @@ def analyze_skill_gaps(
             elif cand_id in opt_set:
                 unlock_count += 1
         job_unlock_counts[cand_id] = unlock_count
-    
+
     # 5. Combine scores (normalized)
     #    proximity: 0-1 range already
     #    job_unlock: normalize by max
     max_unlock = max(job_unlock_counts.values()) if job_unlock_counts else 1
-    
+
     combined_scores = {}
     for cand_id in candidate_skills:
         prox = proximity_scores.get(cand_id, 0.0)
         unlock = job_unlock_counts.get(cand_id, 0) / max(max_unlock, 1)
-        
+
         # Weighted average: 40% proximity, 60% job unlock potential
         combined = 0.4 * prox + 0.6 * unlock
         combined_scores[cand_id] = combined
-    
+
     # 6. Sort by combined score and return top_k
     sorted_candidates = sorted(
-        combined_scores.items(),
-        key=lambda x: x[1],
-        reverse=True
+        combined_scores.items(), key=lambda x: x[1], reverse=True
     )[:top_k]
-    
+
     recommendations = []
     for cand_id, combined_score in sorted_candidates:
         prox = proximity_scores.get(cand_id, 0.0)
         unlock_count = job_unlock_counts.get(cand_id, 0)
         skill_label = skill_labels.get(str(cand_id), str(cand_id))
-        closest_user_skill_id, closest_sim = closest_user_skills.get(cand_id, (None, 0.0))
-        closest_user_skill_label = user_skill_labels.get(closest_user_skill_id) if closest_user_skill_id else None
-        
+        closest_user_skill_id, closest_sim = closest_user_skills.get(
+            cand_id, (None, 0.0)
+        )
+        closest_user_skill_label = (
+            user_skill_labels.get(closest_user_skill_id)
+            if closest_user_skill_id
+            else None
+        )
+
         # Create reasoning text
         if closest_user_skill_label and closest_sim > 0:
             reasoning = (
@@ -185,16 +198,18 @@ def analyze_skill_gaps(
             reasoning = f"Would help unlock or improve {unlock_count} {job_text}."
         else:
             reasoning = f"Close match to your existing skills (proximity: {prox:.2f})."
-        
-        recommendations.append({
-            "skill_id": str(cand_id),
-            "skill_label": skill_label,
-            "proximity_score": round(float(prox), 4),
-            "job_unlock_count": int(unlock_count),
-            "combined_score": round(float(combined_score), 4),
-            "reasoning": reasoning
-        })
-    
+
+        recommendations.append(
+            {
+                "skill_id": str(cand_id),
+                "skill_label": skill_label,
+                "proximity_score": round(float(prox), 4),
+                "job_unlock_count": int(unlock_count),
+                "combined_score": round(float(combined_score), 4),
+                "reasoning": reasoning,
+            }
+        )
+
     total_ms = _ms(t_total)
     if timing_out is not None:
         timing_out.update(

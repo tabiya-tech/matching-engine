@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from dotenv import load_dotenv
 
@@ -34,7 +34,6 @@ def _resolve_under_backend(raw: str) -> str:
     if parts and parts[0] == "backend":
         p = Path(*parts[1:])
     return str((_BACKEND_ROOT / p).resolve())
-
 
 
 def _f(key: str, default: float) -> float:
@@ -207,7 +206,9 @@ if PREFERENCE_SCORER_MODE not in ("unified", "legacy"):
     raise ValueError("PREFERENCE_SCORER_MODE must be 'unified' or 'legacy'")
 
 HYBRID_PREF_SIGMOID_FACTOR: float = _f("HYBRID_PREF_SIGMOID_FACTOR", 2.646)
-HYBRID_PREF_VIGNETTES_FOR_FULL_CONFIDENCE: int = _i("HYBRID_PREF_VIGNETTES_FOR_FULL_CONFIDENCE", 10)
+HYBRID_PREF_VIGNETTES_FOR_FULL_CONFIDENCE: int = _i(
+    "HYBRID_PREF_VIGNETTES_FOR_FULL_CONFIDENCE", 10
+)
 _hybrid_schema = _s("HYBRID_PREF_SCHEMA_PATH", "").strip()
 HYBRID_PREF_SCHEMA_PATH: str = _hybrid_schema if _hybrid_schema else ""
 
@@ -228,12 +229,14 @@ DCE_LOGIT_EPS: float = _f("DCE_LOGIT_EPS", 0.01)
 # Optional per-attribute multiplicative scale on beta_hat (JSON object string), e.g.
 # '{"earnings_per_month": 5.0}' to compensate the near-neutral continuous earnings term.
 # Default: no scaling (every attribute = 1.0).
-import json as _json
+import json as _json  # noqa: E402
+
 _dce_scale_raw = _s("DCE_ATTR_SCALE", "")
 try:
     DCE_ATTR_SCALE: Dict[str, float] = (
         {str(k): float(v) for k, v in _json.loads(_dce_scale_raw).items()}
-        if _dce_scale_raw else {}
+        if _dce_scale_raw
+        else {}
     )
 except (ValueError, TypeError, AttributeError):
     DCE_ATTR_SCALE = {}
@@ -293,7 +296,8 @@ PREFERENCE_CONFIG: Dict[str, Any] = {
     "base_constant": PREFERENCE_BASE_CONSTANT,
     "attributes": {
         "earnings_per_month": {
-            "enabled": _s("PREF_ENABLE_EARNINGS", "true").lower() in ("1", "true", "yes"),
+            "enabled": _s("PREF_ENABLE_EARNINGS", "true").lower()
+            in ("1", "true", "yes"),
             "type": "ordered_linear",
             "beta": 0.5,
             "mapping": {
@@ -304,19 +308,22 @@ PREFERENCE_CONFIG: Dict[str, Any] = {
             },
         },
         "task_content": {
-            "enabled": _s("PREF_ENABLE_TASK_CONTENT", "false").lower() in ("1", "true", "yes"),
+            "enabled": _s("PREF_ENABLE_TASK_CONTENT", "false").lower()
+            in ("1", "true", "yes"),
             "type": "dummy",
             "beta": 0.2,
             "active_level": "task_creative",
         },
         "physical_demand": {
-            "enabled": _s("PREF_ENABLE_PHYSICAL_DEMAND", "true").lower() in ("1", "true", "yes"),
+            "enabled": _s("PREF_ENABLE_PHYSICAL_DEMAND", "true").lower()
+            in ("1", "true", "yes"),
             "type": "dummy",
             "beta": -0.4,
             "active_level": "phys_heavy",
         },
         "work_flexibility": {
-            "enabled": _s("PREF_ENABLE_WORK_FLEXIBILITY", "false").lower() in ("1", "true", "yes"),
+            "enabled": _s("PREF_ENABLE_WORK_FLEXIBILITY", "false").lower()
+            in ("1", "true", "yes"),
             "type": "dummy",
             "beta": 0.4,
             "active_level": "flex_high",
@@ -328,13 +335,15 @@ PREFERENCE_CONFIG: Dict[str, Any] = {
             "active_level": "soc_people",
         },
         "career_growth": {
-            "enabled": _s("PREF_ENABLE_CAREER_GROWTH", "true").lower() in ("1", "true", "yes"),
+            "enabled": _s("PREF_ENABLE_CAREER_GROWTH", "true").lower()
+            in ("1", "true", "yes"),
             "type": "dummy",
             "beta": 0.5,
             "active_level": "growth_high",
         },
         "social_meaning": {
-            "enabled": _s("PREF_ENABLE_SOCIAL_MEANING", "false").lower() in ("1", "true", "yes"),
+            "enabled": _s("PREF_ENABLE_SOCIAL_MEANING", "false").lower()
+            in ("1", "true", "yes"),
             "type": "dummy",
             "beta": 0.3,
             "active_level": "mean_high",
@@ -348,7 +357,10 @@ PREFERENCE_CONFIG: Dict[str, Any] = {
 OCCUPATION_JSON_PATH: str = _s("OCCUPATION_JSON_PATH", str(_DEFAULT_OCC))
 
 EMBEDDING_MODEL_PATH: str = _resolve_under_backend(
-    _s("EMBEDDING_MODEL_PATH", str(_DEFAULT_MODEL_DIR / "skill_embedding_model_gemini.pt"))
+    _s(
+        "EMBEDDING_MODEL_PATH",
+        str(_DEFAULT_MODEL_DIR / "skill_embedding_model_gemini.pt"),
+    )
 )
 # /match_v4 per-skill GATE uses the WHITENED skill artifact (de-anisotropised; carries its own
 # rescale target in metadata). Kept separate from the shared EMBEDDING_MODEL_PATH so v2/v3 + the
@@ -362,6 +374,8 @@ SKILL_TO_ROW_PATH: str = _resolve_under_backend(
 _TAX = _RESOURCES / "skill_taxonomy"
 SKILLS_CSV_PATH: str = _s("SKILLS_CSV_PATH", str(_TAX / "skills.csv"))
 SKILL_GROUPS_CSV_PATH: str = _s("SKILL_GROUPS_CSV_PATH", str(_TAX / "skill_groups.csv"))
-SKILL_HIERARCHY_CSV_PATH: str = _s("SKILL_HIERARCHY_CSV_PATH", str(_TAX / "skill_hierarchy.csv"))
+SKILL_HIERARCHY_CSV_PATH: str = _s(
+    "SKILL_HIERARCHY_CSV_PATH", str(_TAX / "skill_hierarchy.csv")
+)
 
 DEBUG_MODE = True

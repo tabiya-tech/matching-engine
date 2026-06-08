@@ -84,10 +84,14 @@ def _v3_rec(ce_row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _ce_rows_by_uid(v3_results: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+def _ce_rows_by_uid(
+    v3_results: List[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
     out: Dict[str, List[Dict[str, Any]]] = {}
     for r in v3_results or []:
-        out[str(r.get("user_id") or "")] = r.get("concat_gemini_ce_recommendations") or []
+        out[str(r.get("user_id") or "")] = (
+            r.get("concat_gemini_ce_recommendations") or []
+        )
     return out
 
 
@@ -112,7 +116,11 @@ def run_match_v3_full(
     # Opportunities — v3 engine over the active job corpus (engine + education gate unchanged).
     job_v3 = (
         run_match_concat_gemini_ce(
-            users, jobs, retrieve_top_k=retrieve_top_k, final_top_k=final_top_k, user_unit_vectors=u_norm
+            users,
+            jobs,
+            retrieve_top_k=retrieve_top_k,
+            final_top_k=final_top_k,
+            user_unit_vectors=u_norm,
         )
         if jobs
         else []
@@ -122,7 +130,11 @@ def run_match_v3_full(
     occ_breadth = max(retrieve_top_k, final_top_k, MATCH_V4_TOP_K_OCCUPATIONS * 8)
     occ_v3 = (
         run_match_concat_gemini_ce(
-            users, occupations, retrieve_top_k=occ_breadth, final_top_k=occ_breadth, user_unit_vectors=u_norm
+            users,
+            occupations,
+            retrieve_top_k=occ_breadth,
+            final_top_k=occ_breadth,
+            user_unit_vectors=u_norm,
         )
         if occupations
         else []
@@ -130,7 +142,9 @@ def run_match_v3_full(
 
     job_by_uid = _ce_rows_by_uid(job_v3)
     occ_by_uid = _ce_rows_by_uid(occ_v3)
-    occ_counties = sorted({str(o.get("province")) for o in occupations if o.get("province")})
+    occ_counties = sorted(
+        {str(o.get("province")) for o in occupations if o.get("province")}
+    )
 
     out: List[Dict[str, Any]] = []
     for user in users:
@@ -146,9 +160,13 @@ def run_match_v3_full(
             per, ess_ids = _skill_detail(matcher, user, item)
             opportunities.append(
                 fmt.build_opportunity_row(
-                    _v3_rec(ce_row), item, per, ess_ids,
+                    _v3_rec(ce_row),
+                    item,
+                    per,
+                    ess_ids,
                     rank=len(opportunities) + 1,
-                    sim_threshold=V4_FULL_SIM_THRESHOLD, min_ess_share=V4_FULL_MIN_ESS_SHARE,
+                    sim_threshold=V4_FULL_SIM_THRESHOLD,
+                    min_ess_share=V4_FULL_MIN_ESS_SHARE,
                 )
             )
 
@@ -160,7 +178,10 @@ def run_match_v3_full(
             loc_user = {"city": fallback, "province": fallback, "location": fallback}
             logger.warning(
                 "User %r province=%r matches no occupation county %s; using random fallback county %r.",
-                uid, user.get("province"), occ_counties, fallback,
+                uid,
+                user.get("province"),
+                occ_counties,
+                fallback,
             )
         loc = loc_user or user
 
@@ -180,9 +201,13 @@ def run_match_v3_full(
             per, ess_ids = _skill_detail(matcher, user, item)
             occupations_out.append(
                 fmt.build_occupation_row(
-                    _v3_rec(ce_row), item, per, ess_ids,
+                    _v3_rec(ce_row),
+                    item,
+                    per,
+                    ess_ids,
                     rank=len(occupations_out) + 1,
-                    sim_threshold=V4_FULL_SIM_THRESHOLD, min_ess_share=V4_FULL_MIN_ESS_SHARE,
+                    sim_threshold=V4_FULL_SIM_THRESHOLD,
+                    min_ess_share=V4_FULL_MIN_ESS_SHARE,
                 )
             )
             if len(occupations_out) >= MATCH_V4_TOP_K_OCCUPATIONS:
@@ -193,7 +218,9 @@ def run_match_v3_full(
                 "user_id": uid,
                 "occupation_recommendations": occupations_out,
                 "opportunity_recommendations": opportunities,
-                "skill_gap_recommendations": _skill_gaps_for(user, jobs, skill_gap_top_k),
+                "skill_gap_recommendations": _skill_gaps_for(
+                    user, jobs, skill_gap_top_k
+                ),
             }
         )
 

@@ -160,9 +160,7 @@ def run(
 ) -> Dict[str, Any]:
     users = _load_users(users_path)
 
-    jobs, mongo_timing = load_jobs(
-        jobs_source, jobs_path, users, mongo_filter_by_users
-    )
+    jobs, mongo_timing = load_jobs(jobs_source, jobs_path, users, mongo_filter_by_users)
 
     matcher = CosineSkillMatcher()
     print(
@@ -176,14 +174,16 @@ def run(
         labels = matcher.resolved_user_skill_labels_ordered(user)
         recs = matcher.rank_jobs(user, jobs, top_k=top_k)
         _trim_recommendations(recs, max_per_job_skills=max_per_job_skills)
-        results.append({
-            "user_id": user.get("user_id"),
-            "city": user.get("city"),
-            "province": user.get("province"),
-            "n_resolved_user_skills": len(labels),
-            "resolved_user_skill_labels": labels,
-            "recommendations": recs,
-        })
+        results.append(
+            {
+                "user_id": user.get("user_id"),
+                "city": user.get("city"),
+                "province": user.get("province"),
+                "n_resolved_user_skills": len(labels),
+                "resolved_user_skill_labels": labels,
+                "recommendations": recs,
+            }
+        )
 
     config: Dict[str, Any] = {
         "users_path": str(users_path),
@@ -247,21 +247,31 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=examples,
     )
-    p.add_argument("--users", required=True, type=Path,
-                   help="JSON or JSONL list of user records.")
+    p.add_argument(
+        "--users", required=True, type=Path, help="JSON or JSONL list of user records."
+    )
     src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--jobs", type=Path,
-                     help="Local jobs list JSON. Mutually exclusive with --from-mongo.")
-    src.add_argument("--from-mongo", action="store_true",
-                     help="Load active jobs from MongoDB using backend/.env.")
+    src.add_argument(
+        "--jobs",
+        type=Path,
+        help="Local jobs list JSON. Mutually exclusive with --from-mongo.",
+    )
+    src.add_argument(
+        "--from-mongo",
+        action="store_true",
+        help="Load active jobs from MongoDB using backend/.env.",
+    )
     p.add_argument("--output", type=Path, default=None)
     p.add_argument("--top-k", type=int, default=10)
     p.add_argument(
-        "--max-per-job-skills", type=int, default=200,
+        "--max-per-job-skills",
+        type=int,
+        default=200,
         help="Cap per_job_skill rows per recommendation in the JSON file.",
     )
     p.add_argument(
-        "--mongo-all-active", action="store_true",
+        "--mongo-all-active",
+        action="store_true",
         help=(
             "With --from-mongo: ignore JOBS_RETRIEVAL_FILTER and load every "
             "is_active=true job (see JOBS_RETRIEVAL_LIMIT)."

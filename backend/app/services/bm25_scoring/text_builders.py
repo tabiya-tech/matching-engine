@@ -36,13 +36,59 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 # Conservative English stopword list. Small on purpose: BM25's IDF already
 # down-weights frequent tokens; the goal here is just to skip pure noise.
-_STOPWORDS = frozenset({
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has",
-    "have", "he", "in", "is", "it", "its", "of", "on", "or", "that", "the",
-    "to", "was", "were", "will", "with", "this", "these", "those", "their",
-    "but", "not", "we", "you", "your", "i", "they", "them", "our", "us",
-    "into", "than", "then", "so", "up", "do", "does", "did",
-})
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "has",
+        "have",
+        "he",
+        "in",
+        "is",
+        "it",
+        "its",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "to",
+        "was",
+        "were",
+        "will",
+        "with",
+        "this",
+        "these",
+        "those",
+        "their",
+        "but",
+        "not",
+        "we",
+        "you",
+        "your",
+        "i",
+        "they",
+        "them",
+        "our",
+        "us",
+        "into",
+        "than",
+        "then",
+        "so",
+        "up",
+        "do",
+        "does",
+        "did",
+    }
+)
 
 # Token = alphanumeric run, length >= 2 (so single letters / punctuation drop out).
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -80,17 +126,18 @@ def normalize_skill_phrase(
 # User query construction
 # ---------------------------------------------------------------------------
 
+
 def _user_skill_labels(user: dict) -> List[str]:
     """Pull skill labels from a raw or pre-resolved user record."""
     out: List[str] = []
-    for s in (user.get("resolved_skills") or []):
+    for s in user.get("resolved_skills") or []:
         if isinstance(s, dict):
             lab = s.get("label")
             if lab:
                 out.append(str(lab))
     if out:
         return out
-    for s in ((user.get("skills_vector") or {}).get("top_skills") or []):
+    for s in (user.get("skills_vector") or {}).get("top_skills") or []:
         if isinstance(s, dict):
             lab = s.get("preferredLabel") or s.get("label")
             if lab:
@@ -125,6 +172,7 @@ def user_query_tokens(user: dict, *, include_programme: bool = False) -> List[st
 # Job document construction
 # ---------------------------------------------------------------------------
 
+
 def _skill_labels(items) -> List[str]:
     out: List[str] = []
     for s in items or []:
@@ -138,9 +186,8 @@ def _skill_labels(items) -> List[str]:
 def job_skill_phrase_tokens(job: dict) -> List[str]:
     """Phrase tokens for one job: one underscore-joined token per skill."""
     out: List[str] = []
-    for lab in (
-        _skill_labels(job.get("essential_skills"))
-        + _skill_labels(job.get("optional_skills"))
+    for lab in _skill_labels(job.get("essential_skills")) + _skill_labels(
+        job.get("optional_skills")
     ):
         phr = normalize_skill_phrase(lab)
         if phr:
@@ -180,6 +227,7 @@ def build_corpora(jobs: Iterable[dict]) -> Tuple[List[List[str]], List[List[str]
 # ---------------------------------------------------------------------------
 # Deterministic taxonomy overlap (used by the dashboard)
 # ---------------------------------------------------------------------------
+
 
 def matched_skill_phrases(user: dict, job: dict) -> List[str]:
     """Intersect user vs job skills as normalised phrase tokens (sorted).

@@ -24,7 +24,11 @@ from app.config import (
 )
 
 from .levels import load_attribute_schema
-from .work_activities import combine_utilities, compute_dce_utility, compute_task_utility
+from .work_activities import (
+    combine_utilities,
+    compute_dce_utility,
+    compute_task_utility,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -137,8 +141,8 @@ class UnifiedPreferenceScorer:
             "u_hat": comb["u_hat"],
             "score": comb["u_hat"],
             "details": details,
-            "S_attrs": round(v_dce_hat, 4),       # harmonised DCE utility ∈ [-1,1]
-            "S_wa": comb["v_task_h"],             # harmonised task utility ∈ [-1,1]
+            "S_attrs": round(v_dce_hat, 4),  # harmonised DCE utility ∈ [-1,1]
+            "S_wa": comb["v_task_h"],  # harmonised task utility ∈ [-1,1]
             "raw": comb["V"],
             "V": comb["V"],
             "V_task": comb["v_task"],

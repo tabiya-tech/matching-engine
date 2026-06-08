@@ -79,9 +79,13 @@ class SkillScorer:
         # carry modelId-drift risk (a Compass-side UUID can resolve to a different
         # internal skill than the user's declared label). Labels are stable across
         # taxonomy versions; they're our trust anchor.
-        self.skill_labels: dict[str, str] = {}            # internal_id -> preferredLabel (display)
-        self._preferred_to_id: dict[str, str] = {}        # canonical preferredLabel -> internal_id
-        self._altlabel_to_id: dict[str, str] = {}         # canonical altLabel -> internal_id
+        self.skill_labels: dict[
+            str, str
+        ] = {}  # internal_id -> preferredLabel (display)
+        self._preferred_to_id: dict[
+            str, str
+        ] = {}  # canonical preferredLabel -> internal_id
+        self._altlabel_to_id: dict[str, str] = {}  # canonical altLabel -> internal_id
         self._preferred_collisions = 0
         try:
             with open(self.SKILLS_CSV_PATH, "r", encoding="utf-8") as f:
@@ -140,13 +144,21 @@ class SkillScorer:
             with open(self.HIERARCHY_CSV_PATH, "r", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    if row.get("PARENTOBJECTTYPE") == "skillgroup" and row.get("CHILDOBJECTTYPE") == "skill":
+                    if (
+                        row.get("PARENTOBJECTTYPE") == "skillgroup"
+                        and row.get("CHILDOBJECTTYPE") == "skill"
+                    ):
                         child = str(row["CHILDID"])
                         parent = str(row["PARENTID"])
                         self._skill_to_groups.setdefault(child, set()).add(parent)
-            logger.info("SkillScorer: built skill→group lookup for %d skills", len(self._skill_to_groups))
+            logger.info(
+                "SkillScorer: built skill→group lookup for %d skills",
+                len(self._skill_to_groups),
+            )
         except FileNotFoundError:
-            logger.warning("skill_hierarchy.csv not found — skill group derivation disabled")
+            logger.warning(
+                "skill_hierarchy.csv not found — skill group derivation disabled"
+            )
 
     def _derive_groups(self, skill_ids: set[str]) -> set[str]:
         """Look up parent skill-group IDs for a set of individual skill IDs."""
@@ -195,7 +207,9 @@ class SkillScorer:
         if not user_id:
             raise ValueError("user_profile must include user_id (or legacy youth_id)")
 
-        user_top_skills = user_profile.get("skills_vector", {}).get("top_skills", []) or []
+        user_top_skills = (
+            user_profile.get("skills_vector", {}).get("top_skills", []) or []
+        )
 
         user_skill_labels: dict[str, str] = {}
         resolved_user_ids: set[str] = set()
@@ -281,7 +295,9 @@ class SkillScorer:
             skill_group_labels=self.skill_group_labels,
         )
 
-    def score_utility_and_feasibility(self, user_profile: dict, job_posting: dict) -> tuple[dict, dict]:
+    def score_utility_and_feasibility(
+        self, user_profile: dict, job_posting: dict
+    ) -> tuple[dict, dict]:
         """Single embedding pass for multiplicative mode (U + feasibility for p_hat)."""
         js, op, user_skill_labels = self._build_objects(user_profile, job_posting)
         u, f = compute_utility_and_feasibility_pair(

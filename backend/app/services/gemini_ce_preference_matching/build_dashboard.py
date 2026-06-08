@@ -123,9 +123,17 @@ def _compact_row(raw: Dict[str, Any], *, include_uxp: bool) -> Dict[str, Any]:
         "job_concat_skills": list(raw.get("job_concat_skills") or []),
     }
     if include_uxp:
-        row["u_hat"] = raw.get("u_hat") if raw.get("u_hat") is not None else sb.get("u_hat")
-        row["p_hat"] = raw.get("p_hat") if raw.get("p_hat") is not None else sb.get("p_hat")
-        row["final_score"] = raw.get("final_score") if raw.get("final_score") is not None else sb.get("final_score")
+        row["u_hat"] = (
+            raw.get("u_hat") if raw.get("u_hat") is not None else sb.get("u_hat")
+        )
+        row["p_hat"] = (
+            raw.get("p_hat") if raw.get("p_hat") is not None else sb.get("p_hat")
+        )
+        row["final_score"] = (
+            raw.get("final_score")
+            if raw.get("final_score") is not None
+            else sb.get("final_score")
+        )
         row["rank_cross_encoder"] = raw.get("rank_cross_encoder")
         details = raw.get("preference_details") or raw.get("preference_match_rows")
         row["pref_match"] = preference_details_for_dashboard(details)
@@ -144,7 +152,9 @@ def build_dual_payload(results: Dict[str, Any], *, top_k: int) -> Dict[str, Any]
         if not isinstance(r, dict):
             continue
         uid = str(r.get("user_id") or "").strip()
-        user_skills = list(r.get("user_concat_skills") or r.get("resolved_user_skill_labels") or [])
+        user_skills = list(
+            r.get("user_concat_skills") or r.get("resolved_user_skill_labels") or []
+        )
         ce_rows = [
             _compact_row(row, include_uxp=False)
             for row in (r.get("cross_encoder_recommendations") or [])[:top_k]
@@ -155,18 +165,20 @@ def build_dual_payload(results: Dict[str, Any], *, top_k: int) -> Dict[str, Any]
             for row in (r.get("recommendations") or [])[:top_k]
             if isinstance(row, dict)
         ]
-        users_out.append({
-            "uid": uid,
-            "city": r.get("city"),
-            "prov": r.get("province"),
-            "user_skills": user_skills,
-            "has_skills": bool(r.get("has_user_skills", len(user_skills) > 0)),
-            "skip_reason": r.get("skip_reason"),
-            "user_prefs": list(r.get("user_preference_factors") or []),
-            "user_bws": r.get("user_bws") or {"has_bws": False, "rows": []},
-            "ce_final": ce_rows,
-            "uxp": uxp_rows,
-        })
+        users_out.append(
+            {
+                "uid": uid,
+                "city": r.get("city"),
+                "prov": r.get("province"),
+                "user_skills": user_skills,
+                "has_skills": bool(r.get("has_user_skills", len(user_skills) > 0)),
+                "skip_reason": r.get("skip_reason"),
+                "user_prefs": list(r.get("user_preference_factors") or []),
+                "user_bws": r.get("user_bws") or {"has_bws": False, "rows": []},
+                "ce_final": ce_rows,
+                "uxp": uxp_rows,
+            }
+        )
     return {
         "meta": {
             "brand": BRAND,

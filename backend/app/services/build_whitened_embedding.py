@@ -47,21 +47,21 @@ USAGE
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 
-SHRINKAGE_LAMBDA = 2.0  # fraction of mean(diag(Sigma)) used for Tikhonov regularisation.
+SHRINKAGE_LAMBDA = (
+    2.0  # fraction of mean(diag(Sigma)) used for Tikhonov regularisation.
+)
 # Picked by sweeping {0.05, 0.1, ..., 5.0} on five known-good vs three description-smear
 # noise pairs; lambda=2.0 maximises (worst_good - best_noise) separation at +0.046, with
 # random-pair floor std 0.035. Lower lambda over-amplifies low-variance directions where
 # noise drowns signal; higher lambda converges back to plain centering (lower std but
 # narrower margin from description-smear collisions).
-N_FLOOR_PAIRS = 50_000     # for floor-characterisation (mean, std)
+N_FLOOR_PAIRS = 50_000  # for floor-characterisation (mean, std)
 N_TARGET_PAIRS = 1_000_000  # for p99.9 saturation-point estimate (rescale target)
 RANDOM_SEED = 42
 
@@ -86,26 +86,28 @@ def _whiten(W: np.ndarray) -> tuple[np.ndarray, dict]:
 
     t0 = time.perf_counter()
     sigma = (Wc.T @ Wc) / (N - 1)
-    print(f"  covariance: {(time.perf_counter()-t0)*1000:.0f} ms ({D}x{D})")
+    print(f"  covariance: {(time.perf_counter() - t0) * 1000:.0f} ms ({D}x{D})")
 
     diag_mean = float(np.mean(np.diag(sigma)))
     lam = SHRINKAGE_LAMBDA * diag_mean
     sigma_reg = sigma + lam * np.eye(D, dtype=np.float32)
-    print(f"  shrinkage lambda = {SHRINKAGE_LAMBDA} * diag-mean({diag_mean:.5f}) = {lam:.6f}")
+    print(
+        f"  shrinkage lambda = {SHRINKAGE_LAMBDA} * diag-mean({diag_mean:.5f}) = {lam:.6f}"
+    )
 
     t0 = time.perf_counter()
     eigvals, eigvecs = np.linalg.eigh(sigma_reg)
-    print(f"  eigendecomposition: {(time.perf_counter()-t0)*1000:.0f} ms")
+    print(f"  eigendecomposition: {(time.perf_counter() - t0) * 1000:.0f} ms")
     eigvals = np.clip(eigvals, a_min=lam * 1e-3, a_max=None)  # numerical floor
     inv_sqrt = 1.0 / np.sqrt(eigvals)
     print(
         f"  eigenvalue stats: min={eigvals.min():.6f} max={eigvals.max():.6f} "
-        f"top-1/bottom-1 ratio = {eigvals.max()/eigvals.min():.0f}"
+        f"top-1/bottom-1 ratio = {eigvals.max() / eigvals.min():.0f}"
     )
 
     t0 = time.perf_counter()
     W_white = (Wc @ eigvecs) * inv_sqrt
-    print(f"  whitened transform applied: {(time.perf_counter()-t0)*1000:.0f} ms")
+    print(f"  whitened transform applied: {(time.perf_counter() - t0) * 1000:.0f} ms")
 
     norms = np.linalg.norm(W_white, axis=1, keepdims=True)
     W_white = W_white / np.where(norms > 0, norms, 1.0)
@@ -187,7 +189,11 @@ def main() -> None:
     src = Path(args.src).resolve()
     if not src.exists():
         raise SystemExit(f"source artefact not found: {src}")
-    out = Path(args.out).resolve() if args.out else src.with_name(src.stem + "_whitened.pt")
+    out = (
+        Path(args.out).resolve()
+        if args.out
+        else src.with_name(src.stem + "_whitened.pt")
+    )
     print(f"src: {src}")
     print(f"out: {out}\n")
 
@@ -203,11 +209,13 @@ def main() -> None:
         "source_artefact": str(src.name),
         "whitening": meta,
     }
-    print(f"\nWriting whitened artefact ({W_white.nbytes/1024/1024:.1f} MB fp32, "
-          f"{W_white.nbytes/2/1024/1024:.1f} MB on disk as fp16)")
+    print(
+        f"\nWriting whitened artefact ({W_white.nbytes / 1024 / 1024:.1f} MB fp32, "
+        f"{W_white.nbytes / 2 / 1024 / 1024:.1f} MB on disk as fp16)"
+    )
     torch.save(new_state, out)
     print(f"  -> {out}")
-    print(f"  size on disk: {out.stat().st_size/1024/1024:.1f} MB")
+    print(f"  size on disk: {out.stat().st_size / 1024 / 1024:.1f} MB")
 
 
 if __name__ == "__main__":

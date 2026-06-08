@@ -38,17 +38,21 @@ sys.modules["motor.motor_asyncio"] = motor_mock
 
 # ── 3. Import app modules in the right order (import order matters for DLL loading) ──
 sys.path.insert(0, str(Path(__file__).parent))
-import app.database as db_module
-import app.config  # must be imported before skill_score/matching_service
-import app.services.preference_score
-import app.services.demand_score
-import app.services.skill_score
-from app.config import OCCUPATION_JSON_PATH
+import app.database as db_module  # noqa: E402
+import app.config  # noqa: E402  # must be imported before skill_score/matching_service
+import app.services.preference_score  # noqa: E402
+import app.services.demand_score  # noqa: E402
+import app.services.skill_score  # noqa: E402, F401  # side-effect: DLL/module init
+from app.config import OCCUPATION_JSON_PATH  # noqa: E402
 
 # ── 4. Load local JSONL data (override with SUPPLY_JSONL_PATH / DEMAND_JSONL_PATH) ──
 REPO_ROOT = Path(__file__).parent.parent
-SUPPLY_PATH = Path(os.getenv("SUPPLY_JSONL_PATH", str(REPO_ROOT / "data" / "supply.jsonl")))
-DEMAND_PATH = Path(os.getenv("DEMAND_JSONL_PATH", str(REPO_ROOT / "data" / "demand.jsonl")))
+SUPPLY_PATH = Path(
+    os.getenv("SUPPLY_JSONL_PATH", str(REPO_ROOT / "data" / "supply.jsonl"))
+)
+DEMAND_PATH = Path(
+    os.getenv("DEMAND_JSONL_PATH", str(REPO_ROOT / "data" / "demand.jsonl"))
+)
 
 
 def load_jsonl(path: Path) -> list:
@@ -75,22 +79,32 @@ for entry in _raw_occupations:
     for county_entry in entry.get("counties_data", []):
         county = county_entry.get("county", "")
         raw_attrs = (county_entry.get("job_attributes") or {}).get("attributes", [])
-        flat_attrs = {a["attribute_name"]: a["selected_level_id"] for a in raw_attrs if "attribute_name" in a and "selected_level_id" in a}
+        flat_attrs = {
+            a["attribute_name"]: a["selected_level_id"]
+            for a in raw_attrs
+            if "attribute_name" in a and "selected_level_id" in a
+        }
 
-        OCCUPATIONS.append({
-            "uuid": f"{occ.get('code', '')}_{county}",
-            "originUuid": occ.get("code", ""),
-            "occupation_label": occ.get("preferred_label", ""),
-            "occupation_description": occ.get("description", ""),
-            "province": county,
-            "city": county,
-            "location": county,
-            "essential_skills": [{"id": str(u), "label": ""} for u in essential_uuids],
-            "optional_skills": [{"id": str(u), "label": ""} for u in optional_uuids],
-            "skill_groups_origin_uuids": [],
-            "attributes": flat_attrs,
-            "onet_work_activities": onet_was,
-        })
+        OCCUPATIONS.append(
+            {
+                "uuid": f"{occ.get('code', '')}_{county}",
+                "originUuid": occ.get("code", ""),
+                "occupation_label": occ.get("preferred_label", ""),
+                "occupation_description": occ.get("description", ""),
+                "province": county,
+                "city": county,
+                "location": county,
+                "essential_skills": [
+                    {"id": str(u), "label": ""} for u in essential_uuids
+                ],
+                "optional_skills": [
+                    {"id": str(u), "label": ""} for u in optional_uuids
+                ],
+                "skill_groups_origin_uuids": [],
+                "attributes": flat_attrs,
+                "onet_work_activities": onet_was,
+            }
+        )
 
 
 # ── 6. Patch database helpers to use local files ──────────────────────────────
@@ -106,11 +120,13 @@ db_module.get_all_jobs = _get_all_jobs
 db_module.get_all_occupations = _get_all_occupations
 
 # Re-import matching service AFTER patching so it picks up patched db helpers
-import importlib
-import app.services.matching_service as ms_module
+import importlib  # noqa: E402
+import app.services.matching_service as ms_module  # noqa: E402
+
 importlib.reload(ms_module)
 
 # ── 7. Run matching ───────────────────────────────────────────────────────────
+
 
 async def run(users: list) -> list:
     results = []
@@ -124,7 +140,9 @@ def main():
     parser = argparse.ArgumentParser(description="Run matching algorithm locally")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--user", metavar="USER_ID", help="Match a specific user ID")
-    group.add_argument("--all", action="store_true", help="Match all users in supply.jsonl")
+    group.add_argument(
+        "--all", action="store_true", help="Match all users in supply.jsonl"
+    )
     parser.add_argument("--output", metavar="FILE", help="Write JSON output to file")
     args = parser.parse_args()
 
@@ -140,8 +158,11 @@ def main():
     else:
         # Default: first user only
         users = supply[:1]
-        print(f"No flag given — matching first user: {users[0].get('user_id')}\n"
-              f"Use --user <id> or --all to match other users.\n", file=sys.stderr)
+        print(
+            f"No flag given — matching first user: {users[0].get('user_id')}\n"
+            f"Use --user <id> or --all to match other users.\n",
+            file=sys.stderr,
+        )
 
     results = asyncio.run(run(users))
 

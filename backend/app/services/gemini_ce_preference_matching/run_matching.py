@@ -34,11 +34,15 @@ from app.config import (
 )
 from app.services.cosine_similarity.run_cosine_matching import (
     _load_users,
-    _trim_recommendations,
     load_jobs,
 )
-from app.services.cross_encoder.concat_embedding_text import user_skill_labels_for_concat
-from app.services.cross_encoder.gemini_embeddings import EMBEDDING_DIM, MODEL_NAME as GEMINI_EMBEDDING_MODEL_NAME
+from app.services.cross_encoder.concat_embedding_text import (
+    user_skill_labels_for_concat,
+)
+from app.services.cross_encoder.gemini_embeddings import (
+    EMBEDDING_DIM,
+    MODEL_NAME as GEMINI_EMBEDDING_MODEL_NAME,
+)
 from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
 from app.services.preference_score_v1 import get_preference_scorer
 
@@ -78,9 +82,7 @@ def run_pipeline(
     final_top_k = max(1, int(final_top_k))
 
     users = _load_users(users_path)
-    jobs, mongo_timing = load_jobs(
-        jobs_source, jobs_path, users, mongo_filter_by_users
-    )
+    jobs, mongo_timing = load_jobs(jobs_source, jobs_path, users, mongo_filter_by_users)
     n_jobs_loaded = len(jobs)
     if jobs_limit is not None and int(jobs_limit) > 0:
         jobs = jobs[: int(jobs_limit)]
@@ -155,24 +157,25 @@ def run_pipeline(
                 final_score_combiner=other,
             )[:final_top_k]
 
-        cfg_summary = v3_row.get("config_summary") or {}
         skip_reason = (v3_row.get("config_summary") or {}).get("skip_reason")
-        results.append({
-            "user_id": user.get("user_id"),
-            "city": user.get("city"),
-            "province": user.get("province"),
-            "n_user_concat_skills": len(user_concat_skills),
-            "user_concat_skills": user_concat_skills,
-            "has_user_skills": bool(user_concat_skills),
-            "skip_reason": skip_reason,
-            "user_preference_factors": user_preference_factors(user),
-            "user_bws": user_bws_summary(user),
-            "n_jobs_scored": v3_row.get("n_jobs_scored"),
-            "cross_encoder_recommendations": ce_snapshot,
-            "recommendations_attrs_only": attrs_only_recs,
-            "recommendations": final_recs,
-            "recommendations_alt": alt_recs,
-        })
+        results.append(
+            {
+                "user_id": user.get("user_id"),
+                "city": user.get("city"),
+                "province": user.get("province"),
+                "n_user_concat_skills": len(user_concat_skills),
+                "user_concat_skills": user_concat_skills,
+                "has_user_skills": bool(user_concat_skills),
+                "skip_reason": skip_reason,
+                "user_preference_factors": user_preference_factors(user),
+                "user_bws": user_bws_summary(user),
+                "n_jobs_scored": v3_row.get("n_jobs_scored"),
+                "cross_encoder_recommendations": ce_snapshot,
+                "recommendations_attrs_only": attrs_only_recs,
+                "recommendations": final_recs,
+                "recommendations_alt": alt_recs,
+            }
+        )
 
     v3_cfg0 = (v3_rows[0].get("config_summary") if v3_rows else {}) or {}
     config: Dict[str, Any] = {
@@ -195,8 +198,11 @@ def run_pipeline(
         "preference_scorer_mode": PREFERENCE_SCORER_MODE,
         "preference_module": pref_cls,
         "match_v3_service": "app.services.match_concat_gemini_ce_service",
-        "gemini_user_embed_model": v3_cfg0.get("gemini_user_embed_model") or GEMINI_EMBEDDING_MODEL_NAME,
-        "cross_encoder_model": v3_cfg0.get("cross_encoder_model") or cross_encoder_model or CROSS_ENCODER_MODEL_NAME,
+        "gemini_user_embed_model": v3_cfg0.get("gemini_user_embed_model")
+        or GEMINI_EMBEDDING_MODEL_NAME,
+        "cross_encoder_model": v3_cfg0.get("cross_encoder_model")
+        or cross_encoder_model
+        or CROSS_ENCODER_MODEL_NAME,
         "cross_encoder_batch_size": int(
             cross_encoder_batch_size or CROSS_ENCODER_BATCH_SIZE
         ),
@@ -261,10 +267,14 @@ Requires GEMINI_API_KEY and jobs with job_embedding or concat_skill_embedding_ge
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=epilog,
     )
-    p.add_argument("--users", required=True, type=Path, help="JSON or JSONL user records.")
+    p.add_argument(
+        "--users", required=True, type=Path, help="JSON or JSONL user records."
+    )
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--jobs", type=Path, help="Local jobs JSON list.")
-    src.add_argument("--from-mongo", action="store_true", help="Load jobs from Mongo (.env).")
+    src.add_argument(
+        "--from-mongo", action="store_true", help="Load jobs from Mongo (.env)."
+    )
 
     p.add_argument(
         "--retrieve-top-k",
@@ -278,7 +288,9 @@ Requires GEMINI_API_KEY and jobs with job_embedding or concat_skill_embedding_ge
         default=10,
         help="Rows per user after u_hat × p_hat re-rank.",
     )
-    p.add_argument("--output", type=Path, default=None, help="Write JSON; omit → stdout.")
+    p.add_argument(
+        "--output", type=Path, default=None, help="Write JSON; omit → stdout."
+    )
     p.add_argument(
         "--max-per-job-skills",
         type=int,

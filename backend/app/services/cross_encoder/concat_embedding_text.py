@@ -69,7 +69,9 @@ def user_concat_embedding_text(
     *,
     separator: str = DEFAULT_SEPARATOR,
 ) -> str:
-    return build_concat_embedding_text(user_skill_labels_for_concat(user), separator=separator)
+    return build_concat_embedding_text(
+        user_skill_labels_for_concat(user), separator=separator
+    )
 
 
 def job_concat_embedding_text(
@@ -77,4 +79,6 @@ def job_concat_embedding_text(
     *,
     separator: str = DEFAULT_SEPARATOR,
 ) -> str:
-    return build_concat_embedding_text(job_skill_labels_for_concat(job), separator=separator)
+    return build_concat_embedding_text(
+        job_skill_labels_for_concat(job), separator=separator
+    )

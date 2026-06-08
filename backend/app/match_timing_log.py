@@ -1,4 +1,5 @@
 """Readable, aligned timing blocks for the matching pipeline (no JSON noise)."""
+
 from __future__ import annotations
 
 import logging

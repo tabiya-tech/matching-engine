@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from collections import Counter
@@ -41,12 +40,16 @@ def compact_cosine_matched_skill_lines(
     lines: List[str] = []
     for row in ranked:
         jl = str(row.get("job_skill_label") or row.get("job_skill_id") or "").strip()
-        ul = str(row.get("best_user_skill_label") or row.get("best_user_skill_id") or "").strip()
+        ul = str(
+            row.get("best_user_skill_label") or row.get("best_user_skill_id") or ""
+        ).strip()
         c = float(row.get("cosine_similarity") or 0)
         if jl and ul and _canon(jl) == _canon(ul):
             lines.append(f"{jl} ({c:.2f})")
         elif jl and ul:
-            lines.append(f"{jl} \u2190 {ul} ({c:.2f})")  # left arrow: job \u2190 user match
+            lines.append(
+                f"{jl} \u2190 {ul} ({c:.2f})"
+            )  # left arrow: job \u2190 user match
         elif jl:
             lines.append(f"{jl} ({c:.2f})")
         elif ul:
@@ -157,9 +160,7 @@ class CosineSkillMatcher:
             "top_misses": self._missed_labels.most_common(20),
         }
 
-    def _rows_with_ids(
-        self, skill_ids: Sequence[str]
-    ) -> Tuple[np.ndarray, List[str]]:
+    def _rows_with_ids(self, skill_ids: Sequence[str]) -> Tuple[np.ndarray, List[str]]:
         """Return row matrix and list of IDs that exist in ``skill_to_row`` (stable order)."""
         valid_ids: List[str] = []
         for s in skill_ids:
@@ -204,7 +205,9 @@ class CosineSkillMatcher:
                     s.get("originUUID") or s.get("origin_uuid") or s.get("originUuid")
                 )
             if sid is not None:
-                out.append((sid, str(lab) if lab else (self.skill_labels.get(sid) or "")))
+                out.append(
+                    (sid, str(lab) if lab else (self.skill_labels.get(sid) or ""))
+                )
         return out
 
     def _job_skill_pairs(self, job_posting: Dict[str, Any]) -> List[Tuple[str, str]]:
@@ -216,18 +219,24 @@ class CosineSkillMatcher:
                     continue
                 lab = s.get("label")
                 sid = self._resolve_label(str(lab) if lab else None)
-                if sid is None:  # fallback: ESCO origin/history UUID -> same canonical id
+                if (
+                    sid is None
+                ):  # fallback: ESCO origin/history UUID -> same canonical id
                     sid = self._resolve_origin_uuid(
                         s.get("originUuid") or s.get("origin_uuid") or s.get("id")
                     )
                 if sid is not None:
-                    out.append((sid, str(lab) if lab else (self.skill_labels.get(sid) or "")))
+                    out.append(
+                        (sid, str(lab) if lab else (self.skill_labels.get(sid) or ""))
+                    )
 
         _consume(job_posting.get("essential_skills"))
         _consume(job_posting.get("optional_skills"))
         return out
 
-    def score_pair(self, user_profile: Dict[str, Any], job_posting: Dict[str, Any]) -> Dict[str, Any]:
+    def score_pair(
+        self, user_profile: Dict[str, Any], job_posting: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Cosine similarity only: mean over job skills of (max over user skills).
 
         Returns ``mean_best_cosine`` in ``[0, 1]`` (zero if no overlap to score).
@@ -260,13 +269,17 @@ class CosineSkillMatcher:
         for i, jid in enumerate(j_valid):
             ui = int(argmax[i])
             uid = u_valid[ui]
-            per.append({
-                "job_skill_id": jid,
-                "job_skill_label": self.skill_labels.get(jid) or job_labels.get(jid),
-                "best_user_skill_id": uid,
-                "best_user_skill_label": self.skill_labels.get(uid) or user_labels.get(uid),
-                "cosine_similarity": round(float(rowmax[i]), 4),
-            })
+            per.append(
+                {
+                    "job_skill_id": jid,
+                    "job_skill_label": self.skill_labels.get(jid)
+                    or job_labels.get(jid),
+                    "best_user_skill_id": uid,
+                    "best_user_skill_label": self.skill_labels.get(uid)
+                    or user_labels.get(uid),
+                    "cosine_similarity": round(float(rowmax[i]), 4),
+                }
+            )
 
         return {
             "mean_best_cosine": round(float(rowmax.mean()), 4),
@@ -340,7 +353,9 @@ class CosineSkillMatcher:
             per.append(_row(jid, None, 0.0, 0.0) if u < 0 else _row(jid, u_valid[u], resc[j, u], raw[j, u]))
         return {"per_job_skill": per}
 
-    def resolved_user_skill_labels_ordered(self, user_profile: Dict[str, Any]) -> List[str]:
+    def resolved_user_skill_labels_ordered(
+        self, user_profile: Dict[str, Any]
+    ) -> List[str]:
         """Display labels for embedded user skills (order preserved, de-duplicated by id)."""
         pairs = self._user_skill_pairs(user_profile)
         seen: set[str] = set()
@@ -371,12 +386,14 @@ class CosineSkillMatcher:
         out: List[Dict[str, Any]] = []
         for rank, (_, row) in enumerate(scored[: max(0, top_k)], 1):
             j = row["job"]
-            out.append({
-                "rank": rank,
-                "job_uuid": j.get("uuid") or j.get("_id"),
-                "job_title": j.get("opportunity_title"),
-                "employer": j.get("employer"),
-                "location": j.get("location"),
-                **row["score"],
-            })
+            out.append(
+                {
+                    "rank": rank,
+                    "job_uuid": j.get("uuid") or j.get("_id"),
+                    "job_title": j.get("opportunity_title"),
+                    "employer": j.get("employer"),
+                    "location": j.get("location"),
+                    **row["score"],
+                }
+            )
         return out

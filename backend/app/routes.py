@@ -11,9 +11,7 @@ from fastapi.security import APIKeyHeader
 from app.schemas import (
     MatchRequest,
     MatchResponse,
-    MatchV2Response,
     MatchV2JobRecommendation,
-    MatchConcatGeminiCeResponse,
     MatchRequestV5,
     MatchResponseV5,
 )
@@ -32,18 +30,12 @@ from app.database import (
 )
 from app.match_timing_log import log_match_step
 from app.services.matching_service import match_user_with_data
-from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
-from app.services.match_concat_gemini_ce_preference_service import (
-    run_match_concat_gemini_ce_with_preferences,
-)
 from app.services.match_v2_full_service import run_match_v2_full
 from app.services.match_v3_full_service import run_match_v3_full
 from app.services.match_v4_full_service import run_match_v4_full
 
 api_key_auth = APIKeyHeader(
-    scheme_name="gcp_api_key",
-    name="x-api-key",
-    auto_error=True
+    scheme_name="gcp_api_key", name="x-api-key", auto_error=True
 )
 
 router = APIRouter(dependencies=[Depends(api_key_auth)])
@@ -91,7 +83,9 @@ def _fused_rows_to_match_v2_jobs(
                 mean_best_cosine_raw=row.get("mean_best_cosine_raw"),
                 bm25_score_raw=row.get("bm25_score_raw"),
                 matched_skills=[str(x) for x in (row.get("matched_skills") or [])],
-                matched_skills_cosine=[str(x) for x in (row.get("matched_skills_cosine") or [])],
+                matched_skills_cosine=[
+                    str(x) for x in (row.get("matched_skills_cosine") or [])
+                ],
             )
         )
     return recs
@@ -104,7 +98,9 @@ def _execute_hybrid_http(
     fusion_top_k: int,
     alpha_on_cosine: float,
 ) -> Dict[str, Any]:
-    from app.services.hybrid_scoring.run_bm25_cosine_hybrid import hybrid_match_users_with_jobs
+    from app.services.hybrid_scoring.run_bm25_cosine_hybrid import (
+        hybrid_match_users_with_jobs,
+    )
 
     return hybrid_match_users_with_jobs(
         users,
@@ -113,12 +109,15 @@ def _execute_hybrid_http(
         alpha_on_cosine=alpha_on_cosine,
     )
 
+
 class Health(BaseModel):
     status: str
+
 
 @router.get("/health")
 async def health() -> Health:
     return Health(status="ok")
+
 
 @router.post(
     "/match",
@@ -128,11 +127,15 @@ async def health() -> Health:
     responses={
         400: {
             "description": "Bad Request - invalid payload content",
-            "content": {"application/json": {"example": {"detail": "user must include user_id"}}},
+            "content": {
+                "application/json": {"example": {"detail": "user must include user_id"}}
+            },
         },
         500: {
             "description": "Internal Server Error",
-            "content": {"application/json": {"example": {"detail": "Internal server error"}}},
+            "content": {
+                "application/json": {"example": {"detail": "Internal server error"}}
+            },
         },
     },
 )
@@ -177,7 +180,9 @@ async def match(payload: List[MatchRequest]):
         raise e
     except Exception as e:
         logger.exception(e)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {e.__class__.__name__}")
+        raise HTTPException(
+            status_code=500, detail=f"Internal server error: {e.__class__.__name__}"
+        )
 
 
 @router_public.post(
@@ -211,7 +216,10 @@ async def match_v2(
         ),
     ),
     skill_gap_top_k: Optional[int] = Query(
-        None, ge=1, le=50, description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
+        None,
+        ge=1,
+        le=50,
+        description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
     ),
 ):
     """Hybrid BM25 × cosine-skill embeddings, returned in the full ``MatchResponse`` shape.
@@ -226,7 +234,9 @@ async def match_v2(
     Does **not** require ``x-api-key`` (temporary; gated separately from ``POST /match``).
     """
 
-    from app.services.hybrid_scoring.run_bm25_cosine_hybrid import _alpha_on_cosine_from_env
+    from app.services.hybrid_scoring.run_bm25_cosine_hybrid import (
+        _alpha_on_cosine_from_env,
+    )
 
     try:
         t_req = time.perf_counter()
@@ -236,14 +246,20 @@ async def match_v2(
                 detail=f"Too many users in one request (max {MATCH_V2_MAX_USERS_PER_REQUEST}).",
             )
         if not payload:
-            raise HTTPException(status_code=400, detail="Request body must be a non-empty JSON array.")
+            raise HTTPException(
+                status_code=400, detail="Request body must be a non-empty JSON array."
+            )
 
         users = [u.model_dump() for u in payload]
         n_users = len(users)
         fk = fusion_top_k if fusion_top_k is not None else MATCH_V2_HYBRID_TOP_K
 
         env_alpha, _env_key = _alpha_on_cosine_from_env()
-        alpha = alpha_on_cosine if alpha_on_cosine is not None else (env_alpha if env_alpha is not None else 0.5)
+        alpha = (
+            alpha_on_cosine
+            if alpha_on_cosine is not None
+            else (env_alpha if env_alpha is not None else 0.5)
+        )
 
         t_fetch = time.perf_counter()
         # Full active catalog (no union location filter) + occupation corpus, in parallel.
@@ -261,7 +277,9 @@ async def match_v2(
             occ,
             fusion_top_k=fk,
             alpha_on_cosine=alpha,
-            skill_gap_top_k=skill_gap_top_k if skill_gap_top_k is not None else MATCH_TOP_K_SKILL_GAPS,
+            skill_gap_top_k=skill_gap_top_k
+            if skill_gap_top_k is not None
+            else MATCH_TOP_K_SKILL_GAPS,
         )
         score_ms = _ms(t_score)
 
@@ -292,7 +310,9 @@ async def match_v2(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception(e)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {e.__class__.__name__}")
+        raise HTTPException(
+            status_code=500, detail=f"Internal server error: {e.__class__.__name__}"
+        )
 
 
 # Swagger default: SA city/province so JOBS_RETRIEVAL_FILTER matches SouthAfricaJobs_V2 jobs.
@@ -360,7 +380,10 @@ async def match_v3(
         description="Stage-2 cross-encoder slate size after rerank. Default: 30.",
     ),
     skill_gap_top_k: Optional[int] = Query(
-        None, ge=1, le=50, description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
+        None,
+        ge=1,
+        le=50,
+        description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
     ),
 ):
     """Gemini concat-cosine → CE rerank, returned in the full ``MatchResponse`` shape.
@@ -386,10 +409,16 @@ async def match_v3(
                 detail=f"Too many users in one request (max {MATCH_V2_MAX_USERS_PER_REQUEST}).",
             )
         if not payload:
-            raise HTTPException(status_code=400, detail="Request body must be a non-empty JSON array.")
+            raise HTTPException(
+                status_code=400, detail="Request body must be a non-empty JSON array."
+            )
 
         users = [u.model_dump() for u in payload]
-        rt = retrieve_top_k if retrieve_top_k is not None else COSINE_CROSS_ENCODER_RETRIEVE_TOP_K
+        rt = (
+            retrieve_top_k
+            if retrieve_top_k is not None
+            else COSINE_CROSS_ENCODER_RETRIEVE_TOP_K
+        )
         ft = final_top_k if final_top_k is not None else 30
 
         t_fetch = time.perf_counter()
@@ -408,7 +437,9 @@ async def match_v3(
             occ,
             retrieve_top_k=rt,
             final_top_k=ft,
-            skill_gap_top_k=skill_gap_top_k if skill_gap_top_k is not None else MATCH_TOP_K_SKILL_GAPS,
+            skill_gap_top_k=skill_gap_top_k
+            if skill_gap_top_k is not None
+            else MATCH_TOP_K_SKILL_GAPS,
         )
         score_ms = _ms(t_score)
 
@@ -433,7 +464,9 @@ async def match_v3(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception(e)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {e.__class__.__name__}") from e
+        raise HTTPException(
+            status_code=500, detail=f"Internal server error: {e.__class__.__name__}"
+        ) from e
 
 
 @router_public.post(
@@ -481,7 +514,10 @@ async def match_v4(
         ),
     ),
     skill_gap_top_k: Optional[int] = Query(
-        None, ge=1, le=50, description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
+        None,
+        ge=1,
+        le=50,
+        description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
     ),
 ):
     """Full `MatchResponse` (occupations + opportunities + skill-gaps) via the Gemini engine.
@@ -504,7 +540,9 @@ async def match_v4(
                 detail=f"Too many users in one request (max {MATCH_V2_MAX_USERS_PER_REQUEST}).",
             )
         if not payload:
-            raise HTTPException(status_code=400, detail="Request body must be a non-empty JSON array.")
+            raise HTTPException(
+                status_code=400, detail="Request body must be a non-empty JSON array."
+            )
 
         users = [u.model_dump() for u in payload]
         rt = retrieve_top_k if retrieve_top_k is not None else MATCH_V4_RETRIEVE_TOP_K
@@ -533,7 +571,9 @@ async def match_v4(
             retrieve_top_k=rt,
             final_top_k=ft,
             final_score_combiner=combiner,
-            skill_gap_top_k=skill_gap_top_k if skill_gap_top_k is not None else MATCH_TOP_K_SKILL_GAPS,
+            skill_gap_top_k=skill_gap_top_k
+            if skill_gap_top_k is not None
+            else MATCH_TOP_K_SKILL_GAPS,
             mongo_timing=mongo_timing,
         )
         score_ms = _ms(t_score)
@@ -565,12 +605,15 @@ async def match_v4(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception(e)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {e.__class__.__name__}") from e
+        raise HTTPException(
+            status_code=500, detail=f"Internal server error: {e.__class__.__name__}"
+        ) from e
 
 
 # ---------------------------------------------------------------------------
 # Experiment: /experiments/v5/match
 # ---------------------------------------------------------------------------
+
 
 def _zqf_annotation(user_zqf, job_zqf_min):
     """(zqf_eligible, zqf_gap) or (None, None) when either side is missing."""
@@ -602,11 +645,15 @@ async def match_v5(
         ),
     ],
     retrieve_top_k: Optional[int] = Query(
-        None, ge=1, le=500,
+        None,
+        ge=1,
+        le=500,
         description=f"Stage-1 concat cosine shortlist size. Default: {COSINE_CROSS_ENCODER_RETRIEVE_TOP_K}.",
     ),
     final_top_k: Optional[int] = Query(
-        None, ge=1, le=200,
+        None,
+        ge=1,
+        le=200,
         description="CE pool size and max preference-ranked rows returned. Default: 30.",
     ),
     final_score_combiner: Optional[str] = Query(
@@ -614,7 +661,10 @@ async def match_v5(
         description="How to combine u_hat and p_hat: 'product' or 'geometric_mean'.",
     ),
     skill_gap_top_k: Optional[int] = Query(
-        None, ge=1, le=50, description="Number of skill-gap recommendations.",
+        None,
+        ge=1,
+        le=50,
+        description="Number of skill-gap recommendations.",
     ),
 ):
     """Experiment: matching with ZQF education annotation on opportunities.
@@ -630,7 +680,9 @@ async def match_v5(
                 detail=f"Too many users in one request (max {MATCH_V2_MAX_USERS_PER_REQUEST}).",
             )
         if not payload:
-            raise HTTPException(status_code=400, detail="Request body must be a non-empty JSON array.")
+            raise HTTPException(
+                status_code=400, detail="Request body must be a non-empty JSON array."
+            )
 
         users = [u.model_dump() for u in payload]
         rt = retrieve_top_k if retrieve_top_k is not None else MATCH_V4_RETRIEVE_TOP_K
@@ -661,7 +713,9 @@ async def match_v5(
             retrieve_top_k=rt,
             final_top_k=ft,
             final_score_combiner=combiner,
-            skill_gap_top_k=skill_gap_top_k if skill_gap_top_k is not None else MATCH_TOP_K_SKILL_GAPS,
+            skill_gap_top_k=skill_gap_top_k
+            if skill_gap_top_k is not None
+            else MATCH_TOP_K_SKILL_GAPS,
             mongo_timing=mongo_timing,
         )
         score_ms = _ms(t_score)
@@ -696,4 +750,6 @@ async def match_v5(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception(e)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {e.__class__.__name__}") from e
+        raise HTTPException(
+            status_code=500, detail=f"Internal server error: {e.__class__.__name__}"
+        ) from e

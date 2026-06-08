@@ -20,13 +20,59 @@ import re
 from typing import Iterable, List, Tuple
 
 # Conservative English stopword list (matches the original tokeniser).
-_STOPWORDS = frozenset({
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has",
-    "have", "he", "in", "is", "it", "its", "of", "on", "or", "that", "the",
-    "to", "was", "were", "will", "with", "this", "these", "those", "their",
-    "but", "not", "we", "you", "your", "i", "they", "them", "our", "us",
-    "into", "than", "then", "so", "up", "do", "does", "did",
-})
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "has",
+        "have",
+        "he",
+        "in",
+        "is",
+        "it",
+        "its",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "to",
+        "was",
+        "were",
+        "will",
+        "with",
+        "this",
+        "these",
+        "those",
+        "their",
+        "but",
+        "not",
+        "we",
+        "you",
+        "your",
+        "i",
+        "they",
+        "them",
+        "our",
+        "us",
+        "into",
+        "than",
+        "then",
+        "so",
+        "up",
+        "do",
+        "does",
+        "did",
+    }
+)
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
@@ -52,17 +98,18 @@ def tokenize(
 # User query construction
 # ---------------------------------------------------------------------------
 
+
 def _user_skill_labels(user: dict) -> List[str]:
     """Pull skill labels from a raw or pre-resolved user record."""
     out: List[str] = []
-    for s in (user.get("resolved_skills") or []):
+    for s in user.get("resolved_skills") or []:
         if isinstance(s, dict):
             lab = s.get("label")
             if lab:
                 out.append(str(lab))
     if out:
         return out
-    for s in ((user.get("skills_vector") or {}).get("top_skills") or []):
+    for s in (user.get("skills_vector") or {}).get("top_skills") or []:
         if isinstance(s, dict):
             lab = s.get("preferredLabel") or s.get("label")
             if lab:
@@ -88,6 +135,7 @@ def user_query_tokens(user: dict, *, include_programme: bool = True) -> List[str
 # ---------------------------------------------------------------------------
 # Job document construction
 # ---------------------------------------------------------------------------
+
 
 def _skill_labels(items) -> List[str]:
     out: List[str] = []

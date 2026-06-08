@@ -165,7 +165,9 @@ def _skill_components_from_cosine(
     ess = round(sum(ess_sims) / len(ess_sims), 4) if ess_sims else None
     opt = round(sum(opt_sims) / len(opt_sims), 4) if opt_sims else None
     penalty = (
-        round(_clamp01(sum(1 for s in ess_sims if s < sim_threshold) / len(ess_sims)), 4)
+        round(
+            _clamp01(sum(1 for s in ess_sims if s < sim_threshold) / len(ess_sims)), 4
+        )
         if ess_sims
         else None
     )
@@ -185,7 +187,9 @@ def _score_breakdown(
     sim_threshold: float,
 ) -> Dict[str, Any]:
     sb = rec.get("score_breakdown") or {}
-    skills = _skill_components_from_cosine(per_job_skill, essential_ids, sim_threshold=sim_threshold)
+    skills = _skill_components_from_cosine(
+        per_job_skill, essential_ids, sim_threshold=sim_threshold
+    )
     demand = _DEMAND_SCORER.calculate_score(item)
     present = bool(demand.get("present"))
     return {
@@ -225,7 +229,9 @@ def _split_included_tasks(raw: str) -> List[str]:
     items = parts[1:] if len(parts) > 1 else re.split(r"[\n;]+", text)
     out: List[str] = []
     for it in items:
-        s = re.sub(r"^tasks include\s*[-:]?\s*", "", it.strip(), flags=re.IGNORECASE).strip(" .;-")
+        s = re.sub(
+            r"^tasks include\s*[-:]?\s*", "", it.strip(), flags=re.IGNORECASE
+        ).strip(" .;-")
         if s:
             out.append(s)
     return out
@@ -239,7 +245,11 @@ def _typical_tasks(item: Dict[str, Any], *, max_tasks: int = 8) -> List[str]:
         if tasks:
             return tasks[:max_tasks]
     wa_sorted = sorted(
-        (w for w in (item.get("onet_work_activities") or []) if isinstance(w, dict) and w.get("WA_label")),
+        (
+            w
+            for w in (item.get("onet_work_activities") or [])
+            if isinstance(w, dict) and w.get("WA_label")
+        ),
         key=lambda w: float(w.get("WA_Importance") or 0.0),
         reverse=True,
     )
@@ -292,12 +302,20 @@ def _justification(
 
     # 1. Skills — list the top matched essential skills by cosine similarity (deduped), up to
     # _MAX_JUSTIFICATION_SKILLS; prefer the user's own skill label, fall back to the item's.
-    matched_ess = [m for m in matched_skills.get("essential_skill_matches", []) if m.get("meets_threshold")]
+    matched_ess = [
+        m
+        for m in matched_skills.get("essential_skill_matches", [])
+        if m.get("meets_threshold")
+    ]
     matched_ess.sort(key=lambda m: float(m.get("similarity") or 0.0), reverse=True)
     names: List[str] = []
     seen: set = set()
     for m in matched_ess:
-        nm = str(m.get("best_user_skill_label") or m.get("job_skill_label") or m.get("job_skill_id"))
+        nm = str(
+            m.get("best_user_skill_label")
+            or m.get("job_skill_label")
+            or m.get("job_skill_id")
+        )
         if nm and nm not in seen:
             seen.add(nm)
             names.append(nm)
@@ -338,7 +356,9 @@ def build_opportunity_row(
     sim_threshold: float,
     min_ess_share: float,
 ) -> Dict[str, Any]:
-    matched_skills = build_matched_skills(per_job_skill, essential_ids, sim_threshold=sim_threshold)
+    matched_skills = build_matched_skills(
+        per_job_skill, essential_ids, sim_threshold=sim_threshold
+    )
     matched_prefs, wa_bws = split_pref_details(rec.get("preference_details"))
     final_score = float(rec.get("final_score") or 0.0)
     n_ess_total = len(item.get("essential_skills") or [])
@@ -349,11 +369,17 @@ def build_opportunity_row(
     return {
         "uuid": item.get("uuid"),
         "originUuid": item.get("originUuid"),
-        "URL": item.get("url") or item.get("URL") or f"www.example.com/{item.get('uuid')}",
+        "URL": item.get("url")
+        or item.get("URL")
+        or f"www.example.com/{item.get('uuid')}",
         "rank": rank,
         "opportunity_title": item.get("opportunity_title") or "",
-        "opportunity_isco_occupation_group": item.get("opportunity_isco_occupation_group"),
-        "opportunity_isco_occupation_group_id": item.get("opportunity_isco_occupation_group_id"),
+        "opportunity_isco_occupation_group": item.get(
+            "opportunity_isco_occupation_group"
+        ),
+        "opportunity_isco_occupation_group_id": item.get(
+            "opportunity_isco_occupation_group_id"
+        ),
         "related_occupation_id": item.get("related_occupation_id"),
         "location": item.get("location"),
         "employer": item.get("employer"),
@@ -364,10 +390,13 @@ def build_opportunity_row(
         "closing_date": item.get("closing_date"),
         "posted_date": item.get("posted_date"),
         "is_eligible": is_eligible_from_skills(
-            matched_skills["essential_skill_matches"], n_essential_total=n_ess_total, min_ess_share=min_ess_share
+            matched_skills["essential_skill_matches"],
+            n_essential_total=n_ess_total,
+            min_ess_share=min_ess_share,
         ),
         "justification": _justification(matched_skills, matched_prefs, item),
-        "opportunity_description": item.get("opportunity_description") or item.get("contract_type", "full_time"),
+        "opportunity_description": item.get("opportunity_description")
+        or item.get("contract_type", "full_time"),
         "contract_type": item.get("contract_type"),
         "final_score": round(final_score, 4),
         "score_breakdown": sb,
@@ -387,7 +416,9 @@ def build_occupation_row(
     sim_threshold: float,
     min_ess_share: float,
 ) -> Dict[str, Any]:
-    matched_skills = build_matched_skills(per_job_skill, essential_ids, sim_threshold=sim_threshold)
+    matched_skills = build_matched_skills(
+        per_job_skill, essential_ids, sim_threshold=sim_threshold
+    )
     matched_prefs, wa_bws = split_pref_details(rec.get("preference_details"))
     final_score = float(rec.get("final_score") or 0.0)
     n_ess_total = len(item.get("essential_skills") or [])
@@ -399,13 +430,18 @@ def build_occupation_row(
         "uuid": item.get("uuid"),
         "originUuid": item.get("originUuid"),
         "rank": rank,
-        "occupation_label": item.get("occupation_label") or item.get("preferredLabel") or "",
+        "occupation_label": item.get("occupation_label")
+        or item.get("preferredLabel")
+        or "",
         "province": item.get("province"),
         "is_eligible": is_eligible_from_skills(
-            matched_skills["essential_skill_matches"], n_essential_total=n_ess_total, min_ess_share=min_ess_share
+            matched_skills["essential_skill_matches"],
+            n_essential_total=n_ess_total,
+            min_ess_share=min_ess_share,
         ),
         "justification": _justification(matched_skills, matched_prefs, item),
-        "occupation_description": item.get("occupation_description") or item.get("description"),
+        "occupation_description": item.get("occupation_description")
+        or item.get("description"),
         "salary_range": _salary_range(item),
         "typical_tasks": _typical_tasks(item),
         "career_path_next_steps": [],  # no source in occupation data — see plan

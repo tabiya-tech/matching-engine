@@ -54,7 +54,12 @@ def _openapi_servers() -> list[dict[str, str]]:
     explicit = (os.getenv("OPENAPI_SERVER_URL") or "").strip().rstrip("/")
     if explicit:
         return [{"url": explicit, "description": "Configured (OPENAPI_SERVER_URL)"}]
-    return [{"url": "/", "description": "Same origin as /docs (recommended for local Swagger)"}]
+    return [
+        {
+            "url": "/",
+            "description": "Same origin as /docs (recommended for local Swagger)",
+        }
+    ]
 
 
 app = FastAPI(title="Matching Service", lifespan=lifespan, servers=_openapi_servers())

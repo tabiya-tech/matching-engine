@@ -27,7 +27,9 @@ DATABASE_NAME = os.getenv("MONGO_DB_NAME")
 if not MONGO_URL:
     raise ValueError("MONGO_URL environment variable is not set")
 
-_mongo_sel_ms = int((os.getenv("MONGO_SERVER_SELECTION_TIMEOUT_MS") or "30000").strip() or "30000")
+_mongo_sel_ms = int(
+    (os.getenv("MONGO_SERVER_SELECTION_TIMEOUT_MS") or "30000").strip() or "30000"
+)
 _mongo_max_pool = int((os.getenv("MONGO_MAX_POOL_SIZE") or "50").strip() or "50")
 _mongo_min_pool = int((os.getenv("MONGO_MIN_POOL_SIZE") or "0").strip() or "0")
 _mongo_client_kwargs: Dict[str, Any] = {
@@ -60,9 +62,9 @@ def _configure_mongodb_tls(kwargs: Dict[str, Any]) -> None:
     if not MONGO_URL or not _looks_like_tls_mongodb(MONGO_URL):
         return
 
-    allow_invalid = (
-        os.getenv("MONGO_TLS_ALLOW_INVALID_CERTIFICATES", "").strip().lower() in ("1", "true", "yes", "on")
-    )
+    allow_invalid = os.getenv(
+        "MONGO_TLS_ALLOW_INVALID_CERTIFICATES", ""
+    ).strip().lower() in ("1", "true", "yes", "on")
     if allow_invalid:
         kwargs["tlsAllowInvalidCertificates"] = True
         logger.warning(
@@ -149,6 +151,7 @@ def _load_wa_lookup():
 
     per_occ = {}
     from collections import defaultdict
+
     sums = defaultdict(lambda: {"imp": 0.0, "lvl": 0.0, "n": 0})
 
     for entry in raw:
@@ -176,7 +179,9 @@ def _load_wa_lookup():
 
     _wa_lookup = per_occ
     _wa_averages = averages
-    logger.info("Built WA lookup: %d occupations, %d WA codes", len(per_occ), len(averages))
+    logger.info(
+        "Built WA lookup: %d occupations, %d WA codes", len(per_occ), len(averages)
+    )
     return per_occ, averages
 
 
@@ -210,12 +215,14 @@ def _enrich_work_activities(wa_items: list, classified_occupations: list) -> lis
         else:
             vals = {"importance": 3.5, "level": 3.5}
 
-        enriched.append({
-            "WA_code": code,
-            "WA_label": item.get("name", ""),
-            "WA_Importance": vals["importance"],
-            "WA_Level": vals["level"],
-        })
+        enriched.append(
+            {
+                "WA_code": code,
+                "WA_label": item.get("name", ""),
+                "WA_Importance": vals["importance"],
+                "WA_Level": vals["level"],
+            }
+        )
 
     return enriched
 
@@ -293,7 +300,9 @@ def _remote_substring_ors() -> List[Dict[str, Any]]:
     ]
 
 
-def _field_contains_substr_regex(field: str, needle_cf: str) -> Optional[Dict[str, Any]]:
+def _field_contains_substr_regex(
+    field: str, needle_cf: str
+) -> Optional[Dict[str, Any]]:
     if not needle_cf:
         return None
     return {field: {"$regex": re.escape(needle_cf), "$options": "i"}}
@@ -403,8 +412,10 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "empty labels: %d/%d essential, %d/%d optional",
             job_id or "?",
             (rd.get("job_fingerprint") or "")[:16] or "?",
-            n_missing_ess, len(essential_skills),
-            n_missing_opt, len(optional_skills),
+            n_missing_ess,
+            len(essential_skills),
+            n_missing_opt,
+            len(optional_skills),
         )
 
     llm_attrs = rd.get("llm_job_attributes", {})
@@ -434,14 +445,20 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # Opportunity passthrough for the consumer contract. originUuid uses the stable
     # content fingerprint (falls back to job_id); posted_date / occupation classification are
     # best-effort from candidate Mongo fields and stay None when the document lacks them.
-    posted_date = _str_or_empty(
-        meta.get("posted_date") or meta.get("date_posted") or meta.get("posted_at")
-    ) or None
+    posted_date = (
+        _str_or_empty(
+            meta.get("posted_date") or meta.get("date_posted") or meta.get("posted_at")
+        )
+        or None
+    )
     isco_group = meta.get("isco_occupation_group")
     isco_group_id = meta.get("isco_occupation_group_id")
     out: Dict[str, Any] = {
         "uuid": job_id,
-        "originUuid": (rd.get("origin_uuid") or rd.get("originUuid") or job_fp_s or job_id) or None,
+        "originUuid": (
+            rd.get("origin_uuid") or rd.get("originUuid") or job_fp_s or job_id
+        )
+        or None,
         "opportunity_title": meta.get("title") or "Unknown",
         "location": location,
         "city": city,
@@ -453,7 +470,8 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "posted_date": posted_date,
         "opportunity_isco_occupation_group": isco_group,
         "opportunity_isco_occupation_group_id": isco_group_id,
-        "related_occupation_id": (rd.get("related_occupation_id") or isco_group_id) or None,
+        "related_occupation_id": (rd.get("related_occupation_id") or isco_group_id)
+        or None,
         "contract_type": et,
         "url": meta.get("application_url"),
         "essential_skills": essential_skills,
@@ -466,7 +484,9 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         # ZQF education annotation (Zambia): root-level fields from scrape enrichment / backfill.
         "zqf_min": rd.get("zqf_min"),
         "zqf_max": rd.get("zqf_max"),
-        "opportunity_description": meta.get("job_description") or meta.get("description") or "",
+        "opportunity_description": meta.get("job_description")
+        or meta.get("description")
+        or "",
         "onet_work_activities": onet_wa,
     }
     if job_fp_s:
@@ -477,7 +497,9 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         out["concat_skill_embedding_gemini"] = gem_sub
     raw_je = rd.get("job_embedding")
     if isinstance(raw_je, list) and raw_je:
-        from app.services.cross_encoder.gemini_embeddings import EMBEDDING_DIM as _gem_concat_dim
+        from app.services.cross_encoder.gemini_embeddings import (
+            EMBEDDING_DIM as _gem_concat_dim,
+        )
 
         if len(raw_je) == _gem_concat_dim:
             out["job_embedding"] = raw_je
@@ -591,7 +613,8 @@ def _load_occupation_embeddings() -> Dict[str, Any]:
             out[code] = np.ascontiguousarray(vec, dtype=np.float32)
         logger.info(
             "Loaded %d occupation concat embeddings from %s",
-            len(out), OCCUPATION_CONCAT_EMBEDDINGS_PATH,
+            len(out),
+            OCCUPATION_CONCAT_EMBEDDINGS_PATH,
         )
     except FileNotFoundError:
         logger.warning(
@@ -602,7 +625,8 @@ def _load_occupation_embeddings() -> Dict[str, Any]:
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(
             "Failed to load occupation embeddings (%s): %s; occupations skipped.",
-            OCCUPATION_CONCAT_EMBEDDINGS_PATH, e,
+            OCCUPATION_CONCAT_EMBEDDINGS_PATH,
+            e,
         )
     _cached_occ_embeddings = out
     return out
@@ -662,67 +686,78 @@ async def get_all_occupations_with_timing():
         t1 = time.perf_counter()
         flattened = []
         for entry in raw_occupations:
-                occ = entry.get("occupation", {})
-                skills = entry.get("skills", {})
-                ess_block = skills.get("essential", {}) if isinstance(skills.get("essential"), dict) else {}
-                opt_block = skills.get("optional", {}) if isinstance(skills.get("optional"), dict) else {}
-                ess_uuids = ess_block.get("uuids", []) or []
-                opt_uuids = opt_block.get("uuids", []) or []
-                ess_labels = ess_block.get("labels", []) or []
-                opt_labels = opt_block.get("labels", []) or []
-                counties = entry.get("counties_data", [])
+            occ = entry.get("occupation", {})
+            skills = entry.get("skills", {})
+            ess_block = (
+                skills.get("essential", {})
+                if isinstance(skills.get("essential"), dict)
+                else {}
+            )
+            opt_block = (
+                skills.get("optional", {})
+                if isinstance(skills.get("optional"), dict)
+                else {}
+            )
+            ess_uuids = ess_block.get("uuids", []) or []
+            opt_uuids = opt_block.get("uuids", []) or []
+            ess_labels = ess_block.get("labels", []) or []
+            opt_labels = opt_block.get("labels", []) or []
+            counties = entry.get("counties_data", [])
 
-                code = occ.get("code", "")
-                label = occ.get("preferred_label", "Unknown")
-                description = occ.get("description", "")
+            code = occ.get("code", "")
+            label = occ.get("preferred_label", "Unknown")
+            description = occ.get("description", "")
 
-                # Post-secondary education gate (see app.services.education_eligibility):
-                # occupation-level flag, applied to all of this occupation's county rows.
-                requires_post_secondary = occ.get("requires_post_secondary")
-                if requires_post_secondary is None:
-                    requires_post_secondary = entry.get("requires_post_secondary")
+            # Post-secondary education gate (see app.services.education_eligibility):
+            # occupation-level flag, applied to all of this occupation's county rows.
+            requires_post_secondary = occ.get("requires_post_secondary")
+            if requires_post_secondary is None:
+                requires_post_secondary = entry.get("requires_post_secondary")
 
-                raw_wa = entry.get("onet_work_activities", [])
-                onet_wa = []
-                for w in raw_wa:
-                    wc = w.get("WA_code")
-                    imp = w.get("WA_Importance", "")
-                    lvl = w.get("WA_Level", "")
-                    if wc and imp != "" and lvl != "":
-                        onet_wa.append({
+            raw_wa = entry.get("onet_work_activities", [])
+            onet_wa = []
+            for w in raw_wa:
+                wc = w.get("WA_code")
+                imp = w.get("WA_Importance", "")
+                lvl = w.get("WA_Level", "")
+                if wc and imp != "" and lvl != "":
+                    onet_wa.append(
+                        {
                             "WA_code": wc,
                             "WA_label": w.get("WA_label", ""),
                             "WA_Importance": float(imp),
                             "WA_Level": float(lvl),
-                        })
+                        }
+                    )
 
-                if not counties:
-                    counties = [{"county": "", "job_attributes": {}}]
+            if not counties:
+                counties = [{"county": "", "job_attributes": {}}]
 
-                for cd in counties:
-                    county = cd.get("county", "")
-                    job_attrs = cd.get("job_attributes", {})
-                    attrs_raw = job_attrs.get("attributes", [])
-                    attributes = {}
-                    if isinstance(attrs_raw, list):
-                        for a in attrs_raw:
-                            name = a.get("attribute_name")
-                            val = a.get("selected_level_id")
-                            if name and val:
-                                attributes[name] = val
-                    elif isinstance(attrs_raw, dict):
-                        attributes = attrs_raw
+            for cd in counties:
+                county = cd.get("county", "")
+                job_attrs = cd.get("job_attributes", {})
+                attrs_raw = job_attrs.get("attributes", [])
+                attributes = {}
+                if isinstance(attrs_raw, list):
+                    for a in attrs_raw:
+                        name = a.get("attribute_name")
+                        val = a.get("selected_level_id")
+                        if name and val:
+                            attributes[name] = val
+                elif isinstance(attrs_raw, dict):
+                    attributes = attrs_raw
 
-                    # Demand label so DemandScorer can read attributes["expected_demand"]
-                    # (engine-agnostic; powers score_breakdown.demand_* on /match_v4).
-                    expected_demand = (cd.get("labor_demand") or {}).get("expected_demand")
-                    if expected_demand:
-                        attributes = {**attributes, "expected_demand": expected_demand}
+                # Demand label so DemandScorer can read attributes["expected_demand"]
+                # (engine-agnostic; powers score_breakdown.demand_* on /match_v4).
+                expected_demand = (cd.get("labor_demand") or {}).get("expected_demand")
+                if expected_demand:
+                    attributes = {**attributes, "expected_demand": expected_demand}
 
-                    # Wrap skills in the same {id, label} shape used by job dicts. Labels come
-                    # from the occupation JSON (skills.*.labels) when present, else empty; gap
-                    # analysis reads id directly without going through label resolution.
-                    flattened.append({
+                # Wrap skills in the same {id, label} shape used by job dicts. Labels come
+                # from the occupation JSON (skills.*.labels) when present, else empty; gap
+                # analysis reads id directly without going through label resolution.
+                flattened.append(
+                    {
                         "uuid": f"{code}_{county}" if county else code,
                         "originUuid": code,
                         "occupation_label": label,
@@ -740,12 +775,17 @@ async def get_all_occupations_with_timing():
                         # Occupation-specific tasks (sparse in source); formatter falls back to
                         # O*NET WA labels when absent. See match_v4_formatting._typical_tasks.
                         "included_tasks": occ.get("included_tasks") or "",
-                })
+                    }
+                )
 
         flatten_ms = _ms(t1)
         _cached_occupations = flattened
         total_ms = _ms(t_total)
-        logger.info("Loaded %d occupation-county items from %d raw occupations", len(flattened), len(raw_occupations))
+        logger.info(
+            "Loaded %d occupation-county items from %d raw occupations",
+            len(flattened),
+            len(raw_occupations),
+        )
         return _cached_occupations, {
             "occupation_cache_hit": False,
             "occupation_file_read_ms": file_read_and_json_ms,
@@ -803,11 +843,15 @@ async def warmup_on_startup() -> None:
         except Exception:
             logger.exception("WA lookup warmup failed")
     else:
-        logger.info("WA lookup warmup skipped (enriched jobs carry onet_work_activities; set WARMUP_WA_LOOKUP=1 to force)")
+        logger.info(
+            "WA lookup warmup skipped (enriched jobs carry onet_work_activities; set WARMUP_WA_LOOKUP=1 to force)"
+        )
 
     if _env_warmup_flag("WARMUP_MATCH_V3_MODELS", False):
         try:
-            from app.services.match_concat_gemini_ce_service import preload_match_v3_models
+            from app.services.match_concat_gemini_ce_service import (
+                preload_match_v3_models,
+            )
 
             t0 = time.perf_counter()
             timings = await asyncio.to_thread(preload_match_v3_models)
@@ -820,4 +864,6 @@ async def warmup_on_startup() -> None:
         except Exception:
             logger.exception("/match_v3 model warmup failed")
     else:
-        logger.info("/match_v3 model warmup skipped (set WARMUP_MATCH_V3_MODELS=1 to preload CosineSkillMatcher + CrossEncoder at startup)")
+        logger.info(
+            "/match_v3 model warmup skipped (set WARMUP_MATCH_V3_MODELS=1 to preload CosineSkillMatcher + CrossEncoder at startup)"
+        )

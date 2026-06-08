@@ -9,8 +9,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.config import FINAL_SCORE_COMBINER, PREFERENCE_SCORER_MODE
-from app.services.gemini_ce_preference_matching.match_v3_bridge import v3_recommendation_to_rec
-from app.services.gemini_ce_preference_matching.scoring import enrich_recommendations_with_preferences
+from app.services.gemini_ce_preference_matching.match_v3_bridge import (
+    v3_recommendation_to_rec,
+)
+from app.services.gemini_ce_preference_matching.scoring import (
+    enrich_recommendations_with_preferences,
+)
 from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
 from app.services.preference_score_v1 import get_preference_scorer
 
@@ -33,7 +37,9 @@ def _preference_rec_to_http(row: Dict[str, Any]) -> Dict[str, Any]:
         "rank_cosine": row.get("rank_cosine"),
         "rank_cross_encoder": row.get("rank_cross_encoder"),
         "job_uuid": str(row.get("job_uuid") or ""),
-        "opportunity_title": str(row.get("job_title") or row.get("opportunity_title") or ""),
+        "opportunity_title": str(
+            row.get("job_title") or row.get("opportunity_title") or ""
+        ),
         "employer": row.get("employer"),
         "location": row.get("location"),
         "URL": row.get("URL") or row.get("url"),
@@ -90,7 +96,11 @@ def run_match_concat_gemini_ce_with_preferences(
         uid = str(v3_row.get("user_id") or "")
         user = users_by_id.get(uid) or {}
         ce_http = v3_row.get("concat_gemini_ce_recommendations") or []
-        ce_internal = [v3_recommendation_to_rec(r, job_index) for r in ce_http if isinstance(r, dict)]
+        ce_internal = [
+            v3_recommendation_to_rec(r, job_index)
+            for r in ce_http
+            if isinstance(r, dict)
+        ]
 
         if ce_internal and user:
             enriched = enrich_recommendations_with_preferences(

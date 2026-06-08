@@ -51,7 +51,10 @@ try:
     from google import genai
     from google.genai import types as genai_types
 except ImportError as e:
-    print(f"ERROR: google-genai not installed ({e}). Install with: pip install google-genai", file=sys.stderr)
+    print(
+        f"ERROR: google-genai not installed ({e}). Install with: pip install google-genai",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 
@@ -128,8 +131,10 @@ def embed_batch(client, texts: list[str]) -> list[list[float]]:
             last_err = e
             if attempt == MAX_RETRIES - 1:
                 break
-            wait = 2 ** attempt
-            print(f"    attempt {attempt + 1} failed ({type(e).__name__}); retrying in {wait}s")
+            wait = 2**attempt
+            print(
+                f"    attempt {attempt + 1} failed ({type(e).__name__}); retrying in {wait}s"
+            )
             time.sleep(wait)
     raise RuntimeError(f"embed_content failed after {MAX_RETRIES} attempts: {last_err}")
 
@@ -149,16 +154,20 @@ def main() -> int:
 
     missing = [sid for sid in row_to_skill if sid not in by_id]
     if missing:
-        print(f"WARNING: {len(missing)} IDs in skill_to_row.json missing from skills.csv "
-              f"(first 3: {missing[:3]}); these will receive empty embedding text and "
-              f"corresponding fallback vectors")
+        print(
+            f"WARNING: {len(missing)} IDs in skill_to_row.json missing from skills.csv "
+            f"(first 3: {missing[:3]}); these will receive empty embedding text and "
+            f"corresponding fallback vectors"
+        )
 
     texts: list[str] = []
     for sid in row_to_skill:
         row = by_id.get(sid, {})
         texts.append(build_skill_text(row))
     nonempty = sum(1 for t in texts if t)
-    print(f"Built {nonempty}/{n_skills} non-empty embedding texts; sample: {texts[0][:120]!r}")
+    print(
+        f"Built {nonempty}/{n_skills} non-empty embedding texts; sample: {texts[0][:120]!r}"
+    )
 
     print(f"\nEmbedding via {MODEL_NAME} @ {EMBEDDING_DIM} dim, task_type={TASK_TYPE}")
     client = genai.Client(api_key=api_key)
@@ -179,12 +188,16 @@ def main() -> int:
         rate = end / elapsed if elapsed > 0 else 0
         eta_s = (n_skills - end) / rate if rate > 0 else 0
         if batch_idx % 5 == 0 or batch_idx == n_batches - 1:
-            print(f"  batch {batch_idx + 1}/{n_batches} done | "
-                  f"{end}/{n_skills} skills | {rate:.1f}/s | ETA {eta_s:.0f}s")
+            print(
+                f"  batch {batch_idx + 1}/{n_batches} done | "
+                f"{end}/{n_skills} skills | {rate:.1f}/s | ETA {eta_s:.0f}s"
+            )
         if batch_idx < n_batches - 1:
             time.sleep(SLEEP_BETWEEN_BATCHES)
     elapsed_total = time.perf_counter() - t0
-    print(f"Embedding done in {elapsed_total:.1f}s ({n_skills / elapsed_total:.1f} skills/s)")
+    print(
+        f"Embedding done in {elapsed_total:.1f}s ({n_skills / elapsed_total:.1f} skills/s)"
+    )
 
     # L2-normalise rows (also restored at load time in SkillScorer; doing it here too is idempotent)
     norms = np.linalg.norm(fp32, axis=1, keepdims=True)

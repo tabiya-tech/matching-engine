@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from networkx import exception
 
 from app.config import CROSS_ENCODER_BATCH_SIZE, CROSS_ENCODER_MODEL_NAME
 
@@ -44,7 +43,12 @@ class CrossEncoderReranker:
             ) from e
         try:
             # backend/app/services/cross_encoder/reranker.py -> parents[3] == backend/
-            path_name = Path(__file__).resolve().parents[3] / "resources" / "models" / "cross-encoder"
+            path_name = (
+                Path(__file__).resolve().parents[3]
+                / "resources"
+                / "models"
+                / "cross-encoder"
+            )
             logger.info("Loading cross-encoder model %s", path_name)
             # sentence-transformers needs a str (it does `"\\" in name` / `name.count("/")`
             # checks); a Path raises "argument of type 'WindowsPath' is not iterable".
@@ -53,6 +57,7 @@ class CrossEncoderReranker:
             logger.exception(e)
             logger.info("Loading cross-encoder model %s", CROSS_ENCODER_MODEL_NAME)
             self._model = CrossEncoder(CROSS_ENCODER_MODEL_NAME)
+
     def warmup(self) -> None:
         """Load the Hugging Face model once (can take tens of seconds on first use)."""
 

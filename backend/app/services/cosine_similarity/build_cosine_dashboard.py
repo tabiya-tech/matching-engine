@@ -25,11 +25,13 @@ def _compact_rec(raw: Dict[str, Any], *, max_rows: int) -> Dict[str, Any]:
     for row in pj_in[:max_rows]:
         if not isinstance(row, dict):
             continue
-        rows.append({
-            "jl": str(row.get("job_skill_label") or "")[:180],
-            "ul": str(row.get("best_user_skill_label") or "")[:180],
-            "c": float(row.get("cosine_similarity") or 0.0),
-        })
+        rows.append(
+            {
+                "jl": str(row.get("job_skill_label") or "")[:180],
+                "ul": str(row.get("best_user_skill_label") or "")[:180],
+                "c": float(row.get("cosine_similarity") or 0.0),
+            }
+        )
     full_n = len(pj_in)
     return {
         "r": raw.get("rank"),
@@ -47,7 +49,9 @@ def _compact_rec(raw: Dict[str, Any], *, max_rows: int) -> Dict[str, Any]:
     }
 
 
-def _compact_user(row: Dict[str, Any], *, max_rows: int, max_labels: int) -> Dict[str, Any]:
+def _compact_user(
+    row: Dict[str, Any], *, max_rows: int, max_labels: int
+) -> Dict[str, Any]:
     labs = [str(x) for x in (row.get("resolved_user_skill_labels") or [])]
     return {
         "uid": str(row.get("user_id") or ""),
@@ -57,7 +61,10 @@ def _compact_user(row: Dict[str, Any], *, max_rows: int, max_labels: int) -> Dic
         "skills": labs[:max_labels],
         "skills_trunc": len(labs) > max_labels,
         "n_lab": len(labs),
-        "recs": [_compact_rec(r, max_rows=max_rows) for r in (row.get("recommendations") or [])],
+        "recs": [
+            _compact_rec(r, max_rows=max_rows)
+            for r in (row.get("recommendations") or [])
+        ],
     }
 
 
@@ -93,8 +100,7 @@ def build_html(
     data_json = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     safe = data_json.replace("</", "<\\/")
 
-    tpl = (
-        """<!doctype html>
+    tpl = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -129,9 +135,7 @@ let topN = 50;
 %(js)s
 </script>
 </body>
-</html>"""
-        % {"css": _CSS, "data": safe, "js": _JS}
-    )
+</html>""" % {"css": _CSS, "data": safe, "js": _JS}
     return tpl.strip() + "\n"
 
 
@@ -366,11 +370,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--input", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument(
-        "--max-per-job-skills", type=int, default=80,
+        "--max-per-job-skills",
+        type=int,
+        default=80,
         help="Max per-job skill rows embedded per recommendation",
     )
     p.add_argument(
-        "--max-user-skill-labels", type=int, default=120,
+        "--max-user-skill-labels",
+        type=int,
+        default=120,
         help="Max user skill label pills in embedded payload",
     )
     args = p.parse_args(argv)

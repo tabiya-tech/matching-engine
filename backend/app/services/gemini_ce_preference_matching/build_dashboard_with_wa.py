@@ -20,7 +20,6 @@ from typing import Any, Dict, List
 
 from .build_dashboard import (
     BRAND,
-    SCRIPT_NAME,
     _HTML_STYLE,
     _b64_utf8,
     _compact_row,
@@ -46,7 +45,9 @@ def build_triple_payload(results: Dict[str, Any], *, top_k: int) -> Dict[str, An
         if not isinstance(r, dict):
             continue
         uid = str(r.get("user_id") or "").strip()
-        user_skills = list(r.get("user_concat_skills") or r.get("resolved_user_skill_labels") or [])
+        user_skills = list(
+            r.get("user_concat_skills") or r.get("resolved_user_skill_labels") or []
+        )
         ce_rows = [
             _compact_row(row, include_uxp=False)
             for row in (r.get("cross_encoder_recommendations") or [])[:top_k]
@@ -54,7 +55,9 @@ def build_triple_payload(results: Dict[str, Any], *, top_k: int) -> Dict[str, An
         ]
         attrs_rows = [
             _compact_row_wa(row)
-            for row in (r.get("recommendations_attrs_only") or r.get("recommendations") or [])[:top_k]
+            for row in (
+                r.get("recommendations_attrs_only") or r.get("recommendations") or []
+            )[:top_k]
             if isinstance(row, dict)
         ]
         full_rows = [
@@ -62,17 +65,19 @@ def build_triple_payload(results: Dict[str, Any], *, top_k: int) -> Dict[str, An
             for row in (r.get("recommendations") or [])[:top_k]
             if isinstance(row, dict)
         ]
-        users_out.append({
-            "uid": uid,
-            "city": r.get("city"),
-            "prov": r.get("province"),
-            "user_skills": user_skills,
-            "has_skills": bool(r.get("has_user_skills", len(user_skills) > 0)),
-            "user_bws": r.get("user_bws") or {"has_bws": False, "rows": []},
-            "ce_final": ce_rows,
-            "attrs_only": attrs_rows,
-            "with_wa": full_rows,
-        })
+        users_out.append(
+            {
+                "uid": uid,
+                "city": r.get("city"),
+                "prov": r.get("province"),
+                "user_skills": user_skills,
+                "has_skills": bool(r.get("has_user_skills", len(user_skills) > 0)),
+                "user_bws": r.get("user_bws") or {"has_bws": False, "rows": []},
+                "ce_final": ce_rows,
+                "attrs_only": attrs_rows,
+                "with_wa": full_rows,
+            }
+        )
     return {
         "meta": {
             "brand": BRAND_WA,

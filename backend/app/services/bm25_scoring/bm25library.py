@@ -76,6 +76,7 @@ def _require_rank_bm25() -> None:
 # BM25 implementation; used only when variant == 'hybrid')
 # ---------------------------------------------------------------------------
 
+
 def min_max_normalise(scores: np.ndarray) -> np.ndarray:
     """Map ``scores`` into ``[0, 1]`` per call; constant/empty arrays -> zeros."""
     if scores.size == 0:
@@ -107,6 +108,7 @@ def combine(
 # ---------------------------------------------------------------------------
 # rank_bm25 wrappers
 # ---------------------------------------------------------------------------
+
 
 def dedupe_query_tokens(tokens: List[str]) -> List[str]:
     """Preserve order; each token contributes at most once."""
@@ -153,6 +155,7 @@ def build_okapi_indexes(
 # ---------------------------------------------------------------------------
 # Paths / env / I/O helpers (self-contained; no cross-service imports)
 # ---------------------------------------------------------------------------
+
 
 def _backend_root() -> Path:
     here = Path(__file__).resolve()
@@ -236,6 +239,7 @@ def fetch_jobs_from_mongo(
 # Per-user recommendation
 # ---------------------------------------------------------------------------
 
+
 def recommend_for_user(
     user: dict,
     jobs: List[dict],
@@ -258,13 +262,9 @@ def recommend_for_user(
     else:
         skills_scores = scores_all_okapi(skills_okapi, q_tokens)
         text_scores = scores_all_okapi(full_okapi, q_tokens)
-        combined = combine(
-            [skills_scores, text_scores], [skills_weight, text_weight]
-        )
+        combined = combine([skills_scores, text_scores], [skills_weight, text_weight])
 
-    order = np.argsort(
-        -combined - 1e-9 * (text_scores if text_scores.size else 0.0)
-    )
+    order = np.argsort(-combined - 1e-9 * (text_scores if text_scores.size else 0.0))
 
     recs: List[Dict[str, Any]] = []
     for rank, idx in enumerate(order, 1):
@@ -294,6 +294,7 @@ def recommend_for_user(
 # ---------------------------------------------------------------------------
 # Top-level run
 # ---------------------------------------------------------------------------
+
 
 def run(
     users_path: Path,
@@ -359,14 +360,16 @@ def run(
             text_weight=text_weight,
             include_programme=include_programme,
         )
-        results.append({
-            "user_id": user.get("user_id"),
-            "city": user.get("city"),
-            "province": user.get("province"),
-            "n_query_tokens": len(q_tokens),
-            "query_tokens": q_tokens,
-            "recommendations": recs,
-        })
+        results.append(
+            {
+                "user_id": user.get("user_id"),
+                "city": user.get("city"),
+                "province": user.get("province"),
+                "n_query_tokens": len(q_tokens),
+                "query_tokens": q_tokens,
+                "recommendations": recs,
+            }
+        )
 
     config: Dict[str, Any] = {
         "users_path": str(users_path),
@@ -419,43 +422,69 @@ def run(
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(
         description="BM25 job recommender via rank_bm25 (phrase tokenisation)."
     )
-    p.add_argument("--users", required=True, type=Path,
-                   help="JSON or JSONL list of user records.")
+    p.add_argument(
+        "--users", required=True, type=Path, help="JSON or JSONL list of user records."
+    )
     src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--jobs", type=Path,
-                     help="Local jobs list JSON (same shape as API job dicts).")
-    src.add_argument("--from-mongo", action="store_true",
-                     help="Load active jobs from MongoDB using settings in backend/.env.")
+    src.add_argument(
+        "--jobs", type=Path, help="Local jobs list JSON (same shape as API job dicts)."
+    )
+    src.add_argument(
+        "--from-mongo",
+        action="store_true",
+        help="Load active jobs from MongoDB using settings in backend/.env.",
+    )
     p.add_argument("--output", type=Path, default=None)
     p.add_argument("--top-k", type=int, default=10)
     p.add_argument(
-        "--variant", choices=("single", "hybrid"), default="hybrid",
+        "--variant",
+        choices=("single", "hybrid"),
+        default="hybrid",
         help=(
             "single = one BM25 index over the full-text doc; "
             "hybrid = skills-only + full-text blended via min-max norm."
         ),
     )
-    p.add_argument("--skills-weight", type=float, default=0.5,
-                   help="Hybrid only: weight on the skills-only BM25 score.")
-    p.add_argument("--text-weight", type=float, default=0.5,
-                   help="Hybrid only: weight on the full-text BM25 score.")
-    p.add_argument("--k1", type=float, default=1.5,
-                   help="BM25 term-frequency saturation parameter.")
-    p.add_argument("--b", type=float, default=0.75,
-                   help="BM25 length-normalisation parameter (0..1).")
     p.add_argument(
-        "--programme-context", action="store_true",
+        "--skills-weight",
+        type=float,
+        default=0.5,
+        help="Hybrid only: weight on the skills-only BM25 score.",
+    )
+    p.add_argument(
+        "--text-weight",
+        type=float,
+        default=0.5,
+        help="Hybrid only: weight on the full-text BM25 score.",
+    )
+    p.add_argument(
+        "--k1",
+        type=float,
+        default=1.5,
+        help="BM25 term-frequency saturation parameter.",
+    )
+    p.add_argument(
+        "--b",
+        type=float,
+        default=0.75,
+        help="BM25 length-normalisation parameter (0..1).",
+    )
+    p.add_argument(
+        "--programme-context",
+        action="store_true",
         help=(
             "Add programme_name / institution_name / school_year as loose word "
             "tokens to the query (disabled by default; often adds dashboard noise)."
         ),
     )
     p.add_argument(
-        "--mongo-all-active", action="store_true",
+        "--mongo-all-active",
+        action="store_true",
         help=(
             "With --from-mongo: ignore JOBS_RETRIEVAL_FILTER and load every "
             "is_active=true job (see JOBS_RETRIEVAL_LIMIT)."

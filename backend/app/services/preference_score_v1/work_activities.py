@@ -17,7 +17,12 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.preference_score import PreferenceScorer
-from .levels import attribute_label, ladder_position, level_label, resolve_schema_level_id
+from .levels import (
+    attribute_label,
+    ladder_position,
+    level_label,
+    resolve_schema_level_id,
+)
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -59,8 +64,12 @@ def compute_dce_utility(
     reference (0) and target (1).
     """
     scale = attr_scale or {}
-    attr_names = [a.get("name") for a in (schema.get("attributes") or []) if a.get("name")]
-    spec_by_name = {a["name"]: a for a in (schema.get("attributes") or []) if a.get("name")}
+    attr_names = [
+        a.get("name") for a in (schema.get("attributes") or []) if a.get("name")
+    ]
+    spec_by_name = {
+        a["name"]: a for a in (schema.get("attributes") or []) if a.get("name")
+    }
 
     v_dce = 0.0
     denom = 0.0
@@ -74,7 +83,10 @@ def compute_dce_utility(
         if resolved is None:
             continue  # job doesn't describe this attribute
 
-        beta_hat = math.log(_clamp(v, logit_eps, 1.0 - logit_eps) / (1.0 - _clamp(v, logit_eps, 1.0 - logit_eps)))
+        beta_hat = math.log(
+            _clamp(v, logit_eps, 1.0 - logit_eps)
+            / (1.0 - _clamp(v, logit_eps, 1.0 - logit_eps))
+        )
         beta_hat *= float(scale.get(attr, 1.0))
         v_tilde = ladder_position(attr, raw_level, schema)
         contribution = beta_hat * v_tilde
@@ -92,9 +104,11 @@ def compute_dce_utility(
                 "attribute": attr,
                 "attr_label": attribute_label(attr, schema),
                 "job_value": resolved,
-                "job_value_label": level_label(attr, raw_level, schema),  # level label, e.g. "~70k"
-                "user_weight": round(v, 4),          # per-user [0,1] preference value v_k
-                "beta": round(beta_hat, 4),          # recovered signed coefficient β̂_k
+                "job_value_label": level_label(
+                    attr, raw_level, schema
+                ),  # level label, e.g. "~70k"
+                "user_weight": round(v, 4),  # per-user [0,1] preference value v_k
+                "beta": round(beta_hat, 4),  # recovered signed coefficient β̂_k
                 "encoded_value": round(v_tilde, 4),  # graded ladder position ṽ_k
                 "contribution": round(contribution, 4),
                 "matched": contribution != 0.0,
@@ -182,10 +196,12 @@ def compute_task_utility(
                 "wa_importance": r["importance"],
                 "wa_level": r["wa_level"],
                 "norm_importance": round(r["importance"] / 5.0, 4),  # display only
-                "norm_level": round(r["wa_level"] / 7.0, 4),         # display only (unused in score)
-                "weight": round(weight, 6),                          # ŵ_c (drives V_task)
-                "beta": round(r["beta"], 4),                         # β_c
-                "wa_contribution": round(contribution, 6),           # ŵ_c · β_c
+                "norm_level": round(
+                    r["wa_level"] / 7.0, 4
+                ),  # display only (unused in score)
+                "weight": round(weight, 6),  # ŵ_c (drives V_task)
+                "beta": round(r["beta"], 4),  # β_c
+                "wa_contribution": round(contribution, 6),  # ŵ_c · β_c
             }
         )
 
