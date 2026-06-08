@@ -238,6 +238,7 @@ RANKED_JOBS_ACTIVE_FILTER: Dict[str, Any] = {"is_active": True}
 # Ranked / enriched job docs: listing fields on classifier_metadata (see build_job_dict_from_ranked).
 _M_CITY = "classifier_metadata.city"
 _M_COUNTY = "classifier_metadata.county"
+_M_PROVINCE = "classifier_metadata.province"
 
 # Inclusion projection for job find (must stay aligned with build_job_dict_from_ranked).
 RANKED_JOB_FIND_PROJECTION: Dict[str, int] = {
@@ -271,6 +272,12 @@ RANKED_JOB_FIND_PROJECTION: Dict[str, int] = {
     # ZQF education annotation (Zambia); root-level fields set by scrape-time enrichment / backfill.
     "zqf_min": 1,
     "zqf_max": 1,
+    # Zambia: ZQF and province under classifier_metadata (TestAutomatedDemandside format).
+    "classifier_metadata.province": 1,
+    "classifier_metadata.min_zqf_level": 1,
+    "classifier_metadata.max_zqf_level": 1,
+    "classifier_metadata.min_zqf_label": 1,
+    "classifier_metadata.max_zqf_label": 1,
 }
 
 
@@ -336,7 +343,7 @@ def _location_or_clauses_for_one_user(user: dict) -> List[Dict[str, Any]]:
     ors: List[Dict[str, Any]] = list(_remote_substring_ors())
     if not uc or not up:
         return ors
-    for field in (_M_CITY, _M_COUNTY):
+    for field in (_M_CITY, _M_COUNTY, _M_PROVINCE):
         f_c = _field_contains_substr_regex(field, uc)
         if f_c is not None:
             ors.append(f_c)
@@ -346,8 +353,10 @@ def _location_or_clauses_for_one_user(user: dict) -> List[Dict[str, Any]]:
     for hay, fpath in (
         (uc, "$classifier_metadata.city"),
         (uc, "$classifier_metadata.county"),
+        (uc, "$classifier_metadata.province"),
         (up, "$classifier_metadata.city"),
         (up, "$classifier_metadata.county"),
+        (up, "$classifier_metadata.province"),
     ):
         ex = _expr_haystack_contains_mongo_subfield(hay, fpath)
         if ex is not None:
@@ -422,8 +431,8 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     attributes = llm_attrs.get("attributes", {})
 
     city = _str_or_empty(meta.get("city"))
-    county = _str_or_empty(meta.get("county"))
-    loc_parts = [p for p in (city, county) if p]
+    province = _str_or_empty(meta.get("province")) or _str_or_empty(meta.get("county"))
+    loc_parts = [p for p in (city, province) if p]
     location = " ".join(loc_parts) if loc_parts else ""
 
     onet_wa = list(rd.get("onet_work_activities") or [])
@@ -462,7 +471,7 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "opportunity_title": meta.get("title") or "Unknown",
         "location": location,
         "city": city,
-        "province": county,
+        "province": province,
         "employer": meta.get("employer"),
         "employment_type": meta.get("employment_type"),
         "salary_text": meta.get("salary"),
@@ -481,9 +490,11 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         # Post-secondary education gate (see app.services.education_eligibility).
         # llm_job_attributes is fully projected, so this subfield is already loaded.
         "requires_post_secondary": attributes.get("requires_post_secondary"),
-        # ZQF education annotation (Zambia): root-level fields from scrape enrichment / backfill.
-        "zqf_min": rd.get("zqf_min"),
-        "zqf_max": rd.get("zqf_max"),
+        # ZQF education annotation (Zambia): prefer classifier_metadata, fall back to root-level.
+        "zqf_min": meta.get("min_zqf_level") or rd.get("zqf_min"),
+        "zqf_max": meta.get("max_zqf_level") or rd.get("zqf_max"),
+        "zqf_min_label": meta.get("min_zqf_label"),
+        "zqf_max_label": meta.get("max_zqf_label"),
         "opportunity_description": meta.get("job_description")
         or meta.get("description")
         or "",

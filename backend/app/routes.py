@@ -728,6 +728,8 @@ async def match_v5(
                 eligible, gap = _zqf_annotation(user_zqf, job_zqf_min)
                 opp["zqf_eligible"] = eligible
                 opp["zqf_gap"] = gap
+                opp["zqf_min_label"] = job.get("zqf_min_label") if job else None
+                opp["zqf_max_label"] = job.get("zqf_max_label") if job else None
 
         out: List[MatchResponseV5] = [MatchResponseV5(**row) for row in raw]
 

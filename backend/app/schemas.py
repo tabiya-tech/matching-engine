@@ -303,6 +303,8 @@ class OpportunityRecommendationV5(OpportunityRecommendation):
 
     zqf_eligible: Optional[bool] = None
     zqf_gap: Optional[int] = None
+    zqf_min_label: Optional[str] = None
+    zqf_max_label: Optional[str] = None
 
 
 class MatchResponseV5(BaseModel):
