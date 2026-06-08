@@ -261,6 +261,9 @@ RANKED_JOB_FIND_PROJECTION: Dict[str, int] = {
     "concat_skill_embedding_gemini": 1,
     # Float array on ranked job docs (e.g. SouthAfricaJobs_V2.ranked_jobs); /match_v3 fallback if no vector_bin.
     "job_embedding": 1,
+    # ZQF education annotation (Zambia); root-level fields set by scrape-time enrichment / backfill.
+    "zqf_min": 1,
+    "zqf_max": 1,
 }
 
 
@@ -460,6 +463,9 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         # Post-secondary education gate (see app.services.education_eligibility).
         # llm_job_attributes is fully projected, so this subfield is already loaded.
         "requires_post_secondary": attributes.get("requires_post_secondary"),
+        # ZQF education annotation (Zambia): root-level fields from scrape enrichment / backfill.
+        "zqf_min": rd.get("zqf_min"),
+        "zqf_max": rd.get("zqf_max"),
         "opportunity_description": meta.get("job_description") or meta.get("description") or "",
         "onet_work_activities": onet_wa,
     }

@@ -14,6 +14,8 @@ from app.schemas import (
     MatchV2Response,
     MatchV2JobRecommendation,
     MatchConcatGeminiCeResponse,
+    MatchRequestV5,
+    MatchResponseV5,
 )
 from app.config import (
     MATCH_V2_HYBRID_TOP_K,
@@ -32,6 +34,8 @@ from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_
 from app.services.match_concat_gemini_ce_preference_service import (
     run_match_concat_gemini_ce_with_preferences,
 )
+from app.services.match_v2_full_service import run_match_v2_full
+from app.services.match_v3_full_service import run_match_v3_full
 from app.services.match_v4_full_service import run_match_v4_full
 
 api_key_auth = APIKeyHeader(
@@ -41,7 +45,7 @@ api_key_auth = APIKeyHeader(
 )
 
 router = APIRouter(dependencies=[Depends(api_key_auth)])
-# Public: /match_v2 (BM25×cosine), /match_v3 (Gemini+CE), /match_v4 (Gemini+CE+preference final).
+# Public: /experiments/v2/match (BM25×cosine), /experiments/v3/match (Gemini+CE), /match_v4 (Gemini+CE+preference final).
 router_public = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -175,10 +179,10 @@ async def match(payload: List[MatchRequest]):
 
 
 @router_public.post(
-    "/match_v2",
-    tags=["matching"],
+    "/experiments/v2/match",
+    tags=["experiments"],
     operation_id="match_v2",
-    response_model=List[MatchV2Response],
+    response_model=List[MatchResponse],
     responses={
         400: {"description": "Bad Request"},
         500: {"description": "Internal Server Error"},
@@ -191,7 +195,7 @@ async def match_v2(
         ge=1,
         le=500,
         description=(
-            "Max hybrid fused rows per user (pool min–max ranking). "
+            "Max hybrid fused opportunities per user (pool min–max ranking). "
             f"Defaults to MATCH_V2_HYBRID_TOP_K ({MATCH_V2_HYBRID_TOP_K})."
         ),
     ),
@@ -204,15 +208,19 @@ async def match_v2(
             "Overrides env HYBRID_ALPHA_ON_COSINE when set."
         ),
     ),
+    skill_gap_top_k: Optional[int] = Query(
+        None, ge=1, le=50, description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
+    ),
 ):
-    """Hybrid BM25 × cosine-skill embeddings: fused rankings over the Mongo job corpus.
+    """Hybrid BM25 × cosine-skill embeddings, returned in the full ``MatchResponse`` shape.
 
-    Loads **all active jobs** (``is_active`` only) — **no per-user Mongo location prefilter** and no
-    retrieval sort/limit, so BM25 indexes align with ``JOBS_RETRIEVAL_FILTER=0`` / CLI ``--mongo-all-active``.
-    This avoids the filtered job slice used by ``POST /match``.
+    **Matching formula is unchanged from the original v2 engine** (BM25 × embedding-cosine pool
+    min–max fusion); only the response is reshaped to match ``POST /match_v4``: opportunities,
+    occupations and skill gaps. Opportunities load **all active jobs** (``is_active`` only) — no
+    per-user Mongo location prefilter — and occupations are scored with the **same** hybrid engine
+    over the occupation corpus (county-scoped like v4). ``final_score`` is the hybrid fusion score;
+    v4-only ``u_hat``/``p_hat``/preference fields are empty (the v2 engine produces no such signal).
 
-    Does **not** run occupations, skill gaps, or ``SkillScorer`` / ``p_hat``.
-    Returns ``column_fused_weighted_minmax`` style rows as ``hybrid_recommendations``.
     Does **not** require ``x-api-key`` (temporary; gated separately from ``POST /match``).
     """
 
@@ -236,69 +244,35 @@ async def match_v2(
         alpha = alpha_on_cosine if alpha_on_cosine is not None else (env_alpha if env_alpha is not None else 0.5)
 
         t_fetch = time.perf_counter()
-        # Full active catalog — no union location filter or retrieval cap on this endpoint.
-        jobs, mongo_timing = await get_all_jobs_with_timing(users=None)
+        # Full active catalog (no union location filter) + occupation corpus, in parallel.
+        (jobs, _mongo_timing), (occ, _occ_timing) = await asyncio.gather(
+            get_all_jobs_with_timing(users=None),
+            get_all_occupations_with_timing(),
+        )
         fetch_wall_ms = _ms(t_fetch)
 
-        if len(jobs) == 0:
-            empty_summary = {"fusion": "weighted_minmax_on_candidate_pool_bm25_cosine_only", "n_jobs": 0}
-            return [
-                MatchV2Response(
-                    user_id=str(u.get("user_id") or ""),
-                    n_jobs_scored=0,
-                    hybrid_recommendations=[],
-                    hybrid_config_summary=empty_summary,
-                )
-                for u in users
-            ]
-
         t_score = time.perf_counter()
-        envelope = await asyncio.to_thread(_execute_hybrid_http, users, jobs, fusion_top_k=fk, alpha_on_cosine=alpha)
-        hybrid_ms = _ms(t_score)
+        raw = await asyncio.to_thread(
+            run_match_v2_full,
+            users,
+            jobs,
+            occ,
+            fusion_top_k=fk,
+            alpha_on_cosine=alpha,
+            skill_gap_top_k=skill_gap_top_k if skill_gap_top_k is not None else MATCH_TOP_K_SKILL_GAPS,
+        )
+        score_ms = _ms(t_score)
 
-        job_index = _jobs_by_uuid(jobs)
-        idx = envelope.get("index_stats") or {}
-        cfg_slice = {
-            k: envelope["config"].get(k)
-            for k in (
-                "scorer",
-                "fusion",
-                "alpha_on_cosine_skill",
-                "variant_bm25",
-                "bm25_pool_k",
-                "cosine_pool_k",
-                "column_display_rows",
-            )
-            if k in (envelope.get("config") or {})
-        }
-        cfg_slice["n_jobs"] = idx.get("n_jobs", len(jobs))
-        cfg_slice["embedding_dim"] = idx.get("embedding_dim")
-        if mongo_timing is not None:
-            cfg_slice["mongo_retrieval_filter_applied"] = mongo_timing.get("jobs_retrieval_filter_applied")
-            cfg_slice["mongo_ranked_find_ms"] = mongo_timing.get("mongo_ranked_find_ms")
-
-        out: List[MatchV2Response] = []
-        for row in envelope.get("results") or []:
-            # Post-secondary education gate is enforced inside hybrid_match_users_with_jobs.
-            fused = row.get("column_fused_weighted_minmax") or []
-            uid = str(row.get("user_id") or "")
-            out.append(
-                MatchV2Response(
-                    user_id=uid,
-                    n_jobs_scored=len(jobs),
-                    hybrid_recommendations=_fused_rows_to_match_v2_jobs(fused, job_index),
-                    hybrid_config_summary=cfg_slice,
-                )
-            )
+        out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
 
         log_match_step(
-            "http /match_v2",
+            "http /experiments/v2/match",
             "request (summary)",
             n_users=n_users,
             n_jobs=len(jobs),
-            n_occupation_rows=0,
+            n_occupation_rows=len(occ),
             fetch_parallel_wall_ms=fetch_wall_ms,
-            scoring_thread_pool_ms=hybrid_ms,
+            scoring_thread_pool_ms=score_ms,
             request_total_ms=_ms(t_req),
         )
         return out
@@ -346,10 +320,10 @@ _MATCH_V3_BODY_EXAMPLE: List[Dict[str, Any]] = [
 
 
 @router_public.post(
-    "/match_v3",
-    tags=["matching"],
+    "/experiments/v3/match",
+    tags=["experiments"],
     operation_id="match_v3",
-    response_model=List[MatchConcatGeminiCeResponse],
+    response_model=List[MatchResponse],
     responses={
         400: {"description": "Bad Request"},
         500: {"description": "Internal Server Error"},
@@ -383,10 +357,18 @@ async def match_v3(
         le=200,
         description="Stage-2 cross-encoder slate size after rerank. Default: 30.",
     ),
+    skill_gap_top_k: Optional[int] = Query(
+        None, ge=1, le=50, description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
+    ),
 ):
-    """Gemini user concat embedding × Mongo job vectors → CE rerank.
+    """Gemini concat-cosine → CE rerank, returned in the full ``MatchResponse`` shape.
 
-    Same JSON body as ``POST /match`` / ``POST /match_v2``: a JSON array of ``MatchRequest``.
+    **Matching logic is unchanged from the original v3 engine** (Gemini user concat embedding ×
+    Mongo job vectors → cross-encoder rerank); only the response is reshaped to match
+    ``POST /match_v4``: opportunities, occupations and skill gaps. Occupations are scored with the
+    **same** v3 engine over the occupation corpus (county-scoped like v4). ``final_score`` is the
+    raw concat cosine similarity; v4-only ``u_hat``/``p_hat``/preference fields are empty (the v3
+    engine produces no such signal).
 
     **Database:** reads active jobs via ``MONGO_URL``, ``MONGO_DB_NAME``, ``MONGO_JOBS_COLLECTION``.
     Stage-1 vectors may come from ``concat_skill_embedding_gemini.vector_bin`` **or** a numeric
@@ -409,28 +391,33 @@ async def match_v3(
         ft = final_top_k if final_top_k is not None else 30
 
         t_fetch = time.perf_counter()
-        jobs, mongo_timing = await get_all_jobs_with_timing(users=users)
+        (jobs, _mongo_timing), (occ, _occ_timing) = await asyncio.gather(
+            get_all_jobs_with_timing(users=users),
+            get_all_occupations_with_timing(),
+        )
+        occ = attach_occupation_embeddings(occ)
         fetch_wall_ms = _ms(t_fetch)
 
         t_score = time.perf_counter()
         raw = await asyncio.to_thread(
-            run_match_concat_gemini_ce,
+            run_match_v3_full,
             users,
             jobs,
+            occ,
             retrieve_top_k=rt,
             final_top_k=ft,
-            mongo_timing=mongo_timing,
+            skill_gap_top_k=skill_gap_top_k if skill_gap_top_k is not None else MATCH_TOP_K_SKILL_GAPS,
         )
         score_ms = _ms(t_score)
 
-        out: List[MatchConcatGeminiCeResponse] = [MatchConcatGeminiCeResponse(**row) for row in raw]
+        out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
 
         log_match_step(
-            "http /match_v3",
+            "http /experiments/v3/match",
             "request (summary)",
             n_users=len(users),
             n_jobs=len(jobs),
-            n_occupation_rows=0,
+            n_occupation_rows=len(occ),
             fetch_parallel_wall_ms=fetch_wall_ms,
             scoring_thread_pool_ms=score_ms,
             request_total_ms=_ms(t_req),
@@ -549,6 +536,137 @@ async def match_v4(
 
         log_match_step(
             "http /match_v4",
+            "request (summary)",
+            n_users=len(users),
+            n_jobs=len(jobs),
+            n_occupation_rows=len(occ),
+            fetch_parallel_wall_ms=fetch_wall_ms,
+            scoring_thread_pool_ms=score_ms,
+            request_total_ms=_ms(t_req),
+        )
+        return out
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.exception(e)
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception(e)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e.__class__.__name__}") from e
+
+
+# ---------------------------------------------------------------------------
+# Experiment: /experiments/v5/match
+# ---------------------------------------------------------------------------
+
+def _zqf_annotation(user_zqf, job_zqf_min):
+    """(zqf_eligible, zqf_gap) or (None, None) when either side is missing."""
+    if user_zqf is not None and isinstance(job_zqf_min, int):
+        return (user_zqf >= job_zqf_min, abs(user_zqf - job_zqf_min))
+    return (None, None)
+
+
+@router_public.post(
+    "/experiments/v5/match",
+    tags=["experiments"],
+    operation_id="match_v5_experiment",
+    response_model=List[MatchResponseV5],
+    responses={
+        400: {"description": "Bad Request"},
+        500: {"description": "Internal Server Error"},
+    },
+)
+async def match_v5(
+    payload: Annotated[
+        List[MatchRequestV5],
+        Body(
+            ...,
+            description=(
+                "Same body as ``POST /match_v4`` plus ``zqf_level`` (optional int). "
+                "Returns results with ZQF eligibility annotation on opportunities."
+            ),
+            example=_MATCH_V3_BODY_EXAMPLE,
+        ),
+    ],
+    retrieve_top_k: Optional[int] = Query(
+        None, ge=1, le=500,
+        description=f"Stage-1 concat cosine shortlist size. Default: {COSINE_CROSS_ENCODER_RETRIEVE_TOP_K}.",
+    ),
+    final_top_k: Optional[int] = Query(
+        None, ge=1, le=200,
+        description="CE pool size and max preference-ranked rows returned. Default: 30.",
+    ),
+    final_score_combiner: Optional[str] = Query(
+        None,
+        description="How to combine u_hat and p_hat: 'product' or 'geometric_mean'.",
+    ),
+    skill_gap_top_k: Optional[int] = Query(
+        None, ge=1, le=50, description="Number of skill-gap recommendations.",
+    ),
+):
+    """Experiment: matching with ZQF education annotation on opportunities.
+
+    Runs the full matching pipeline then annotates each opportunity with ``zqf_eligible``
+    and ``zqf_gap`` based on the user's ``zqf_level`` and the job's ``zqf_min``.
+    """
+    try:
+        t_req = time.perf_counter()
+        if len(payload) > MATCH_V2_MAX_USERS_PER_REQUEST:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Too many users in one request (max {MATCH_V2_MAX_USERS_PER_REQUEST}).",
+            )
+        if not payload:
+            raise HTTPException(status_code=400, detail="Request body must be a non-empty JSON array.")
+
+        users = [u.model_dump() for u in payload]
+        rt = retrieve_top_k if retrieve_top_k is not None else COSINE_CROSS_ENCODER_RETRIEVE_TOP_K
+        ft = final_top_k if final_top_k is not None else 30
+        combiner = (final_score_combiner or "").strip().lower() or None
+        if combiner is not None and combiner not in ("product", "geometric_mean"):
+            raise HTTPException(
+                status_code=400,
+                detail="final_score_combiner must be 'product' or 'geometric_mean'",
+            )
+
+        t_fetch = time.perf_counter()
+        (jobs, mongo_timing), (occ, _occ_timing) = await asyncio.gather(
+            get_all_jobs_with_timing(users=users),
+            get_all_occupations_with_timing(),
+        )
+        occ = attach_occupation_embeddings(occ)
+        fetch_wall_ms = _ms(t_fetch)
+
+        job_uuid_index = _jobs_by_uuid(jobs)
+
+        t_score = time.perf_counter()
+        raw = await asyncio.to_thread(
+            run_match_v4_full,
+            users,
+            jobs,
+            occ,
+            retrieve_top_k=rt,
+            final_top_k=ft,
+            final_score_combiner=combiner,
+            skill_gap_top_k=skill_gap_top_k if skill_gap_top_k is not None else MATCH_TOP_K_SKILL_GAPS,
+            mongo_timing=mongo_timing,
+        )
+        score_ms = _ms(t_score)
+
+        for row, user in zip(raw, users):
+            user_zqf = user.get("zqf_level")
+            for opp in row.get("opportunity_recommendations") or []:
+                job = job_uuid_index.get(str(opp.get("uuid") or ""))
+                job_zqf_min = job.get("zqf_min") if job else None
+                eligible, gap = _zqf_annotation(user_zqf, job_zqf_min)
+                opp["zqf_eligible"] = eligible
+                opp["zqf_gap"] = gap
+
+        out: List[MatchResponseV5] = [MatchResponseV5(**row) for row in raw]
+
+        log_match_step(
+            "http /experiments/v5/match",
             "request (summary)",
             n_users=len(users),
             n_jobs=len(jobs),
