@@ -115,6 +115,14 @@ Runs `pytest tests/smoke/` which includes:
 ### Run Everything at Once
 
 ```bash
+python tests/sanity_checks/run_all_checks.py
+```
+
+Runs all 6 checks (lint, format, data validation, data schema, smoke, classifier metadata migration) and prints a one-line PASS/FAIL per check with a final summary. Paste this output into PR descriptions.
+
+To run pytest directly with verbose output:
+
+```bash
 python -m pytest tests/data_validation/ tests/data_schema/ tests/smoke/ -v
 ```
 ---

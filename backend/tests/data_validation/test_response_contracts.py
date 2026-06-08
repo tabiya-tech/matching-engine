@@ -374,15 +374,24 @@ class TestMatchResponseV5Contract:
 
     def test_v5_opportunity_has_zqf_fields(self):
         opp = OpportunityRecommendationV5(
-            **_minimal_opportunity(zqf_eligible=True, zqf_gap=2)
+            **_minimal_opportunity(
+                zqf_eligible=True,
+                zqf_gap=2,
+                zqf_min_label="Diploma / Technician",
+                zqf_max_label="Bachelor's Degree",
+            )
         )
         assert opp.zqf_eligible is True
         assert opp.zqf_gap == 2
+        assert opp.zqf_min_label == "Diploma / Technician"
+        assert opp.zqf_max_label == "Bachelor's Degree"
 
     def test_v5_zqf_fields_default_none(self):
         opp = OpportunityRecommendationV5(**_minimal_opportunity())
         assert opp.zqf_eligible is None
         assert opp.zqf_gap is None
+        assert opp.zqf_min_label is None
+        assert opp.zqf_max_label is None
 
     def test_v5_inherits_all_opportunity_fields(self):
         opp = OpportunityRecommendationV5(
