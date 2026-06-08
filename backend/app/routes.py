@@ -21,7 +21,7 @@ from app.config import (
     MATCH_V2_HYBRID_TOP_K,
     MATCH_V2_MAX_USERS_PER_REQUEST,
     COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
-    MATCH_TOP_K_SKILL_GAPS,
+    MATCH_TOP_K_SKILL_GAPS, DEBUG_MODE,
 )
 from app.database import (
     attach_occupation_embeddings,
@@ -490,6 +490,10 @@ async def match_v4(
 
     Does **not** require ``x-api-key``. Uses ``GEMINI_API_KEY`` for user embeddings.
     """
+    if DEBUG_MODE:
+        print("matching.v4.request=")
+        for item in payload:
+            print(item.model_dump_json(indent=2))
     try:
         t_req = time.perf_counter()
         if len(payload) > MATCH_V2_MAX_USERS_PER_REQUEST:
@@ -544,6 +548,11 @@ async def match_v4(
             scoring_thread_pool_ms=score_ms,
             request_total_ms=_ms(t_req),
         )
+
+        print("matching.v4.response=")
+        for _item in out:
+            print(_item.model_dump_json(indent=2))
+
         return out
 
     except HTTPException:

@@ -133,6 +133,10 @@ def deploy_backend(*,
         ingress="INGRESS_TRAFFIC_ALL",
         template=gcp.cloudrunv2.ServiceTemplateArgs(
             timeout="300s",
+            scaling=gcp.cloudrunv2.ServiceTemplateScalingArgs(
+                min_instance_count=0,
+                max_instance_count=3,
+            ),
             containers=[
                 gcp.cloudrunv2.ServiceTemplateContainerArgs(
                     image=image.repo_digest,

@@ -53,6 +53,7 @@ class EnvKeys:
     SKILL_GROUPS_CSV_PATH = "SKILL_GROUPS_CSV_PATH"
     SKILL_HIERARCHY_CSV_PATH = "SKILL_HIERARCHY_CSV_PATH"
     GEMINI_API_KEY="GEMINI_API_KEY"
+    JOBS_RETRIEVAL_FILTER="JOBS_RETRIEVAL_FILTER"
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class EnvVars:
     skill_groups_csv_path: str
     skill_hierarchy_csv_path: str
     gemini_api_key: str
+    jobs_retrieval_filter: str
 
     def get_env_vars(self) -> list[gcp.cloudrunv2.ServiceTemplateContainerEnvArgs]:
         return [
@@ -171,6 +173,8 @@ class EnvVars:
                                                            value=self.skill_hierarchy_csv_path),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.GEMINI_API_KEY,
                                                            value=self.gemini_api_key),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.JOBS_RETRIEVAL_FILTER,
+                                                           value=self.jobs_retrieval_filter),
         ]
 
     @staticmethod
@@ -215,5 +219,6 @@ class EnvVars:
             skills_csv_path=get_env(EnvKeys.SKILLS_CSV_PATH),
             skill_groups_csv_path=get_env(EnvKeys.SKILL_GROUPS_CSV_PATH),
             skill_hierarchy_csv_path=get_env(EnvKeys.SKILL_HIERARCHY_CSV_PATH),
-            gemini_api_key=get_env(EnvKeys.GEMINI_API_KEY)
+            gemini_api_key=get_env(EnvKeys.GEMINI_API_KEY),
+            jobs_retrieval_filter=get_env(EnvKeys.JOBS_RETRIEVAL_FILTER)
         )

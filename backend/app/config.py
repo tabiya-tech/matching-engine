@@ -325,3 +325,5 @@ _TAX = _RESOURCES / "skill_taxonomy"
 SKILLS_CSV_PATH: str = _s("SKILLS_CSV_PATH", str(_TAX / "skills.csv"))
 SKILL_GROUPS_CSV_PATH: str = _s("SKILL_GROUPS_CSV_PATH", str(_TAX / "skill_groups.csv"))
 SKILL_HIERARCHY_CSV_PATH: str = _s("SKILL_HIERARCHY_CSV_PATH", str(_TAX / "skill_hierarchy.csv"))
+
+DEBUG_MODE = True
