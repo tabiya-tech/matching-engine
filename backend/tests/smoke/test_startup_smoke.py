@@ -11,6 +11,7 @@ class TestHealthEndpoint:
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
 
-    def test_health_without_api_key_returns_401(self, test_client):
+    def test_health_without_api_key_is_rejected(self, test_client):
         resp = test_client.get("/health")
-        assert resp.status_code == 401
+        # FastAPI/Starlette versions differ: missing API key → 401 or 403.
+        assert resp.status_code in (401, 403)

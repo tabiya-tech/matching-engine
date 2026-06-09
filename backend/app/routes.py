@@ -21,7 +21,8 @@ from app.config import (
     COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
     MATCH_V4_RETRIEVE_TOP_K,
     MATCH_V4_FINAL_TOP_K,
-    MATCH_TOP_K_SKILL_GAPS, DEBUG_MODE,
+    MATCH_TOP_K_SKILL_GAPS,
+    DEBUG_MODE,
 )
 from app.database import (
     attach_occupation_embeddings,
