@@ -66,13 +66,27 @@ def _filter_essential_skill_matches(match_details: dict) -> list[dict]:
     ]
 
 
-def _filter_skill_gap_recommendations(skill_gaps: list[dict]) -> list[dict]:
+def _skill_gap_candidate_pool_k(requested_top_k: int) -> int:
+    """How many ranked candidates to generate before the proximity threshold filter.
+
+    ``analyze_skill_gaps`` ranks by combined score (proximity + job unlock). A small
+    ``top_k`` can surface a high-unlock skill whose proximity is below
+    ``MATCH_RESPONSE_SKILL_MIN_SCORE``; widening the pool first lets the filter
+    return up to ``requested_top_k`` rows that pass the threshold.
+    """
+    return max(requested_top_k * 10, MATCH_TOP_K_SKILL_GAPS, 20)
+
+
+def _filter_skill_gap_recommendations(
+    skill_gaps: list[dict], *, top_k: int | None = None
+) -> list[dict]:
     """Keep only skill-gap rows whose proximity passes response threshold."""
+    limit = MATCH_TOP_K_SKILL_GAPS if top_k is None else max(1, int(top_k))
     return [
         g
         for g in skill_gaps
         if float(g.get("proximity_score", 0.0)) >= MATCH_RESPONSE_SKILL_MIN_SCORE
-    ][:MATCH_TOP_K_SKILL_GAPS]
+    ][:limit]
 
 
 def _job_matches_user_location(job: Dict[str, Any], user: Dict[str, Any]) -> bool:
@@ -684,11 +698,13 @@ def match_user_with_data(
         jobs,
         scorer_skill.engine,
         scorer_skill.skill_labels,
-        top_k=MATCH_TOP_K_SKILL_GAPS,
+        top_k=_skill_gap_candidate_pool_k(MATCH_TOP_K_SKILL_GAPS),
         resolve_id=scorer_skill._resolve_label,
         timing_out=None,
     )
-    skill_gaps = _filter_skill_gap_recommendations(skill_gaps)
+    skill_gaps = _filter_skill_gap_recommendations(
+        skill_gaps, top_k=MATCH_TOP_K_SKILL_GAPS
+    )
     t_gaps = _ms(t0)
 
     total_ms = _ms(t_total)

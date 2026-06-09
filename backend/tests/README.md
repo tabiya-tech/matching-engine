@@ -104,13 +104,13 @@ Runs `pytest tests/smoke/` which includes:
 
 - **`test_startup_smoke.py`** — Health endpoint
   - `GET /health` with `x-api-key` returns `200 {"status": "ok"}`
-  - `GET /health` without `x-api-key` returns `403`
+  - `GET /health` without `x-api-key` returns `401`
 
 - **`test_endpoint_smoke.py`** — Endpoint behavior
   - Empty payload `[]` returns `400`
   - Invalid `final_score_combiner` query param returns `400`
   - `_zqf_annotation` logic: eligible, ineligible, missing user ZQF, missing job ZQF
-  - Unified response contract: `/match` and `/experiments/v2/match` both return `user_id` + three recommendation lists
+  - Unified response contract: all match endpoints (`/match`, `/experiments/v2/match`, `/experiments/v3/match`, `/match_v4`, `/experiments/v5/match`) return `user_id` + three recommendation lists
 
 ### Run Everything at Once
 
@@ -118,12 +118,25 @@ Runs `pytest tests/smoke/` which includes:
 python tests/sanity_checks/run_all_checks.py
 ```
 
-Runs all 6 checks (lint, format, data validation, data schema, smoke, classifier metadata migration) and prints a one-line PASS/FAIL per check with a final summary. Paste this output into PR descriptions.
+Runs all 6 checks (lint, format, data validation, data schema, smoke, job dict mapping) and prints a one-line PASS/FAIL per check with a final summary. Paste this output into PR descriptions.
+
+### 6. Job Dict Mapping Tests
+
+```bash
+python tests/sanity_checks/job_dict_mapping_check.py
+```
+
+Runs `pytest tests/unit/` which validates `build_job_dict_from_ranked()` — the Mongo ranked-job → flat job dict mapper used by every match endpoint.
+
+**Coverage strategy** (not every field gets its own test):
+
+- **Mapping logic** — full coverage: ZQF naming conventions (`min_zqf_level` vs `zqf_min`), province/county fallback, `originUuid` precedence, posted-date chain, embedding dim gate, skill ID filtering, etc.
+- **Simple passthrough** — one happy-path test asserts core `classifier_metadata` fields (`title`, `employer`, `salary`, ISCO, URL, …) map correctly together.
 
 To run pytest directly with verbose output:
 
 ```bash
-python -m pytest tests/data_validation/ tests/data_schema/ tests/smoke/ -v
+python -m pytest tests/data_validation/ tests/data_schema/ tests/smoke/ tests/unit/ -v
 ```
 ---
 
@@ -142,10 +155,13 @@ tests/
 ├── smoke/
 │   ├── test_startup_smoke.py            # Health endpoint tests (2 tests)
 │   └── test_endpoint_smoke.py           # Endpoint behavior tests (7 tests)
+├── unit/
+│   └── test_build_job_dict_from_ranked.py  # Mongo job doc → flat dict mapping
 └── sanity_checks/
     ├── data_validation_check.py         # Runner: pytest tests/data_validation/
     ├── data_schema_check.py             # Runner: pytest tests/data_schema/
     ├── smoke_check.py                   # Runner: pytest tests/smoke/
+    ├── job_dict_mapping_check.py        # Runner: pytest tests/unit/
     ├── lint_check.py                    # Runner: ruff check
     ├── formatter_check.py               # Runner: ruff format --check
     └── startup_check.py                 # Runner: FastAPI boot check
@@ -161,5 +177,6 @@ When adding new endpoints, models, or features:
 2. **New endpoint** → Add it to `EXPECTED_ENDPOINTS` in `tests/data_schema/test_openapi_schema.py` and to `AUTH_REQUIRED_PATHS` if it requires `x-api-key`
 3. **New config enum** → Add a parameterized case in `tests/data_schema/test_config_validation.py`
 4. **New endpoint behavior** → Add smoke tests in `tests/smoke/test_endpoint_smoke.py`
+5. **New Mongo field mapping or fallback in `build_job_dict_from_ranked`** → Add cases in `tests/unit/test_build_job_dict_from_ranked.py` (mapping logic) or extend the happy-path test (simple passthrough)
 
 Always run the full suite after changes to confirm nothing regresses.

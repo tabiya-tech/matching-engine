@@ -52,9 +52,17 @@ class MatchRequest(BaseModel):
     skills_vector: SkillsVector = Field(default_factory=SkillsVector)
     skill_groups_origin_uuids: List[str] = Field(default_factory=list)
     preference_vector: PreferenceVector = Field(default_factory=PreferenceVector)
-    any_post_secondary_educ: Optional[int] = 0
-    number_post_secondary_educ: Optional[int] = 0
-    total_duration_postsec: Optional[float] = 0.0
+    any_post_secondary_educ: Optional[int] = Field(
+        default=None,
+        description=(
+            "Kenya post-secondary education gate. ``0`` = user has no post-secondary "
+            "(jobs with ``requires_post_secondary`` are excluded), ``1`` = has post-secondary. "
+            "Omit to skip the gate. Not used for Zambia ZQF (see ``zqf_level`` on match_v5)."
+        ),
+        examples=[1],
+    )
+    number_post_secondary_educ: Optional[int] = None
+    total_duration_postsec: Optional[float] = None
 
     @field_validator("city", "province", mode="before")
     @classmethod
@@ -295,7 +303,15 @@ class MatchConcatGeminiCeResponse(BaseModel):
 class MatchRequestV5(MatchRequest):
     """request extended with the user's ZQF qualification level."""
 
-    zqf_level: Optional[int] = None
+    zqf_level: Optional[int] = Field(
+        default=None,
+        description=(
+            "User's Zambia Qualifications Framework (ZQF) level (integer). "
+            "Used with each job's ``zqf_min`` to populate ``zqf_eligible`` and "
+            "``zqf_gap`` on opportunity recommendations. Omit to skip ZQF annotation."
+        ),
+        examples=[4],
+    )
 
 
 class OpportunityRecommendationV5(OpportunityRecommendation):

@@ -70,6 +70,11 @@ def _mock_match_response(user, *_args, **_kwargs):
     }
 
 
+def _mock_run_match_full(users, *_args, **_kwargs):
+    """Batch matcher stub used by v2/v3/v4/v5 HTTP routes."""
+    return [_mock_match_response(u) for u in users]
+
+
 async def _mock_jobs(*_a, **_kw):
     return ([], {})
 
@@ -102,6 +107,9 @@ def test_client():
         ),
         patch("app.routes.attach_occupation_embeddings", side_effect=lambda x: x),
         patch("app.routes.match_user_with_data", side_effect=_mock_match_response),
+        patch("app.routes.run_match_v2_full", side_effect=_mock_run_match_full),
+        patch("app.routes.run_match_v3_full", side_effect=_mock_run_match_full),
+        patch("app.routes.run_match_v4_full", side_effect=_mock_run_match_full),
     ]
     for p in patches:
         p.start()

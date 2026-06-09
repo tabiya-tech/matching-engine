@@ -133,6 +133,7 @@ def _skill_gaps_for(
     """Reuse the existing Node2Vec skill-gap analysis (engine-agnostic). Lazy import (torch)."""
     from app.services.matching_service import (
         _filter_skill_gap_recommendations,
+        _skill_gap_candidate_pool_k,
         scorer_skill,
     )
     from app.services.skill_gap_analysis import analyze_skill_gaps
@@ -142,11 +143,11 @@ def _skill_gaps_for(
         jobs,
         scorer_skill.engine,
         scorer_skill.skill_labels,
-        top_k=top_k,
+        top_k=_skill_gap_candidate_pool_k(top_k),
         resolve_id=scorer_skill._resolve_label,
         timing_out=None,
     )
-    return _filter_skill_gap_recommendations(gaps)
+    return _filter_skill_gap_recommendations(gaps, top_k=top_k)
 
 
 def run_match_v4_full(

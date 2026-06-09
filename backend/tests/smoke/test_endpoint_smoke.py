@@ -64,7 +64,17 @@ class TestUnifiedResponseContract:
     MATCH_ENDPOINTS = [
         ("/match", {"headers": {"x-api-key": "test-key"}}),
         ("/experiments/v2/match", {}),
+        ("/experiments/v3/match", {}),
+        ("/match_v4", {}),
+        ("/experiments/v5/match", {}),
     ]
+
+    REQUIRED_TOP_LEVEL_KEYS = (
+        "user_id",
+        "opportunity_recommendations",
+        "occupation_recommendations",
+        "skill_gap_recommendations",
+    )
 
     def test_response_shape(self, test_client):
         for path, extra_kwargs in self.MATCH_ENDPOINTS:
@@ -75,13 +85,14 @@ class TestUnifiedResponseContract:
                 f"{path} returned non-list or empty"
             )
             row = data[0]
-            assert "user_id" in row, f"{path} missing user_id"
-            assert "opportunity_recommendations" in row, (
-                f"{path} missing opportunity_recommendations"
+            for key in self.REQUIRED_TOP_LEVEL_KEYS:
+                assert key in row, f"{path} missing {key}"
+            assert isinstance(row["opportunity_recommendations"], list), (
+                f"{path} opportunity_recommendations is not a list"
             )
-            assert "occupation_recommendations" in row, (
-                f"{path} missing occupation_recommendations"
+            assert isinstance(row["occupation_recommendations"], list), (
+                f"{path} occupation_recommendations is not a list"
             )
-            assert "skill_gap_recommendations" in row, (
-                f"{path} missing skill_gap_recommendations"
+            assert isinstance(row["skill_gap_recommendations"], list), (
+                f"{path} skill_gap_recommendations is not a list"
             )

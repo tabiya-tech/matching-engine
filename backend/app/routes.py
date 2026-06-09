@@ -114,6 +114,71 @@ class Health(BaseModel):
     status: str
 
 
+# Swagger default for Kenya / post-secondary endpoints (/match, /match_v2, /match_v3, /match_v4).
+_MATCH_BODY_EXAMPLE: List[Dict[str, Any]] = [
+    {
+        "user_id": "u1",
+        "city": "Nairobi",
+        "province": "Nairobi",
+        "any_post_secondary_educ": 1,
+        "skills_vector": {
+            "top_skills": [
+                {
+                    "originUUID": "00000000-0000-4000-8000-000000000001",
+                    "preferredLabel": "customer service",
+                    "proficiency": 0.8,
+                }
+            ]
+        },
+        "skill_groups_origin_uuids": [],
+        "preference_vector": {
+            "earnings_per_month": 0,
+            "physical_demand": 0,
+            "social_interaction": 0,
+            "career_growth": 0,
+        },
+    }
+]
+
+_MATCH_BODY_DESCRIPTION = (
+    "JSON **array** of MatchRequest (one object per user). "
+    "``any_post_secondary_educ``: ``0`` = no post-secondary (jobs with "
+    "``requires_post_secondary`` are filtered out), ``1`` = has post-secondary, "
+    "omit to disable the education gate."
+)
+
+# Swagger default for /experiments/v5/match (Zambia: ZQF annotation on opportunities).
+_MATCH_V5_BODY_EXAMPLE: List[Dict[str, Any]] = [
+    {
+        "user_id": "u1",
+        "city": "Lusaka",
+        "province": "Lusaka",
+        "zqf_level": 4,
+        "skills_vector": {
+            "top_skills": [
+                {
+                    "originUUID": "00000000-0000-4000-8000-000000000001",
+                    "preferredLabel": "prepare bakery products",
+                    "proficiency": 0.85,
+                },
+                {
+                    "originUUID": "00000000-0000-4000-8000-000000000002",
+                    "preferredLabel": "bake goods",
+                    "proficiency": 0.78,
+                },
+            ]
+        },
+        "skill_groups_origin_uuids": [],
+        "preference_vector": {
+            "earnings_per_month": 0.6,
+            "physical_demand": 0.5,
+            "social_interaction": 0.5,
+            "career_growth": 0.6,
+        },
+    }
+]
+
+
 @router.get("/health")
 async def health() -> Health:
     return Health(status="ok")
@@ -139,7 +204,12 @@ async def health() -> Health:
         },
     },
 )
-async def match(payload: List[MatchRequest]):
+async def match(
+    payload: Annotated[
+        List[MatchRequest],
+        Body(..., description=_MATCH_BODY_DESCRIPTION, example=_MATCH_BODY_EXAMPLE),
+    ],
+):
     """Match one or more users. Body is a JSON array of MatchRequest (use length 1 for a single user)."""
 
     try:
@@ -196,7 +266,10 @@ async def match(payload: List[MatchRequest]):
     },
 )
 async def match_v2(
-    payload: List[MatchRequest],
+    payload: Annotated[
+        List[MatchRequest],
+        Body(..., description=_MATCH_BODY_DESCRIPTION, example=_MATCH_BODY_EXAMPLE),
+    ],
     fusion_top_k: Optional[int] = Query(
         None,
         ge=1,
@@ -315,32 +388,6 @@ async def match_v2(
         )
 
 
-# Swagger default: SA city/province so JOBS_RETRIEVAL_FILTER matches SouthAfricaJobs_V2 jobs.
-_MATCH_V3_BODY_EXAMPLE: List[Dict[str, Any]] = [
-    {
-        "user_id": "u1",
-        "city": "Johannesburg",
-        "province": "Gauteng",
-        "skills_vector": {
-            "top_skills": [
-                {
-                    "originUUID": "00000000-0000-4000-8000-000000000001",
-                    "preferredLabel": "customer service",
-                    "proficiency": 0.8,
-                }
-            ]
-        },
-        "skill_groups_origin_uuids": [],
-        "preference_vector": {
-            "earnings_per_month": 0,
-            "physical_demand": 0,
-            "social_interaction": 0,
-            "career_growth": 0,
-        },
-    }
-]
-
-
 @router_public.post(
     "/experiments/v3/match",
     tags=["experiments"],
@@ -357,11 +404,10 @@ async def match_v3(
         Body(
             ...,
             description=(
-                "JSON **array** of MatchRequest (one object per user). "
-                "When JOBS_RETRIEVAL_FILTER is on, city/province must overlap job locations "
-                "in Mongo (e.g. Johannesburg/Gauteng for SouthAfricaJobs_V2)."
+                _MATCH_BODY_DESCRIPTION
+                + " When JOBS_RETRIEVAL_FILTER is on, city/province must overlap job locations in Mongo."
             ),
-            example=_MATCH_V3_BODY_EXAMPLE,
+            example=_MATCH_BODY_EXAMPLE,
         ),
     ],
     retrieve_top_k: Optional[int] = Query(
@@ -485,10 +531,11 @@ async def match_v4(
         Body(
             ...,
             description=(
-                "Same body as ``POST /match_v3``: JSON array of MatchRequest. "
-                "Preference scoring uses ``PREFERENCE_SCORER_MODE`` (default ``unified``: DCE attributes + BWS)."
+                _MATCH_BODY_DESCRIPTION
+                + " Preference scoring uses ``PREFERENCE_SCORER_MODE`` "
+                "(default ``unified``: DCE attributes + BWS)."
             ),
-            example=_MATCH_V3_BODY_EXAMPLE,
+            example=_MATCH_BODY_EXAMPLE,
         ),
     ],
     retrieve_top_k: Optional[int] = Query(
@@ -617,8 +664,10 @@ async def match_v4(
 
 def _zqf_annotation(user_zqf, job_zqf_min):
     """(zqf_eligible, zqf_gap) or (None, None) when either side is missing."""
-    if user_zqf is not None and isinstance(job_zqf_min, int):
-        return (user_zqf >= job_zqf_min, abs(user_zqf - job_zqf_min))
+    if user_zqf is not None and isinstance(job_zqf_min, (int, float)):
+        jmin = int(job_zqf_min)
+        ulevel = int(user_zqf)
+        return (ulevel >= jmin, abs(ulevel - jmin))
     return (None, None)
 
 
@@ -639,9 +688,12 @@ async def match_v5(
             ...,
             description=(
                 "Same body as ``POST /match_v4`` plus ``zqf_level`` (optional int). "
-                "Returns results with ZQF eligibility annotation on opportunities."
+                "Returns opportunities annotated with ``zqf_eligible``, ``zqf_gap``, "
+                "and ZQF labels from Mongo job ``classifier_metadata``. "
+                "For Zambia deployments use ``zqf_level`` only; "
+                "``any_post_secondary_educ`` is the Kenya post-secondary gate (optional, omit for Zambia)."
             ),
-            example=_MATCH_V3_BODY_EXAMPLE,
+            example=_MATCH_V5_BODY_EXAMPLE,
         ),
     ],
     retrieve_top_k: Optional[int] = Query(

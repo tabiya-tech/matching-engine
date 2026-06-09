@@ -100,10 +100,6 @@ def _mongo_tls_client_options() -> Dict[str, Any]:
 
         SSL: CERTIFICATE_VERIFY_FAILED / unable to get local issuer certificate
 
-    Fix (recommended): set ``MONGO_TLS_CA_FILE=certifi`` to use Mozilla's CA bundle via certifi.
-
-    Escape hatch (local debug only): ``MONGO_TLS_INSECURE=1`` skips certificate verification —
-    never use in production.
     """
     extra: Dict[str, Any] = {}
     insecure = (os.getenv("MONGO_TLS_INSECURE") or "").strip().lower()
@@ -272,8 +268,13 @@ RANKED_JOB_FIND_PROJECTION: Dict[str, int] = {
     # ZQF education annotation (Zambia); root-level fields set by scrape-time enrichment / backfill.
     "zqf_min": 1,
     "zqf_max": 1,
-    # Zambia: ZQF and province under classifier_metadata (TestAutomatedDemandside format).
+    # Zambia: ZQF and province under classifier_metadata.
+    # TestZambiaJobs uses zqf_min/zqf_max; TestAutomatedDemandside uses min_zqf_level/max_zqf_level.
     "classifier_metadata.province": 1,
+    "classifier_metadata.zqf_min": 1,
+    "classifier_metadata.zqf_max": 1,
+    "classifier_metadata.zqf_min_label": 1,
+    "classifier_metadata.zqf_max_label": 1,
     "classifier_metadata.min_zqf_level": 1,
     "classifier_metadata.max_zqf_level": 1,
     "classifier_metadata.min_zqf_label": 1,
@@ -490,11 +491,15 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         # Post-secondary education gate (see app.services.education_eligibility).
         # llm_job_attributes is fully projected, so this subfield is already loaded.
         "requires_post_secondary": attributes.get("requires_post_secondary"),
-        # ZQF education annotation (Zambia): prefer classifier_metadata, fall back to root-level.
-        "zqf_min": meta.get("min_zqf_level") or rd.get("zqf_min"),
-        "zqf_max": meta.get("max_zqf_level") or rd.get("zqf_max"),
-        "zqf_min_label": meta.get("min_zqf_label"),
-        "zqf_max_label": meta.get("max_zqf_label"),
+        # ZQF education annotation (Zambia): classifier_metadata (two naming conventions) or root.
+        "zqf_min": meta.get("min_zqf_level")
+        or meta.get("zqf_min")
+        or rd.get("zqf_min"),
+        "zqf_max": meta.get("max_zqf_level")
+        or meta.get("zqf_max")
+        or rd.get("zqf_max"),
+        "zqf_min_label": meta.get("min_zqf_label") or meta.get("zqf_min_label"),
+        "zqf_max_label": meta.get("max_zqf_label") or meta.get("zqf_max_label"),
         "opportunity_description": meta.get("job_description")
         or meta.get("description")
         or "",
@@ -502,6 +507,7 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
     if job_fp_s:
         out["job_fingerprint"] = job_fp_s
+
     # Passthrough for concat-Gemini cosine (see POST /match_v3); not returned on HTTP envelopes.
     gem_sub = rd.get("concat_skill_embedding_gemini")
     if isinstance(gem_sub, dict) and gem_sub.get("vector_bin") is not None:
