@@ -11,6 +11,7 @@ The test suite validates three layers of the matching service:
 | **Data Validation** | `tests/data_validation/` | Pydantic model shapes — required fields, defaults, validators | No |
 | **Data Schema** | `tests/data_schema/` | API wiring — endpoint registration, auth boundaries, config rejection | No (uses mocked `TestClient`) |
 | **Smoke** | `tests/smoke/` | Runtime behavior — health endpoint, payload guards, response contracts | No (uses mocked `TestClient`) |
+| **ML logic** | `tests/ml_logic/`, `tests/components/`, `tests/integration/` | Matching invariants, metamorphic rules, mocked-embedding ranking | No |
 
 In addition, static analysis checks enforce code quality:
 
@@ -104,7 +105,7 @@ Runs `pytest tests/smoke/` which includes:
 
 - **`test_startup_smoke.py`** — Health endpoint
   - `GET /health` with `x-api-key` returns `200 {"status": "ok"}`
-  - `GET /health` without `x-api-key` returns `401`
+  - `GET /health` without `x-api-key` returns `401` or `403` (FastAPI version)
 
 - **`test_endpoint_smoke.py`** — Endpoint behavior
   - Empty payload `[]` returns `400`
@@ -118,9 +119,23 @@ Runs `pytest tests/smoke/` which includes:
 python tests/sanity_checks/run_all_checks.py
 ```
 
-Runs all 6 checks (lint, format, data validation, data schema, smoke, job dict mapping) and prints a one-line PASS/FAIL per check with a final summary. Paste this output into PR descriptions.
+Runs all 7 checks (lint, format, data validation, data schema, smoke, job dict mapping, ML logic) and prints a one-line PASS/FAIL per check with a final summary. Paste this output into PR descriptions.
 
-### 6. Job Dict Mapping Tests
+### 6. ML Logic Tests
+
+```bash
+python tests/sanity_checks/ml_logic_check.py
+```
+
+Runs `pytest tests/ml_logic/ tests/components/ tests/integration/`:
+
+- **`ml_logic/`** — education gate, remote/location, skill-gap invariants, ZQF, adversarial inputs, cross-endpoint rules
+- **`components/`** — `CosineSkillMatcher` + **metamorphic** tests (reorder/duplicate skills, monotonicity)
+- **`integration/`** — v3 concat pipeline with **mocked embeddings** (deterministic rank #1, education gate in stage-1)
+
+See `tests/AI_MATCHING_TEST_PLAN.md` for full scope.
+
+### 7. Job Dict Mapping Tests
 
 ```bash
 python tests/sanity_checks/job_dict_mapping_check.py
@@ -157,7 +172,13 @@ tests/
 │   └── test_endpoint_smoke.py           # Endpoint behavior tests (7 tests)
 ├── unit/
 │   └── test_build_job_dict_from_ranked.py  # Mongo job doc → flat dict mapping
+├── ml_logic/                            # Matching invariants (education, location, skill gaps, ZQF)
+├── components/                          # Skill scorer + metamorphic tests
+├── integration/                         # Mocked-embedding v3 pipeline tests
+├── AI_MATCHING_TEST_PLAN.md             # ML logic test plan and scope
 └── sanity_checks/
+    ├── run_all_checks.py                # Runner: all 7 checks
+    ├── ml_logic_check.py                # Runner: ml_logic + components + integration
     ├── data_validation_check.py         # Runner: pytest tests/data_validation/
     ├── data_schema_check.py             # Runner: pytest tests/data_schema/
     ├── smoke_check.py                   # Runner: pytest tests/smoke/
@@ -178,5 +199,6 @@ When adding new endpoints, models, or features:
 3. **New config enum** → Add a parameterized case in `tests/data_schema/test_config_validation.py`
 4. **New endpoint behavior** → Add smoke tests in `tests/smoke/test_endpoint_smoke.py`
 5. **New Mongo field mapping or fallback in `build_job_dict_from_ranked`** → Add cases in `tests/unit/test_build_job_dict_from_ranked.py` (mapping logic) or extend the happy-path test (simple passthrough)
+6. **New matching rule or scorer invariant** → Add tests in `tests/ml_logic/`, `tests/components/`, or `tests/integration/` (see `AI_MATCHING_TEST_PLAN.md`)
 
 Always run the full suite after changes to confirm nothing regresses.

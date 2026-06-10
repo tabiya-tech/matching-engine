@@ -18,7 +18,7 @@ sys.path.insert(0, str(_BACKEND))
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("MONGO_DB_NAME", "test")
 
-TOTAL = 6
+TOTAL = 7
 results = []
 
 
@@ -60,6 +60,21 @@ def check_job_dict_mapping():
     return _run_pytest("tests/unit/")
 
 
+def check_ml_logic():
+    return _run_cmd(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/ml_logic/",
+            "tests/components/",
+            "tests/integration/",
+            "-q",
+            "--tb=no",
+        ]
+    )
+
+
 def main():
     print("=" * 50)
     print("SHP MATCHING ALGORITHM — FULL TEST SUITE")
@@ -73,6 +88,7 @@ def main():
         ("Data Schema Check", check_data_schema),
         ("Smoke Check", check_smoke),
         ("Job Dict Mapping Check", check_job_dict_mapping),
+        ("ML Logic Check", check_ml_logic),
     ]
 
     for i, (name, fn) in enumerate(checks, 1):

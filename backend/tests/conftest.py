@@ -25,37 +25,6 @@ os.environ.setdefault("MONGO_DB_NAME", "test")
 
 
 # ---------------------------------------------------------------------------
-# Fixtures for data-validation tests (pure Pydantic, no app startup)
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-def minimal_user():
-    """Minimal valid MatchRequest dict."""
-    return {
-        "user_id": "test-u1",
-        "city": "Johannesburg",
-        "province": "Gauteng",
-        "skills_vector": {
-            "top_skills": [
-                {
-                    "originUUID": "00000000-0000-4000-8000-000000000001",
-                    "preferredLabel": "customer service",
-                    "proficiency": 0.8,
-                }
-            ]
-        },
-        "skill_groups_origin_uuids": [],
-        "preference_vector": {
-            "earnings_per_month": 0.5,
-            "physical_demand": 0.5,
-            "social_interaction": 0.5,
-            "career_growth": 0.5,
-        },
-    }
-
-
-# ---------------------------------------------------------------------------
 # Fixtures for smoke tests (mocked FastAPI app)
 # ---------------------------------------------------------------------------
 
