@@ -1,13 +1,22 @@
 """
 Run the live ``POST /match_v4`` algorithm locally against offline datasets — no MongoDB.
 
-This drives the *real* route handler (``app.routes.match_v4``), so the run goes through the
-identical code path the deployed service uses:
-    Pydantic validation -> Gemini user embedding -> job-vector cosine retrieval
-    -> cross-encoder rerank -> u_hat/p_hat preference final score -> response model.
+This calls ``run_match_v4_full`` — the SAME function the live ``app.routes.match_v4`` route calls —
+so the local output is identical to what ``/match_v4`` consumers receive:
+    Pydantic validation -> Gemini user embedding -> concat-cosine retrieval -> cross-encoder rerank
+    -> u_hat/p_hat preference final score -> ``MatchResponse`` with opportunities (jobs),
+    occupations/careers (demand-gamma weighting + per-user location filter + top-k) and Node2Vec
+    skill-gap recommendations.
 
 The only swap is the Mongo job read: ``app.database.get_all_jobs_with_timing`` is monkeypatched
-to serve jobs from a local JSON file instead of MongoDB. Occupations are not used by /match_v4.
+to serve jobs from a local JSON file instead of MongoDB (occupations always load from local resource
+files). With ``--live-jobs`` even the job read goes to MongoDB.
+
+Live jobs (``--live-jobs``): skip the monkeypatch and read jobs straight from the MongoDB
+configured in ``backend/.env`` (``MONGO_URL`` / ``MONGO_DB_NAME`` / ``MONGO_JOBS_COLLECTION``) —
+useful when the live corpus carries ``requires_post_secondary``. Needs ``motor`` installed and
+network access. Defaults to the full active corpus; ``--jobs-location-filter`` enables the
+per-user Mongo location prefilter. Credentials live ONLY in ``backend/.env`` (never on the CLI).
 
 Data sources (override via env or CLI):
     JOBS   : data/kenya_jobs_for_pipeline.json   (JSON array, already in build_job_dict shape,
@@ -68,12 +77,20 @@ load_dotenv(BACKEND_ROOT / ".env")
 # ── 1. Fix OpenMP conflict on Windows with multiple conda packages ────────────
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-# ── 2. Fake env vars so database.py doesn't raise at import, and mock motor so no DB connect ──
-os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
-os.environ.setdefault("MONGO_DB_NAME", "test")
-_motor_mock = MagicMock()
-sys.modules["motor"] = _motor_mock
-sys.modules["motor.motor_asyncio"] = _motor_mock
+# ── 2. DB access mode (decided here, before ANY app import, because app.database builds the
+# Mongo client at import time and argparse runs too late — so we pre-scan sys.argv). ──
+#   * default       : mock motor + inject a placeholder MONGO_URL → no DB is ever touched; jobs
+#                     come from the local --jobs JSON file.
+#   * --live-jobs   : leave motor real and DO NOT inject a placeholder → app.database connects to
+#                     the Mongo configured in backend/.env (MONGO_URL / MONGO_DB_NAME /
+#                     MONGO_JOBS_COLLECTION) and jobs are read live (incl. requires_post_secondary).
+USE_LIVE_JOBS = "--live-jobs" in sys.argv
+if not USE_LIVE_JOBS:
+    os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
+    os.environ.setdefault("MONGO_DB_NAME", "test")
+    _motor_mock = MagicMock()
+    sys.modules["motor"] = _motor_mock
+    sys.modules["motor.motor_asyncio"] = _motor_mock
 
 # Named dataset presets for --dataset (users file per dataset; jobs corpus is shared unless --jobs given).
 # njila users carry no BWS, so the BWS requirement auto-relaxes for it (see _resolve_require_bws).
@@ -163,6 +180,14 @@ def main() -> None:
                              "already trusts the Gemini endpoint and no TLS-inspecting proxy/AV is present.")
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "output_results" / "match_v4_local",
                         help="Output root dir (a timestamped subdir is created)")
+    parser.add_argument("--live-jobs", action="store_true",
+                        help="Read jobs from the live MongoDB in backend/.env (MONGO_URL / "
+                             "MONGO_DB_NAME / MONGO_JOBS_COLLECTION) instead of the --jobs JSON file. "
+                             "Needs 'motor' installed and network access to the DB.")
+    parser.add_argument("--jobs-location-filter", action="store_true",
+                        help="With --live-jobs, apply the per-user Mongo location prefilter "
+                             "(JOBS_RETRIEVAL_FILTER=true). Off by default so the full active corpus "
+                             "is returned (mirrors the offline harness; test users have city='Unknown').")
     args = parser.parse_args()
 
     # Resolve which users file to run: explicit --users wins, else --dataset preset, else default.
@@ -207,11 +232,43 @@ def main() -> None:
         if canonical_schema.is_file():
             os.environ["HYBRID_PREF_SCHEMA_PATH"] = str(canonical_schema)
 
+    # ── Live-jobs preflight: fail fast with actionable messages, and pick the Mongo prefilter mode
+    # BEFORE app.config is imported (config reads JOBS_RETRIEVAL_FILTER at import time). ──
+    if USE_LIVE_JOBS:
+        import importlib.util
+
+        if importlib.util.find_spec("motor") is None:
+            print("ERROR: --live-jobs needs the 'motor' MongoDB driver. Install it:\n"
+                  "    pip install motor", file=sys.stderr)
+            sys.exit(1)
+        mongo_url = (os.getenv("MONGO_URL") or "").strip()
+        if not mongo_url or mongo_url == "mongodb://localhost:27017":
+            print(
+                "ERROR: --live-jobs needs a real MONGO_URL. Put your credentials in backend/.env:\n"
+                f"  (current MONGO_URL={mongo_url!r} — placeholder/unset)\n"
+                "    MONGO_URL=mongodb+srv://<user>:<password>@<cluster-host>/?retryWrites=true&w=majority\n"
+                "    MONGO_DB_NAME=<database name>\n"
+                "    MONGO_JOBS_COLLECTION=<jobs collection>   # default: RankedJobsEnriched\n"
+                "  For Atlas TLS, also set:  MONGO_TLS_CA_FILE=certifi",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # Full active corpus by default; opt into the per-user location prefilter with the flag
+        # (or by setting JOBS_RETRIEVAL_FILTER explicitly in the environment / .env).
+        if args.jobs_location_filter:
+            os.environ["JOBS_RETRIEVAL_FILTER"] = "true"
+        elif "JOBS_RETRIEVAL_FILTER" not in os.environ:
+            os.environ["JOBS_RETRIEVAL_FILTER"] = "false"
+        # Log the host only (split off any user:pass@ credentials) so secrets never hit the console.
+        _host = mongo_url.split("@")[-1].split("/")[0][:60]
+        print(f"LIVE JOBS: MongoDB host={_host}  db={os.getenv('MONGO_DB_NAME')!r}  "
+              f"collection={os.getenv('MONGO_JOBS_COLLECTION') or 'RankedJobsEnriched'!r}  "
+              f"JOBS_RETRIEVAL_FILTER={os.getenv('JOBS_RETRIEVAL_FILTER')}", file=sys.stderr)
+
     # ── 3. Import app modules (order mirrors run_local.py: config & scorers first for DLL load order) ──
     # NOTE: we deliberately do NOT import app.routes — it pulls in fastapi (not installed in this
-    # env, and not part of the algorithm). Instead we replicate the /match_v4 route body verbatim
-    # around the real service function + the same Pydantic response model, so the matching code path
-    # is identical to production.
+    # env, and not part of the algorithm). Instead we call run_match_v4_full (the exact function the
+    # route calls) and wrap with the same MatchResponse model, so the code path is identical to prod.
     sys.path.insert(0, str(BACKEND_ROOT))
     try:
         import app.config  # noqa: F401  (must precede skill/preference scorers for DLL load order)
@@ -228,36 +285,41 @@ def main() -> None:
     import app.services.preference_score  # noqa: F401
     import app.services.demand_score  # noqa: F401
     import app.services.skill_score  # noqa: F401
-    from app.config import COSINE_CROSS_ENCODER_RETRIEVE_TOP_K, FINAL_SCORE_COMBINER, PREFERENCE_SCORER_MODE
-    from app.services.cross_encoder.gemini_embeddings import EMBEDDING_DIM
-    from app.services.match_concat_gemini_ce_preference_service import (
-        run_match_concat_gemini_ce_with_preferences,
+    from app.config import (
+        COSINE_CROSS_ENCODER_RETRIEVE_TOP_K, FINAL_SCORE_COMBINER, PREFERENCE_SCORER_MODE,
+        MATCH_TOP_K_SKILL_GAPS, MATCH_V4_TOP_K_OCCUPATIONS, MATCH_V4_OCC_DEMAND_GAMMA,
     )
-    from app.schemas import MatchRequest, MatchConcatGeminiCeResponse
+    from app.services.cross_encoder.gemini_embeddings import EMBEDDING_DIM
+    from app.services.match_v4_full_service import run_match_v4_full
+    from app.services.education_eligibility import job_requires_post_secondary, user_lacks_post_secondary
+    from app.schemas import MatchRequest, MatchResponse
 
-    # ── 4. Patch the Mongo job loader to serve the local corpus (full active set; ignore users=) ──
-    jobs = _load_jobs(args.jobs)
-    jobs_timing = {
-        "mongo_ranked_find_ms": 0.0,
-        "python_build_jobs_ms": 0.0,
-        "n_ranked_raw": len(jobs),
-        "n_jobs": len(jobs),
-        "n_skipped_inactive": 0,
-        "get_all_jobs_total_ms": 0.0,
-        "jobs_retrieval_filter_applied": False,  # offline: no per-user location prefilter
-        "jobs_find_use_projection": False,
-        "source": "local_json",
-        "path": str(args.jobs.resolve()),
-    }
+    # ── 4. Job source. Offline (default): patch the Mongo job loader to serve the local JSON corpus
+    # (full active set; ignore users=). Live (--live-jobs): leave app.database's real Mongo-backed
+    # loader in place — no patching. Either way the run goes through db_module.get_all_jobs_with_timing. ──
+    if not USE_LIVE_JOBS:
+        jobs = _load_jobs(args.jobs)
+        jobs_timing = {
+            "mongo_ranked_find_ms": 0.0,
+            "python_build_jobs_ms": 0.0,
+            "n_ranked_raw": len(jobs),
+            "n_jobs": len(jobs),
+            "n_skipped_inactive": 0,
+            "get_all_jobs_total_ms": 0.0,
+            "jobs_retrieval_filter_applied": False,  # offline: no per-user location prefilter
+            "jobs_find_use_projection": False,
+            "source": "local_json",
+            "path": str(args.jobs.resolve()),
+        }
 
-    async def _get_all_jobs_with_timing(users=None):  # noqa: ANN001 — signature matches production
-        return list(jobs), dict(jobs_timing)
+        async def _get_all_jobs_with_timing(users=None):  # noqa: ANN001 — signature matches production
+            return list(jobs), dict(jobs_timing)
 
-    async def _get_all_jobs(users=None):  # noqa: ANN001
-        return list(jobs)
+        async def _get_all_jobs(users=None):  # noqa: ANN001
+            return list(jobs)
 
-    db_module.get_all_jobs_with_timing = _get_all_jobs_with_timing
-    db_module.get_all_jobs = _get_all_jobs
+        db_module.get_all_jobs_with_timing = _get_all_jobs_with_timing
+        db_module.get_all_jobs = _get_all_jobs
 
     # ── 5. Load + filter users ────────────────────────────────────────────────
     all_users = _load_users_jsonl(args.users)
@@ -306,6 +368,28 @@ def main() -> None:
     retrieve_top_k = args.retrieve_top_k if args.retrieve_top_k is not None else COSINE_CROSS_ENCODER_RETRIEVE_TOP_K
     combiner = args.final_score_combiner if args.final_score_combiner is not None else FINAL_SCORE_COMBINER
 
+    # Validate users once (production parity), then fetch jobs from the active source. Both modes
+    # go through db_module.get_all_jobs_with_timing — offline it's the local JSON closure patched
+    # above; with --live-jobs it's the real Mongo-backed loader. Done before the banner so the
+    # n_jobs count and all downstream lookups reflect the corpus actually used.
+    payload = [MatchRequest(**u) for u in selected]
+    users_dicts = [m.model_dump() for m in payload]
+    t0 = _dt.datetime.now()
+    try:
+        jobs_list, mongo_timing = asyncio.run(db_module.get_all_jobs_with_timing(users=users_dicts))
+    except Exception as e:  # noqa: BLE001 — surface live-DB failures with an actionable hint
+        if USE_LIVE_JOBS:
+            print(
+                f"ERROR: live Mongo job load failed: {e.__class__.__name__}: {e}\n"
+                "  Check MONGO_URL / MONGO_DB_NAME / MONGO_JOBS_COLLECTION in backend/.env, network "
+                "access / Atlas IP allowlist, and TLS (Atlas needs a CA bundle: set "
+                "MONGO_TLS_CA_FILE=certifi).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        raise
+    jobs = jobs_list  # corpus actually used (banner, job_by_uuid lookups, education-gate counts, manifest)
+
     n_complete = sum(1 for r in report if r["kept"])
     print(
         f"dataset={dataset_label}  users_file={args.users.name}  require_bws={bws_decision}",
@@ -322,25 +406,29 @@ def main() -> None:
         file=sys.stderr,
     )
 
-    # ── 6. Run the /match_v4 code path (replicates app.routes.match_v4 body verbatim) ─────────
-    # Production: validate -> model_dump -> get_all_jobs_with_timing -> service -> response model.
-    payload = [MatchRequest(**u) for u in selected]
-    users_dicts = [m.model_dump() for m in payload]
-    t0 = _dt.datetime.now()
-    jobs_list, mongo_timing = asyncio.run(_get_all_jobs_with_timing(users=users_dicts))
-    raw = run_match_concat_gemini_ce_with_preferences(
+    # ── 6. Run the /match_v4 code path — mirrors app.routes.match_v4 EXACTLY ──────────────────
+    # Route body: validate -> model_dump -> (get_all_jobs_with_timing, get_all_occupations_with_timing)
+    # -> attach_occupation_embeddings -> run_match_v4_full -> [MatchResponse(**row)]. We call
+    # run_match_v4_full directly (the same function the live route calls), so opportunities,
+    # occupations (with demand-gamma + per-user location filter + top-k), and skill-gaps are all
+    # produced identically to what /match_v4 consumers receive. Occupations load from local resource
+    # files via app.database, so this works in both offline and --live-jobs modes. (users_dicts built
+    # and jobs fetched above so the banner's n_jobs is accurate.)
+    occ_corpus, _occ_timing = asyncio.run(db_module.get_all_occupations_with_timing())
+    occ_corpus = db_module.attach_occupation_embeddings(occ_corpus)
+    raw = run_match_v4_full(
         users_dicts,
         jobs_list,
+        occ_corpus,
         retrieve_top_k=retrieve_top_k,
         final_top_k=args.final_top_k,
-        mongo_timing=mongo_timing,
         final_score_combiner=combiner,
+        skill_gap_top_k=MATCH_TOP_K_SKILL_GAPS,
+        mongo_timing=mongo_timing,
     )
-    responses = [MatchConcatGeminiCeResponse(**row) for row in raw]
-    wall_s = (_dt.datetime.now() - t0).total_seconds()
-
-    # response_model objects -> plain dicts
+    responses = [MatchResponse(**row) for row in raw]
     resp_dicts = [r.model_dump() if hasattr(r, "model_dump") else dict(r) for r in responses]
+    wall_s = (_dt.datetime.now() - t0).total_seconds()
 
     # ── 7. Write outputs ──────────────────────────────────────────────────────
     ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -351,55 +439,264 @@ def main() -> None:
         json.dumps(resp_dicts, indent=2, default=str, ensure_ascii=False), encoding="utf-8"
     )
 
-    # Flat CSV for quick correctness/completeness scanning.
-    csv_path = out_dir / "recommendations.csv"
-    csv_cols = [
-        "user_id", "rank", "rank_cosine", "job_uuid", "opportunity_title", "employer", "location",
-        "concat_cosine_similarity", "cross_encoder_score", "u_hat", "p_hat", "final_score",
+    # Lookups for joining recs back to source item dicts + the validated user dicts.
+    job_by_uuid = {str(j.get("uuid")): j for j in jobs}
+    occ_by_uuid = {str(o.get("uuid")): o for o in occ_corpus}
+    user_by_id = {str(u.get("user_id") or ""): u for u in users_dicts}
+
+    def _fmt_user_skills(u: dict) -> str:
+        parts = []
+        for s in ((u.get("skills_vector") or {}).get("top_skills")) or []:
+            label = s.get("preferredLabel") or s.get("originUUID") or ""
+            prof = s.get("proficiency")
+            parts.append(f"{label} ({prof})" if prof is not None else str(label))
+        return " | ".join(parts)
+
+    def _fmt_item_skills(skills: list) -> str:
+        return " | ".join(str(s.get("label") or s.get("id") or "") for s in (skills or []))
+
+    def _join(xs) -> str:
+        return " | ".join(str(x) for x in (xs or []))
+
+    PREF_KEYS = [
+        "earnings_per_month", "task_content", "physical_demand", "work_flexibility",
+        "social_interaction", "career_growth", "social_meaning",
     ]
+
+    def _sb(rec: dict, key: str):
+        """Pull a field from the rich MatchResponse row's score_breakdown (u_hat/p_hat/demand live there)."""
+        return (rec.get("score_breakdown") or {}).get(key)
+
+    def _user_vec_cols(u: dict) -> dict:
+        pv = u.get("preference_vector") or {}
+        cols = {
+            "user_top_skills": _fmt_user_skills(u),
+            "user_skill_groups_origin_uuids": _join(u.get("skill_groups_origin_uuids")),
+            "user_bws_scores": json.dumps(pv.get("bws_scores") or {}, ensure_ascii=False),
+            "user_top_10_bws": _join(pv.get("top_10_bws")),
+        }
+        for k in PREF_KEYS:
+            cols[f"user_pref_{k}"] = pv.get(k)
+        return cols
+
+    # ── 7a. Opportunities (jobs): flat CSV + detailed CSV with vectors ──
+    opp_base_cols = [
+        "user_id", "rank", "job_uuid", "opportunity_title", "employer", "location",
+        "is_eligible", "u_hat", "p_hat", "final_score", "demand_label",
+    ]
+
+    def _opp_base_row(uid, rec):
+        return {
+            "user_id": uid,
+            "rank": rec.get("rank"),
+            "job_uuid": rec.get("uuid"),
+            "opportunity_title": rec.get("opportunity_title"),
+            "employer": rec.get("employer"),
+            "location": rec.get("location"),
+            "is_eligible": rec.get("is_eligible"),
+            "u_hat": _sb(rec, "u_hat"),
+            "p_hat": _sb(rec, "p_hat"),
+            "final_score": rec.get("final_score"),
+            "demand_label": _sb(rec, "demand_label"),
+        }
+
+    csv_path = out_dir / "recommendations.csv"
     n_rows = 0
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=csv_cols)
+        w = csv.DictWriter(f, fieldnames=opp_base_cols)
         w.writeheader()
         for resp in resp_dicts:
             uid = resp.get("user_id")
-            for rec in resp.get("concat_gemini_ce_recommendations") or []:
-                w.writerow({
-                    "user_id": uid,
-                    "rank": rec.get("rank"),
-                    "rank_cosine": rec.get("rank_cosine"),
-                    "job_uuid": rec.get("job_uuid"),
-                    "opportunity_title": rec.get("opportunity_title"),
-                    "employer": rec.get("employer"),
-                    "location": rec.get("location"),
-                    "concat_cosine_similarity": rec.get("concat_cosine_similarity"),
-                    "cross_encoder_score": rec.get("cross_encoder_score"),
-                    "u_hat": rec.get("u_hat"),
-                    "p_hat": rec.get("p_hat"),
-                    "final_score": rec.get("final_score"),
-                })
+            for rec in resp.get("opportunity_recommendations") or []:
+                w.writerow(_opp_base_row(uid, rec))
                 n_rows += 1
 
+    vec_csv_path = out_dir / "recommendations_with_vectors.csv"
+    vec_cols = (
+        opp_base_cols
+        + ["user_top_skills", "user_skill_groups_origin_uuids"]
+        + [f"user_pref_{k}" for k in PREF_KEYS]
+        + ["user_bws_scores", "user_top_10_bws"]
+        + ["job_essential_skills", "job_optional_skills", "job_skill_groups_origin_uuids", "job_attributes"]
+    )
+    n_vec_rows = 0
+    with open(vec_csv_path, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=vec_cols)
+        w.writeheader()
+        for resp in resp_dicts:
+            uid = resp.get("user_id")
+            uc = _user_vec_cols(user_by_id.get(str(uid or "")) or {})
+            for rec in resp.get("opportunity_recommendations") or []:
+                j = job_by_uuid.get(str(rec.get("uuid") or "")) or {}
+                w.writerow({
+                    **_opp_base_row(uid, rec),
+                    "job_essential_skills": _fmt_item_skills(j.get("essential_skills")),
+                    "job_optional_skills": _fmt_item_skills(j.get("optional_skills")),
+                    "job_skill_groups_origin_uuids": _join(j.get("skill_groups_origin_uuids")),
+                    "job_attributes": json.dumps(j.get("attributes") or {}, ensure_ascii=False),
+                    **uc,
+                })
+                n_vec_rows += 1
+
+    # ── 7b. Careers (occupations): flat CSV + detailed CSV with vectors ──
+    career_base_cols = [
+        "user_id", "rank", "occupation_uuid", "occupation_code", "occupation_label", "province",
+        "is_eligible", "u_hat", "p_hat", "final_score", "demand_label", "salary_range",
+    ]
+
+    def _career_base_row(uid, rec):
+        return {
+            "user_id": uid,
+            "rank": rec.get("rank"),
+            "occupation_uuid": rec.get("uuid"),
+            "occupation_code": rec.get("originUuid"),
+            "occupation_label": rec.get("occupation_label"),
+            "province": rec.get("province"),
+            "is_eligible": rec.get("is_eligible"),
+            "u_hat": _sb(rec, "u_hat"),
+            "p_hat": _sb(rec, "p_hat"),
+            "final_score": rec.get("final_score"),
+            "demand_label": _sb(rec, "demand_label"),
+            "salary_range": rec.get("salary_range"),
+        }
+
+    career_csv_path = out_dir / "career_recommendations.csv"
+    n_career_rows = 0
+    with open(career_csv_path, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=career_base_cols)
+        w.writeheader()
+        for resp in resp_dicts:
+            uid = resp.get("user_id")
+            for rec in resp.get("occupation_recommendations") or []:
+                w.writerow(_career_base_row(uid, rec))
+                n_career_rows += 1
+
+    career_vec_csv_path = out_dir / "career_recommendations_with_vectors.csv"
+    career_vec_cols = (
+        career_base_cols
+        + ["user_top_skills", "user_skill_groups_origin_uuids"]
+        + [f"user_pref_{k}" for k in PREF_KEYS]
+        + ["user_bws_scores", "user_top_10_bws"]
+        + ["occupation_essential_skills", "occupation_optional_skills",
+           "occupation_skill_groups_origin_uuids", "occupation_attributes",
+           "occupation_requires_post_secondary"]
+    )
+    n_career_vec_rows = 0
+    with open(career_vec_csv_path, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=career_vec_cols)
+        w.writeheader()
+        for resp in resp_dicts:
+            uid = resp.get("user_id")
+            uc = _user_vec_cols(user_by_id.get(str(uid or "")) or {})
+            for rec in resp.get("occupation_recommendations") or []:
+                occ = occ_by_uuid.get(str(rec.get("uuid") or "")) or {}
+                w.writerow({
+                    **_career_base_row(uid, rec),
+                    "occupation_essential_skills": _fmt_item_skills(occ.get("essential_skills")),
+                    "occupation_optional_skills": _fmt_item_skills(occ.get("optional_skills")),
+                    "occupation_skill_groups_origin_uuids": _join(occ.get("skill_groups_origin_uuids")),
+                    "occupation_attributes": json.dumps(occ.get("attributes") or {}, ensure_ascii=False),
+                    "occupation_requires_post_secondary": occ.get("requires_post_secondary"),
+                    **uc,
+                })
+                n_career_vec_rows += 1
+
+    # ── 7c. Skill-gap recommendations (Node2Vec; same as /match_v4) ──
+    sg_csv_path = out_dir / "skill_gap_recommendations.csv"
+    sg_cols = ["user_id", "skill_id", "skill_label", "proximity_score", "job_unlock_count", "combined_score", "reasoning"]
+    n_sg_rows = 0
+    with open(sg_csv_path, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=sg_cols)
+        w.writeheader()
+        for resp in resp_dicts:
+            uid = resp.get("user_id")
+            for sg in resp.get("skill_gap_recommendations") or []:
+                row = {"user_id": uid}
+                row.update({k: sg.get(k) for k in sg_cols[1:]})
+                w.writerow(row)
+                n_sg_rows += 1
+
     per_user_counts = {
-        resp.get("user_id"): len(resp.get("concat_gemini_ce_recommendations") or [])
+        resp.get("user_id"): len(resp.get("opportunity_recommendations") or [])
+        for resp in resp_dicts
+    }
+    career_per_user_counts = {
+        resp.get("user_id"): len(resp.get("occupation_recommendations") or [])
+        for resp in resp_dicts
+    }
+    skill_gap_per_user_counts = {
+        resp.get("user_id"): len(resp.get("skill_gap_recommendations") or [])
         for resp in resp_dicts
     }
 
+    # ── 7d. Education-gate observability ──────────────────────────────────────
+    # The post-secondary gate is applied per-user in run_match_concat_gemini_ce (retrieval, before
+    # the top-k cutoff) for BOTH jobs and occupations. Proof: for a user who lacks post-secondary,
+    # the *_requiring_post_secondary counts below should be 0 even though the corpora contain such
+    # items (n_*_requiring_post_secondary > 0). If a corpus count is 0, the gate is inert on this data.
+    n_jobs_requiring_ps = sum(1 for j in jobs if job_requires_post_secondary(j))
+    n_occ_requiring_ps = sum(1 for o in occ_corpus if job_requires_post_secondary(o))
+    education_gate = {
+        "n_jobs_requiring_post_secondary": n_jobs_requiring_ps,
+        "n_occupation_rows_requiring_post_secondary": n_occ_requiring_ps,
+        "note": (
+            "Gate applied per-user in run_match_concat_gemini_ce (retrieval, before top-k), for both "
+            "jobs and occupations. For a lacking user the requiring counts should be 0."
+        ),
+        "per_user": [],
+    }
+    for resp in resp_dicts:
+        uid = str(resp.get("user_id") or "")
+        u = user_by_id.get(uid) or {}
+        opps = resp.get("opportunity_recommendations") or []
+        occs = resp.get("occupation_recommendations") or []
+        n_opp_req = sum(1 for rec in opps if job_requires_post_secondary(job_by_uuid.get(str(rec.get("uuid") or "")) or {}))
+        n_occ_req = sum(1 for rec in occs if job_requires_post_secondary(occ_by_uuid.get(str(rec.get("uuid") or "")) or {}))
+        education_gate["per_user"].append({
+            "user_id": uid,
+            "any_post_secondary_educ": u.get("any_post_secondary_educ"),
+            "lacks_post_secondary": user_lacks_post_secondary(u),
+            "n_opportunities": len(opps),
+            "n_opportunities_requiring_post_secondary": n_opp_req,
+            "n_occupations": len(occs),
+            "n_occupations_requiring_post_secondary": n_occ_req,
+        })
+    print(
+        f"education_gate: {n_jobs_requiring_ps} jobs / {n_occ_requiring_ps} occupation-rows require "
+        f"post-secondary; {sum(1 for p in education_gate['per_user'] if p['lacks_post_secondary'])} of "
+        f"{len(education_gate['per_user'])} users lack it",
+        file=sys.stderr,
+    )
+
     manifest = {
         "endpoint": "/match_v4",
+        "engine": "run_match_v4_full (identical to the live POST /match_v4 route)",
         "generated_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "wall_seconds": round(wall_s, 2),
         "data": {
             "dataset": dataset_label,
-            "jobs_path": str(args.jobs.resolve()),
+            "jobs_source": "live_mongo" if USE_LIVE_JOBS else "local_json",
+            "jobs_path": (
+                f"mongo://{os.getenv('MONGO_DB_NAME')}/{os.getenv('MONGO_JOBS_COLLECTION') or 'RankedJobsEnriched'}"
+                if USE_LIVE_JOBS else str(args.jobs.resolve())
+            ),
             "users_path": str(args.users.resolve()),
             "n_jobs": len(jobs),
-            "job_loader": "local_json (full active corpus; users= location prefilter intentionally ignored)",
+            "n_occupation_rows_corpus": len(occ_corpus),
+            "job_loader": (
+                f"live_mongo (app.database.get_all_jobs_with_timing; JOBS_RETRIEVAL_FILTER={os.getenv('JOBS_RETRIEVAL_FILTER')})"
+                if USE_LIVE_JOBS else
+                "local_json (full active corpus; users= location prefilter intentionally ignored)"
+            ),
+            "mongo_timing": mongo_timing,
         },
         "config": {
             "preference_scorer_mode": PREFERENCE_SCORER_MODE,
             "retrieve_top_k": retrieve_top_k,
             "final_top_k": args.final_top_k,
+            "occupation_top_k": MATCH_V4_TOP_K_OCCUPATIONS,
+            "occupation_demand_gamma": MATCH_V4_OCC_DEMAND_GAMMA,
+            "skill_gap_top_k": MATCH_TOP_K_SKILL_GAPS,
             "final_score_combiner": combiner,
             "gemini_user_embed_dim": EMBEDDING_DIM,
             "cross_encoder_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
@@ -418,12 +715,27 @@ def main() -> None:
         "output": {
             "response_json": str((out_dir / "match_v4_response.json").resolve()),
             "recommendations_csv": str(csv_path.resolve()),
+            "recommendations_with_vectors_csv": str(vec_csv_path.resolve()),
             "n_recommendation_rows": n_rows,
             "recommendations_per_user": per_user_counts,
+            "career_recommendations_csv": str(career_csv_path.resolve()),
+            "career_recommendations_with_vectors_csv": str(career_vec_csv_path.resolve()),
+            "n_career_recommendation_rows": n_career_rows,
+            "career_recommendations_per_user": career_per_user_counts,
+            "skill_gap_recommendations_csv": str(sg_csv_path.resolve()),
+            "n_skill_gap_rows": n_sg_rows,
+            "skill_gaps_per_user": skill_gap_per_user_counts,
         },
+        "education_gate": education_gate,
         "caveats": [
+            "Drives run_match_v4_full directly — same engine, scoring, occupation demand-gamma + per-user location filter, top-k, and skill-gaps as the deployed POST /match_v4. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ.",
             "Job vectors come from each job's 3072-dim 'job_embedding' (stage-1 fallback); same space as gemini-embedding-001.",
-            "Offline job loader returns the full active corpus and ignores per-user location prefilter (users have city='Unknown').",
+            (
+                "Live Mongo loader: jobs read from MONGO_JOBS_COLLECTION; JOBS_RETRIEVAL_FILTER "
+                "controls the per-user location prefilter (off here unless --jobs-location-filter)."
+                if USE_LIVE_JOBS else
+                "Offline job loader returns the full active corpus and ignores per-user location prefilter (users have city='Unknown')."
+            ),
             "Cross-encoder downloads from HuggingFace on first run unless HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE are set.",
         ],
     }
@@ -433,10 +745,19 @@ def main() -> None:
 
     print(f"\nWrote outputs to {out_dir}", file=sys.stderr)
     print(f"  match_v4_response.json  ({len(resp_dicts)} users)", file=sys.stderr)
-    print(f"  recommendations.csv     ({n_rows} rows)", file=sys.stderr)
+    print(f"  recommendations.csv               ({n_rows} opportunity rows)", file=sys.stderr)
+    print(f"  recommendations_with_vectors.csv  ({n_vec_rows} rows)", file=sys.stderr)
+    print(f"  career_recommendations.csv               ({n_career_rows} occupation rows)", file=sys.stderr)
+    print(f"  career_recommendations_with_vectors.csv  ({n_career_vec_rows} rows)", file=sys.stderr)
+    print(f"  skill_gap_recommendations.csv     ({n_sg_rows} rows)", file=sys.stderr)
     print(f"  manifest.json", file=sys.stderr)
-    for uid, c in per_user_counts.items():
-        print(f"    {uid}: {c} recommendations", file=sys.stderr)
+    for uid in per_user_counts:
+        print(
+            f"    {uid}: {per_user_counts[uid]} opportunities, "
+            f"{career_per_user_counts.get(uid, 0)} careers, "
+            f"{skill_gap_per_user_counts.get(uid, 0)} skill-gaps",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":
