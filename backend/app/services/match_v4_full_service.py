@@ -67,6 +67,10 @@ def _enriched_recs(
     dict with city/province/location) overrides which location to filter by WITHOUT changing the
     ``user`` whose preferences drive ``u_hat`` — used for the random-county fallback. For
     occupations this keeps one row/code (a single county) with that county's attributes.
+
+    Note: the post-secondary education gate is already applied upstream in
+    ``run_match_concat_gemini_ce`` (it skips ineligible items before the top-k cutoff), so no
+    education filtering is needed here.
     """
     ce_http = (v3_row or {}).get("concat_gemini_ce_recommendations") or []
     if location_filter and ce_http:

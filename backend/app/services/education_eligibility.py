@@ -20,22 +20,61 @@ Fail-open by design — only positive evidence excludes:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+
+def _coerce_flag(val: Any) -> Optional[bool]:
+    """Normalise a binary flag that may arrive as bool, int (0/1), float, or string.
+
+    Both the job side (``requires_post_secondary``) and the user side
+    (``any_post_secondary_educ``) may be stored as a boolean (``true``/``false``) OR as an
+    integer (``1``/``0``), depending on the producer. This collapses both representations:
+
+    * Returns ``True``  for ``True`` / ``1`` / ``"1"`` / ``"true"`` / ``"yes"``.
+    * Returns ``False`` for ``False`` / ``0`` / ``"0"`` / ``"false"`` / ``"no"`` / ``""``.
+    * Returns ``None`` for missing/unrecognised values (e.g. ``None`` or a stray ``2``),
+      so callers can apply their own fail-open default rather than guessing.
+    """
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        if val == 1:
+            return True
+        if val == 0:
+            return False
+        return None
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in ("1", "true", "yes", "y", "t"):
+            return True
+        if s in ("0", "false", "no", "n", "f", ""):
+            return False
+    return None
 
 
 def job_requires_post_secondary(job: Dict[str, Any]) -> bool:
-    """True only when the job explicitly requires post-secondary education."""
+    """True only when the job explicitly requires post-secondary education.
+
+    Accepts the flag as bool or int (``true``/``1`` => requires), at the top level or nested
+    under ``attributes``. Anything else (absent / unrecognised) is treated as "not required"
+    so a job is never hidden for lacking the field.
+    """
     val = job.get("requires_post_secondary")
     if val is None:
         attrs = job.get("attributes")
         if isinstance(attrs, dict):
             val = attrs.get("requires_post_secondary")
-    return val is True or val == 1
+    return _coerce_flag(val) is True
 
 
 def user_lacks_post_secondary(user: Dict[str, Any]) -> bool:
-    """True only when the user explicitly reported no post-secondary education (``== 0``)."""
-    return user.get("any_post_secondary_educ") == 0
+    """True only when the user explicitly reported no post-secondary education.
+
+    Accepts the flag as bool or int (``false``/``0`` => lacks). A stray/unknown value or an
+    absent field is NOT treated as lacking here — but note ``MatchRequest`` defaults
+    ``any_post_secondary_educ`` to ``0``, so an omitted field becomes "lacks" after validation.
+    """
+    return _coerce_flag(user.get("any_post_secondary_educ")) is False
 
 
 def is_education_eligible(user: Dict[str, Any], job: Dict[str, Any]) -> bool:
