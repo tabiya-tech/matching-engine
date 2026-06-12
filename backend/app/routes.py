@@ -495,7 +495,7 @@ async def match_v4(
     if DEBUG_MODE:
         print("matching.v4.request=")
         for item in payload:
-            print(item.model_dump_json(indent=2))
+            print(item.model_dump_json())
     try:
         t_req = time.perf_counter()
         if len(payload) > MATCH_V2_MAX_USERS_PER_REQUEST:
@@ -551,9 +551,10 @@ async def match_v4(
             request_total_ms=_ms(t_req),
         )
 
-        print("matching.v4.response=")
-        for _item in out:
-            print(_item.model_dump_json(indent=2))
+        if DEBUG_MODE:
+            print("matching.v4.response=")
+            for _item in out:
+                print(_item.model_dump_json())
 
         return out
 
