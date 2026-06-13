@@ -11,5 +11,6 @@ backend/scripts/
 backend/tests/
 output_results/
 output_results_*
+backend/runs/
 index_based_matching/
 *.iml

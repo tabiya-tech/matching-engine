@@ -22,6 +22,10 @@ import numpy as np
 from app.config import (
     CROSS_ENCODER_BATCH_SIZE,
     CROSS_ENCODER_MODEL_NAME,
+    V4_FULL_CONCAT_WHITENING_PATH,
+    V4_FULL_EMBEDDING_MODEL_PATH,
+    V4_FULL_RANK_DEMOTE,
+    V4_FULL_WHITENED_GATE,
 )
 from app.services.cross_encoder.concat_embedding_text import (
     user_concat_embedding_text,
@@ -63,6 +67,73 @@ def _get_matcher() -> CosineSkillMatcher:
     return _matcher_instance
 
 
+_v4_matcher_lock = threading.Lock()
+_v4_matcher_instance: Optional[CosineSkillMatcher] = None
+
+
+def _get_v4_matcher() -> CosineSkillMatcher:
+    """v4-only matcher backed by the WHITENED skill artifact (de-anisotropised + rescaled). Separate
+    singleton from ``_get_matcher`` so the per-skill GATE in /match_v4 is fixed without changing the
+    shared matcher used by v2/v3 and the retrieval detail."""
+    global _v4_matcher_instance
+    if _v4_matcher_instance is None:
+        with _v4_matcher_lock:
+            if _v4_matcher_instance is None:
+                _v4_matcher_instance = CosineSkillMatcher(model_path=V4_FULL_EMBEDDING_MODEL_PATH)
+    return _v4_matcher_instance
+
+
+_concat_white_lock = threading.Lock()
+_concat_white: Optional[Dict[str, Any]] = None  # {mu,W,target} once loaded; {} if missing/disabled
+
+
+def _get_concat_whitening() -> Optional[Dict[str, Any]]:
+    """Lazy-load the concat-whitening artifact (mu, W=Sigma^-1/2, target) for the Phase-2 whitened
+    p_hat skills-fit. Returns None if the artifact is absent (caller then falls back to the raw cosine)."""
+    global _concat_white
+    if _concat_white is None:
+        with _concat_white_lock:
+            if _concat_white is None:
+                path = V4_FULL_CONCAT_WHITENING_PATH
+                if path and os.path.exists(path):
+                    z = np.load(path)
+                    mu = z["mu"].astype(np.float64)
+                    W = z["W"].astype(np.float64)
+                    target = float(z["target"])
+                    if mu.shape[0] != EMBEDDING_DIM or W.shape[0] != EMBEDDING_DIM or target <= 0:
+                        # Dim/target mismatch (e.g. embedding model changed without rebuilding the
+                        # artifact). Disable rather than risk a mid-request matmul error / bad rescale.
+                        logger.error(
+                            "concat whitening artifact %s incompatible (mu_dim=%d W_dim=%d target=%.4f, "
+                            "expected dim=%d, target>0); whitened p_hat disabled",
+                            path, mu.shape[0], W.shape[0], target, EMBEDDING_DIM,
+                        )
+                        _concat_white = {}
+                    else:
+                        _concat_white = {"mu": mu, "W": W, "target": target}
+                        logger.info("loaded concat whitening artifact %s (target=%.4f)", path, target)
+                else:
+                    logger.warning("concat whitening artifact not found at %s; whitened p_hat disabled", path)
+                    _concat_white = {}
+    return _concat_white or None
+
+
+def whiten_concat_rows(vecs: np.ndarray) -> np.ndarray:
+    """L2-normalise rows, apply the concat whitening ((.-mu)@W), re-normalise -> unit whitened rows.
+    If the artifact is unavailable, returns the L2-normalised rows unchanged."""
+    v = l2_normalize_rows(np.asarray(vecs, dtype=np.float64))
+    cw = _get_concat_whitening()
+    if cw is None:
+        return v
+    return l2_normalize_rows((v - cw["mu"]) @ cw["W"])
+
+
+def concat_rescale_target() -> float:
+    """p99 rescale target for the whitened concat cosine (0.0 if the artifact is unavailable)."""
+    cw = _get_concat_whitening()
+    return cw["target"] if cw else 0.0
+
+
 def _get_reranker() -> CrossEncoderReranker:
     global _reranker_instance
     if _reranker_instance is None:
@@ -84,11 +155,17 @@ def preload_match_v3_models() -> Dict[str, float]:
     t0 = time.perf_counter()
     _get_matcher()
     t1 = time.perf_counter()
+    if V4_FULL_WHITENED_GATE:
+        _get_v4_matcher()  # warm the whitened v4 gate matrix so the first /match_v4 doesn't pay the load
+    if V4_FULL_RANK_DEMOTE:
+        _get_concat_whitening()  # warm the concat-whitening artifact for the Phase-2 whitened p_hat
+    t1b = time.perf_counter()
     _get_reranker()
     t2 = time.perf_counter()
     return {
         "cosine_skill_matcher_ms": (t1 - t0) * 1000.0,
-        "cross_encoder_ms": (t2 - t1) * 1000.0,
+        "v4_whitened_matcher_ms": (t1b - t1) * 1000.0,
+        "cross_encoder_ms": (t2 - t1b) * 1000.0,
     }
 
 

@@ -76,6 +76,7 @@ class ScoreBreakdown(BaseModel):
     # --- Multiplicative (paper-aligned) fields ---
     u_hat: Optional[float] = None
     p_hat: Optional[float] = None
+    p_hat_source: Optional[str] = None  # 'concat_cosine_whitened' when Phase-2 demotion is active
     p_hat_components: Optional[PHatComponents] = None
     # --- Legacy additive fields ---
     total_skill_utility: Optional[float] = None
@@ -86,6 +87,9 @@ class ScoreBreakdown(BaseModel):
     preference_score_legacy: Optional[float] = None
     demand_score: Optional[float] = None
     demand_label: Optional[str] = None
+    # v4 whitened per-skill gate: essential-coverage in [0,1] and the graded badge (strong/partial/weak)
+    essential_coverage: Optional[float] = None
+    skill_match_level: Optional[str] = None
 
 class MatchedSkill(BaseModel):
     job_skill_id: str
@@ -94,6 +98,7 @@ class MatchedSkill(BaseModel):
     best_user_skill_label: Optional[str] = None
     similarity: float
     meets_threshold: bool
+    match_tier: Optional[str] = None  # exact | embedding | none (v4 whitened gate)
 
 class OptionalSkillMatch(BaseModel):
     skill_id: str

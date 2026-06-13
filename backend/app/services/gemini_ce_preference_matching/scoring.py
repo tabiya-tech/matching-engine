@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.preference_score import PreferenceScorer
 from app.services.demand_score import DemandScorer
@@ -192,6 +192,9 @@ def enrich_recommendations_with_preferences(
     final_score_combiner: str | None = None,
     include_demand: bool = False,
     demand_gamma: float = 0.0,
+    p_hat_by_uuid: Optional[Dict[str, float]] = None,
+    coverage_by_uuid: Optional[Dict[str, float]] = None,
+    coverage_gamma: float = 0.0,
 ) -> list[Dict[str, Any]]:
     """
     Stage 3 only: compute u_hat per job, p_hat from stage 1–2 cosine, re-rank by u_hat × p_hat.
@@ -218,6 +221,11 @@ def enrich_recommendations_with_preferences(
         else:
             pref = calc(user, job)
         p_hat, p_hat_source = p_hat_from_skill_rec(rec)
+        # Phase-2 (V4_FULL_RANK_DEMOTE): override p_hat's skills-fit with the WHITENED+rescaled concat
+        # cosine (de-anisotropised, discriminative). Still in [0,1]; final = u_hat x p_hat unchanged.
+        if p_hat_by_uuid is not None and uid in p_hat_by_uuid:
+            p_hat = max(0.0, min(1.0, float(p_hat_by_uuid[uid])))
+            p_hat_source = "concat_cosine_whitened"
         combiner = (final_score_combiner or FINAL_SCORE_COMBINER).strip().lower()
         final, breakdown = compute_final_score(
             pref, p_hat, p_hat_source=p_hat_source, combiner=combiner
@@ -235,6 +243,20 @@ def enrich_recommendations_with_preferences(
                 breakdown["demand_score"] = round(m, 4)
                 breakdown["demand_label"] = dres.get("label")
                 breakdown["demand_gamma"] = round(float(demand_gamma), 4)
+
+        # Phase-2 achievability demotion: final *= essential_coverage**gamma (both factors in [0,1], so
+        # final stays in range and the combination u_hat x p_hat is preserved — coverage is just an
+        # extra [0,1] factor of p_hat). Demotes high-fit-but-missing-must-haves items (woodworker x dev).
+        if coverage_by_uuid is not None and coverage_gamma > 0:
+            cov = coverage_by_uuid.get(uid)
+            if cov is not None:
+                cov = max(0.0, min(1.0, float(cov)))
+                factor = cov ** coverage_gamma
+                final = final * factor
+                breakdown["final_score"] = round(final, 4)
+                breakdown["essential_coverage"] = round(cov, 4)
+                breakdown["coverage_gamma"] = round(float(coverage_gamma), 4)
+                breakdown["coverage_factor"] = round(factor, 4)
 
         row = dict(rec)
         row["rank_cross_encoder"] = rec.get("rank")
