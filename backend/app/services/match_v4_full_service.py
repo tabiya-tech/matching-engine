@@ -12,13 +12,18 @@ import logging
 import random
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from app.config import (
     FINAL_SCORE_COMBINER,
     MATCH_TOP_K_SKILL_GAPS,
     MATCH_V4_OCC_DEMAND_GAMMA,
     MATCH_V4_TOP_K_OCCUPATIONS,
+    V4_FULL_COVERAGE_GAMMA,
     V4_FULL_MIN_ESS_SHARE,
+    V4_FULL_RANK_DEMOTE,
     V4_FULL_SIM_THRESHOLD,
+    V4_FULL_WHITENED_GATE,
 )
 from app.services import match_v4_formatting as fmt
 from app.services.gemini_ce_preference_matching.match_v3_bridge import v3_recommendation_to_rec
@@ -27,8 +32,12 @@ from app.services.gemini_ce_preference_matching.scoring import (
 )
 from app.services.match_concat_gemini_ce_service import (
     _get_matcher,
+    _get_v4_matcher,
+    _job_stage1_embedding_vector,
+    concat_rescale_target,
     embed_user_unit_vectors,
     run_match_concat_gemini_ce,
+    whiten_concat_rows,
 )
 from app.services.preference_score_v1 import get_preference_scorer
 
@@ -59,6 +68,9 @@ def _user_matches_any_county(user: Dict[str, Any], counties: List[str]) -> bool:
 def _enriched_recs(
     user, v3_row, item_index, pref_scorer, combiner, *, location_filter=True, location_user=None,
     include_demand: bool = False, demand_gamma: float = 0.0,
+    p_hat_by_uuid: Optional[Dict[str, float]] = None,
+    coverage_by_uuid: Optional[Dict[str, float]] = None,
+    coverage_gamma: float = 0.0,
 ) -> List[Dict[str, Any]]:
     """CE recs for one user -> preference-enriched, final-score-sorted recs (rich; with details).
 
@@ -94,6 +106,9 @@ def _enriched_recs(
         final_score_combiner=combiner,
         include_demand=include_demand,
         demand_gamma=demand_gamma,
+        p_hat_by_uuid=p_hat_by_uuid,
+        coverage_by_uuid=coverage_by_uuid,
+        coverage_gamma=coverage_gamma,
     )
 
 
@@ -135,10 +150,38 @@ def run_match_v4_full(
 
     u_norm = embed_user_unit_vectors(users)  # embed users ONCE, reuse for both corpora
     pref_scorer = get_preference_scorer()
-    matcher = _get_matcher()
+    # Per-skill GATE matcher: whitened (default) or — via the kill-switch — the legacy raw matcher.
+    matcher = _get_v4_matcher() if V4_FULL_WHITENED_GATE else _get_matcher()
 
     job_index = _index_by_uuid(jobs)
     occ_index = _index_by_uuid(occupations)
+
+    # Phase-2 (V4_FULL_RANK_DEMOTE) ranking inputs. Snapshot the concat embeddings NOW — retrieval
+    # (run_match_concat_gemini_ce) pops job_embedding off these dicts in place — and whiten the user
+    # vectors once. When the toggle is off these stay empty and ranking is the Phase-1 behaviour.
+    # Safety: if the toggle is on but the concat-whitening artifact is unavailable/incompatible
+    # (target==0), DON'T half-apply Phase 2 (raw p_hat x coverage is count-biased — see notes); fall
+    # back to pure Phase-1 (annotation-only, ranking unchanged) and log loudly.
+    demote_active = V4_FULL_RANK_DEMOTE and concat_rescale_target() > 0
+    if V4_FULL_RANK_DEMOTE and not demote_active:
+        logger.error(
+            "V4_FULL_RANK_DEMOTE is on but the concat-whitening artifact is unavailable; "
+            "falling back to Phase-1 (no demotion, raw p_hat). Build/ship the artifact to enable Phase 2."
+        )
+    job_concat: Dict[str, np.ndarray] = {}
+    occ_concat: Dict[str, np.ndarray] = {}
+    u_white_by_uid: Dict[str, np.ndarray] = {}
+    if demote_active:
+        for j in jobs:
+            v = _job_stage1_embedding_vector(j)
+            if v is not None:
+                job_concat[str(j.get("uuid") or "")] = v
+        for o in occupations:
+            v = _job_stage1_embedding_vector(o)
+            if v is not None:
+                occ_concat[str(o.get("uuid") or "")] = v
+        u_white = whiten_concat_rows(u_norm)
+        u_white_by_uid = {str(u.get("user_id") or ""): u_white[i] for i, u in enumerate(users)}
 
     job_v3 = run_match_concat_gemini_ce(
         users, jobs, retrieve_top_k=retrieve_top_k, final_top_k=final_top_k,
@@ -169,7 +212,8 @@ def run_match_v4_full(
         to id/label mismatches.
         """
         try:
-            per = matcher.score_pair(user, item).get("per_job_skill", []) or []
+            _score = matcher.score_pair_v4 if V4_FULL_WHITENED_GATE else matcher.score_pair
+            per = _score(user, item).get("per_job_skill", []) or []
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("score_pair failed for %s: %s", item.get("uuid"), e)
             per = []
@@ -181,19 +225,62 @@ def run_match_v4_full(
                 ess_ids.add(rid)
         return per, ess_ids
 
+    def _rank_overrides(user, v3_row, item_index, concat_by_uuid, u_white_vec):
+        """Phase-2 per-candidate ranking inputs for one user's shortlist:
+        - p_hat override = whitened+rescaled concat cosine(user, item) in [0,1]
+        - coverage = essential-coverage in [0,1] (drives the achievability demotion)
+        - detail cache {uuid: (per_job_skill, essential_ids)} reused by the formatters (no re-score).
+        """
+        p_over: Dict[str, float] = {}
+        cov_over: Dict[str, float] = {}
+        det_cache: Dict[str, Any] = {}
+        target = concat_rescale_target()
+        ce = (v3_row or {}).get("concat_gemini_ce_recommendations") or []
+        for r in ce:
+            if not isinstance(r, dict):
+                continue
+            uuid = str(r.get("job_uuid") or "")
+            item = item_index.get(uuid)
+            if not item or uuid in det_cache:
+                continue
+            jv = concat_by_uuid.get(uuid)
+            if jv is not None and u_white_vec is not None and target > 0:
+                jw = whiten_concat_rows(jv.reshape(1, -1))[0]
+                cos = float(np.dot(u_white_vec, jw))
+                p_over[uuid] = min(1.0, max(0.0, cos) / target)
+            per, ess_ids = _skill_detail(user, item)
+            det_cache[uuid] = (per, ess_ids)
+            ms = fmt.build_matched_skills(per, ess_ids, sim_threshold=V4_FULL_SIM_THRESHOLD)
+            n_ess = len(item.get("essential_skills") or [])
+            cov_over[uuid] = fmt.essential_coverage(ms["essential_skill_matches"], n_ess)
+        return p_over, cov_over, det_cache
+
     out: List[Dict[str, Any]] = []
+    cov_gamma = V4_FULL_COVERAGE_GAMMA if demote_active else 0.0
     for user in users:
         uid = str(user.get("user_id") or "")
+
+        # Phase-2 ranking overrides (whitened p_hat + coverage demotion); empty dicts when toggle off,
+        # in which case _enriched_recs falls back to the raw concat p_hat with no demotion (Phase 1).
+        job_p, job_cov, job_det = ({}, {}, {})
+        occ_p, occ_cov, occ_det = ({}, {}, {})
+        if demote_active:
+            uw = u_white_by_uid.get(uid)
+            job_p, job_cov, job_det = _rank_overrides(user, job_v3_by_uid.get(uid), job_index, job_concat, uw)
+            occ_p, occ_cov, occ_det = _rank_overrides(user, occ_v3_by_uid.get(uid), occ_index, occ_concat, uw)
 
         # Opportunities. Jobs keep the existing /match_v4 location scoping (Mongo prefilter via
         # get_all_jobs_with_timing(users=...)); no extra python location filter so we don't risk
         # dropping jobs whose location format differs from the user's.
         opportunities: List[Dict[str, Any]] = []
-        for rec in _enriched_recs(user, job_v3_by_uid.get(uid), job_index, pref_scorer, combiner, location_filter=False):
+        for rec in _enriched_recs(
+            user, job_v3_by_uid.get(uid), job_index, pref_scorer, combiner, location_filter=False,
+            p_hat_by_uuid=job_p, coverage_by_uuid=job_cov, coverage_gamma=cov_gamma,
+        ):
             item = job_index.get(str(rec.get("job_uuid") or ""))
             if not item:
                 continue
-            per, ess_ids = _skill_detail(user, item)
+            per, ess_ids = job_det.get(str(rec.get("job_uuid") or "")) or _skill_detail(user, item)
             opportunities.append(
                 fmt.build_opportunity_row(
                     rec, item, per, ess_ids,
@@ -218,6 +305,7 @@ def run_match_v4_full(
         for rec in _enriched_recs(
             user, occ_v3_by_uid.get(uid), occ_index, pref_scorer, combiner, location_user=loc_user,
             include_demand=True, demand_gamma=MATCH_V4_OCC_DEMAND_GAMMA,
+            p_hat_by_uuid=occ_p, coverage_by_uuid=occ_cov, coverage_gamma=cov_gamma,
         ):
             item = occ_index.get(str(rec.get("job_uuid") or ""))
             if not item:
@@ -226,7 +314,7 @@ def run_match_v4_full(
             if not code or code in seen_codes:
                 continue
             seen_codes.add(code)
-            per, ess_ids = _skill_detail(user, item)
+            per, ess_ids = occ_det.get(str(rec.get("job_uuid") or "")) or _skill_detail(user, item)
             occupations_out.append(
                 fmt.build_occupation_row(
                     rec, item, per, ess_ids,

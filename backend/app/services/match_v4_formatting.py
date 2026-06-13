@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.config import V4_FULL_BADGE_PARTIAL, V4_FULL_BADGE_STRONG
 from app.services.demand_score import DemandScorer
 from app.services.preference_score_v1.levels import level_label, load_attribute_schema
 
@@ -78,6 +79,9 @@ def build_matched_skills(
         if not jid:
             continue
         sim = float(r.get("cosine_similarity") or 0.0)
+        exact = bool(r.get("exact"))
+        meets = exact or (sim >= sim_threshold)        # exact-id overlap always counts as "has it"
+        tier = "exact" if exact else ("embedding" if sim >= sim_threshold else "none")
         if jid in essential_ids:
             essential.append(
                 {
@@ -86,10 +90,11 @@ def build_matched_skills(
                     "best_user_skill_id": r.get("best_user_skill_id"),
                     "best_user_skill_label": r.get("best_user_skill_label"),
                     "similarity": round(sim, 4),
-                    "meets_threshold": sim >= sim_threshold,
+                    "meets_threshold": meets,
+                    "match_tier": tier,
                 }
             )
-        elif sim >= sim_threshold:
+        elif meets:
             optional.append({"skill_id": jid, "skill_label": r.get("job_skill_label")})
     return {
         "essential_skill_matches": essential,
@@ -98,16 +103,36 @@ def build_matched_skills(
     }
 
 
-def is_eligible_from_skills(essential_matches: List[dict], *, min_ess_share: float) -> bool:
-    """Eligible if the share of essential skills meeting the threshold >= min_ess_share.
+def essential_coverage(essential_matches: List[dict], n_essential_total: int) -> float:
+    """Share of a job's essential skills the user meets, in [0,1]. Denominator is the job's TOTAL
+    essential count, so unresolved essentials (absent from ``essential_matches``) count as not-met."""
+    n = max(int(n_essential_total or 0), len(essential_matches or []))
+    if n == 0:
+        return 1.0
+    met = sum(1 for m in (essential_matches or []) if m.get("meets_threshold"))
+    return met / n
 
-    No essential skills -> eligible (nothing to gate on). The post-secondary education gate is
-    applied upstream during retrieval, so this is the only skill-side gate here.
+
+def skill_match_level(coverage: float, n_essential_total: int) -> str:
+    """Graded badge from essential-coverage: strong / partial / weak ('unknown' if no essentials)."""
+    if not n_essential_total:
+        return "unknown"
+    if coverage >= V4_FULL_BADGE_STRONG:
+        return "strong"
+    if coverage >= V4_FULL_BADGE_PARTIAL:
+        return "partial"
+    return "weak"
+
+
+def is_eligible_from_skills(
+    essential_matches: List[dict], *, n_essential_total: int, min_ess_share: float
+) -> bool:
+    """Eligible iff essential-coverage >= min_ess_share. No essential skills -> eligible (nothing to
+    gate on). The post-secondary education gate is applied upstream during retrieval.
     """
-    if not essential_matches:
+    if not n_essential_total and not essential_matches:
         return True
-    met = sum(1 for m in essential_matches if m.get("meets_threshold"))
-    return (met / len(essential_matches)) >= min_ess_share
+    return essential_coverage(essential_matches, n_essential_total) >= min_ess_share
 
 
 def _skill_components_from_cosine(
@@ -166,6 +191,7 @@ def _score_breakdown(
     return {
         "u_hat": rec.get("u_hat"),
         "p_hat": rec.get("p_hat"),
+        "p_hat_source": rec.get("p_hat_source"),  # 'concat_cosine_whitened' when Phase-2 demotion is on
         "preference_score": rec.get("u_hat"),
         "preference_score_legacy": sb.get("preference_score_legacy"),
         # v4 cosine approximations of the legacy Node2Vec skill breakdown (all in [0,1];
@@ -315,6 +341,11 @@ def build_opportunity_row(
     matched_skills = build_matched_skills(per_job_skill, essential_ids, sim_threshold=sim_threshold)
     matched_prefs, wa_bws = split_pref_details(rec.get("preference_details"))
     final_score = float(rec.get("final_score") or 0.0)
+    n_ess_total = len(item.get("essential_skills") or [])
+    coverage = essential_coverage(matched_skills["essential_skill_matches"], n_ess_total)
+    sb = _score_breakdown(rec, item, per_job_skill, essential_ids, sim_threshold=sim_threshold)
+    sb["essential_coverage"] = round(coverage, 4)
+    sb["skill_match_level"] = skill_match_level(coverage, n_ess_total)
     return {
         "uuid": item.get("uuid"),
         "originUuid": item.get("originUuid"),
@@ -332,12 +363,14 @@ def build_opportunity_row(
         "required_experience": item.get("required_experience"),
         "closing_date": item.get("closing_date"),
         "posted_date": item.get("posted_date"),
-        "is_eligible": is_eligible_from_skills(matched_skills["essential_skill_matches"], min_ess_share=min_ess_share),
+        "is_eligible": is_eligible_from_skills(
+            matched_skills["essential_skill_matches"], n_essential_total=n_ess_total, min_ess_share=min_ess_share
+        ),
         "justification": _justification(matched_skills, matched_prefs, item),
         "opportunity_description": item.get("opportunity_description") or item.get("contract_type", "full_time"),
         "contract_type": item.get("contract_type"),
         "final_score": round(final_score, 4),
-        "score_breakdown": _score_breakdown(rec, item, per_job_skill, essential_ids, sim_threshold=sim_threshold),
+        "score_breakdown": sb,
         "matched_skills": matched_skills,
         "matched_preferences": matched_prefs,
         "matched_work_activities": wa_bws,
@@ -357,20 +390,27 @@ def build_occupation_row(
     matched_skills = build_matched_skills(per_job_skill, essential_ids, sim_threshold=sim_threshold)
     matched_prefs, wa_bws = split_pref_details(rec.get("preference_details"))
     final_score = float(rec.get("final_score") or 0.0)
+    n_ess_total = len(item.get("essential_skills") or [])
+    coverage = essential_coverage(matched_skills["essential_skill_matches"], n_ess_total)
+    sb = _score_breakdown(rec, item, per_job_skill, essential_ids, sim_threshold=sim_threshold)
+    sb["essential_coverage"] = round(coverage, 4)
+    sb["skill_match_level"] = skill_match_level(coverage, n_ess_total)
     return {
         "uuid": item.get("uuid"),
         "originUuid": item.get("originUuid"),
         "rank": rank,
         "occupation_label": item.get("occupation_label") or item.get("preferredLabel") or "",
         "province": item.get("province"),
-        "is_eligible": is_eligible_from_skills(matched_skills["essential_skill_matches"], min_ess_share=min_ess_share),
+        "is_eligible": is_eligible_from_skills(
+            matched_skills["essential_skill_matches"], n_essential_total=n_ess_total, min_ess_share=min_ess_share
+        ),
         "justification": _justification(matched_skills, matched_prefs, item),
         "occupation_description": item.get("occupation_description") or item.get("description"),
         "salary_range": _salary_range(item),
         "typical_tasks": _typical_tasks(item),
         "career_path_next_steps": [],  # no source in occupation data — see plan
         "final_score": round(final_score, 4),
-        "score_breakdown": _score_breakdown(rec, item, per_job_skill, essential_ids, sim_threshold=sim_threshold),
+        "score_breakdown": sb,
         "matched_skills": matched_skills,
         "matched_preferences": matched_prefs,
         "matched_work_activities": wa_bws,

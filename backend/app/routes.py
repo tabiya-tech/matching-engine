@@ -21,6 +21,8 @@ from app.config import (
     MATCH_V2_HYBRID_TOP_K,
     MATCH_V2_MAX_USERS_PER_REQUEST,
     COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
+    MATCH_V4_RETRIEVE_TOP_K,
+    MATCH_V4_FINAL_TOP_K,
     MATCH_TOP_K_SKILL_GAPS, DEBUG_MODE,
 )
 from app.database import (
@@ -505,8 +507,8 @@ async def match_v4(
             raise HTTPException(status_code=400, detail="Request body must be a non-empty JSON array.")
 
         users = [u.model_dump() for u in payload]
-        rt = retrieve_top_k if retrieve_top_k is not None else COSINE_CROSS_ENCODER_RETRIEVE_TOP_K
-        ft = final_top_k if final_top_k is not None else 30
+        rt = retrieve_top_k if retrieve_top_k is not None else MATCH_V4_RETRIEVE_TOP_K
+        ft = final_top_k if final_top_k is not None else MATCH_V4_FINAL_TOP_K
         combiner = (final_score_combiner or "").strip().lower() or None
         if combiner is not None and combiner not in ("product", "geometric_mean"):
             raise HTTPException(
@@ -630,8 +632,8 @@ async def match_v5(
             raise HTTPException(status_code=400, detail="Request body must be a non-empty JSON array.")
 
         users = [u.model_dump() for u in payload]
-        rt = retrieve_top_k if retrieve_top_k is not None else COSINE_CROSS_ENCODER_RETRIEVE_TOP_K
-        ft = final_top_k if final_top_k is not None else 30
+        rt = retrieve_top_k if retrieve_top_k is not None else MATCH_V4_RETRIEVE_TOP_K
+        ft = final_top_k if final_top_k is not None else MATCH_V4_FINAL_TOP_K
         combiner = (final_score_combiner or "").strip().lower() or None
         if combiner is not None and combiner not in ("product", "geometric_mean"):
             raise HTTPException(

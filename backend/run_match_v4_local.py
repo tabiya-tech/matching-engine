@@ -169,8 +169,8 @@ def main() -> None:
                              f"BWS requirement auto-adapts per dataset unless --require-bws/--no-require-bws is given.")
     parser.add_argument("--jobs", type=Path, default=DEFAULT_JOBS_PATH, help="Jobs JSON array path (shared across datasets)")
     parser.add_argument("--users", type=Path, default=None, help="Users JSONL path (overrides --dataset)")
-    parser.add_argument("--retrieve-top-k", type=int, default=None, help="Stage-1 cosine shortlist (default: env COSINE_CROSS_ENCODER_RETRIEVE_TOP_K)")
-    parser.add_argument("--final-top-k", type=int, default=30, help="Final ranked rows per user (default 30)")
+    parser.add_argument("--retrieve-top-k", type=int, default=None, help="Stage-1 cosine shortlist (default: MATCH_V4_RETRIEVE_TOP_K, the live /match_v4 default)")
+    parser.add_argument("--final-top-k", type=int, default=None, help="Final ranked rows per user / pool sent to whitening (default: MATCH_V4_FINAL_TOP_K, the live /match_v4 default)")
     parser.add_argument("--final-score-combiner", choices=["product", "geometric_mean"], default=None,
                         help="u_hat/p_hat combiner (default: env FINAL_SCORE_COMBINER)")
     parser.add_argument("--preference-scorer-mode", default=None,
@@ -288,6 +288,7 @@ def main() -> None:
     from app.config import (
         COSINE_CROSS_ENCODER_RETRIEVE_TOP_K, FINAL_SCORE_COMBINER, PREFERENCE_SCORER_MODE,
         MATCH_TOP_K_SKILL_GAPS, MATCH_V4_TOP_K_OCCUPATIONS, MATCH_V4_OCC_DEMAND_GAMMA,
+        MATCH_V4_RETRIEVE_TOP_K, MATCH_V4_FINAL_TOP_K,
     )
     from app.services.cross_encoder.gemini_embeddings import EMBEDDING_DIM
     from app.services.match_v4_full_service import run_match_v4_full
@@ -365,7 +366,9 @@ def main() -> None:
         print("No users selected after filtering. Nothing to run.", file=sys.stderr)
         sys.exit(1)
 
-    retrieve_top_k = args.retrieve_top_k if args.retrieve_top_k is not None else COSINE_CROSS_ENCODER_RETRIEVE_TOP_K
+    retrieve_top_k = args.retrieve_top_k if args.retrieve_top_k is not None else MATCH_V4_RETRIEVE_TOP_K
+    if args.final_top_k is None:
+        args.final_top_k = MATCH_V4_FINAL_TOP_K
     combiner = args.final_score_combiner if args.final_score_combiner is not None else FINAL_SCORE_COMBINER
 
     # Validate users once (production parity), then fetch jobs from the active source. Both modes

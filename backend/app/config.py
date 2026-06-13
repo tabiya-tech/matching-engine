@@ -239,11 +239,43 @@ except (ValueError, TypeError, AttributeError):
     DCE_ATTR_SCALE = {}
 
 # --- /match_v4 full-response (MatchResponse via the Gemini-embeddings engine) ---
-# Per-skill cosine threshold used for MatchedSkill.meets_threshold and the is_eligible gate.
-V4_FULL_SIM_THRESHOLD: float = _f("V4_FULL_SIM_THRESHOLD", 0.6)
-# Min share of a job's essential skills meeting the threshold for is_eligible=True.
-# Lenient default (0.0) => every retrieved item is eligible (education gate already applied upstream).
-V4_FULL_MIN_ESS_SHARE: float = _f("V4_FULL_MIN_ESS_SHARE", 0.0)
+# Per-skill threshold for MatchedSkill.meets_threshold / essential-coverage, in the WHITENED+rescaled
+# space (see V4_FULL_EMBEDDING_MODEL_PATH). Calibrate properly (2026-06-11 skill-eligibility notes);
+# ~0.45 separates same-field (~0.6) from unrelated (~0.27) on current data. NOTE: this is the
+# rescaled-whitened scale, NOT the old raw-Gemini cosine — do not reuse the historical 0.6.
+V4_FULL_SIM_THRESHOLD: float = _f("V4_FULL_SIM_THRESHOLD", 0.45)
+# Min essential-coverage (share of a job's essential skills the user meets) for is_eligible=True.
+V4_FULL_MIN_ESS_SHARE: float = _f("V4_FULL_MIN_ESS_SHARE", 0.5)
+# Graded skill-match badge bands on essential-coverage in [0,1] (strong / partial / weak).
+V4_FULL_BADGE_STRONG: float = _f("V4_FULL_BADGE_STRONG", 0.7)
+V4_FULL_BADGE_PARTIAL: float = _f("V4_FULL_BADGE_PARTIAL", 0.4)
+# Kill-switch for /match_v4's per-skill GATE. True (default) = whitened matcher + one-to-one
+# assignment + exact-id (the new meaningful gate). False = revert the per-skill detail to the legacy
+# raw matcher (score_pair, max-over-user, no rescale) — the old saturated behaviour — for fast rollback.
+V4_FULL_WHITENED_GATE: bool = _b("V4_FULL_WHITENED_GATE", True)
+# --- /match_v4 Phase 2: ranking demotion (whitened-concat p_hat + essential-coverage factor) ---
+# Master toggle. True (default) = p_hat's skills-fit is the WHITENED+rescaled concat cosine AND
+# final_score is demoted by essential-coverage**gamma (achievability); final stays u_hat x p_hat.
+# False = Phase-1 behaviour: p_hat is the raw stage-1 concat cosine and the gate is annotation-only
+# (ranking unchanged) — INSTANT ROLLBACK via env V4_FULL_RANK_DEMOTE=false, no redeploy. Whitening is
+# applied in-process to the shortlist only (no corpus/DB migration); v2/v3 + retrieval are untouched.
+V4_FULL_RANK_DEMOTE: bool = _b("V4_FULL_RANK_DEMOTE", True)
+# Demotion strength: p_hat *= essential_coverage ** gamma (0 -> no demotion; 1 -> linear). 1.0 = full
+# achievability ordering (gamma sweep: corr(rank,cov) -0.42, cov@1 0.88, weak items at top ~0). Env-tunable.
+V4_FULL_COVERAGE_GAMMA: float = _f("V4_FULL_COVERAGE_GAMMA", 1.0)
+# Whitening transform for the COMBINED (concat) embedding used by the whitened p_hat skills-fit,
+# built by build_whitened_concat.py (mu, W=Sigma^-1/2, target). Refit on the live corpus for prod.
+V4_FULL_CONCAT_WHITENING_PATH: str = _resolve_under_backend(
+    _s("V4_FULL_CONCAT_WHITENING_PATH", str(_DEFAULT_MODEL_DIR / "concat_whitening_gemini.npz"))
+)
+# /match_v4 shortlist sizing (v4-only; v3/zqf keep COSINE_CROSS_ENCODER_RETRIEVE_TOP_K/30). Stage-1 raw
+# concat cosine is near-uninformative (sd ~0.02), so the meaningful ranking is the WHITENED p_hat +
+# coverage re-rank applied to the final_top_k CE survivors. Widen both so achievable jobs the saturated
+# stage-1 buried can still reach the whitened re-rank: retrieve feeds the CE, final is the pool sent to
+# whitening (and the max opportunities returned). Whitening itself is cheap (shortlist-only matmuls);
+# the cost is CE rerank (~retrieve_top_k) — monitor latency and dial back via env if needed.
+MATCH_V4_RETRIEVE_TOP_K: int = _i("MATCH_V4_RETRIEVE_TOP_K", 100)
+MATCH_V4_FINAL_TOP_K: int = _i("MATCH_V4_FINAL_TOP_K", 50)
 # Top-k occupations returned by /match_v4's full response.
 MATCH_V4_TOP_K_OCCUPATIONS: int = _i("MATCH_V4_TOP_K_OCCUPATIONS", 10)
 # Demand tilt applied to /match_v4 OCCUPATION final_score ONLY (opportunities are never tilted):
@@ -317,6 +349,12 @@ OCCUPATION_JSON_PATH: str = _s("OCCUPATION_JSON_PATH", str(_DEFAULT_OCC))
 
 EMBEDDING_MODEL_PATH: str = _resolve_under_backend(
     _s("EMBEDDING_MODEL_PATH", str(_DEFAULT_MODEL_DIR / "skill_embedding_model_gemini.pt"))
+)
+# /match_v4 per-skill GATE uses the WHITENED skill artifact (de-anisotropised; carries its own
+# rescale target in metadata). Kept separate from the shared EMBEDDING_MODEL_PATH so v2/v3 + the
+# Node2Vec/skill-gap/hybrid paths are untouched.
+V4_FULL_EMBEDDING_MODEL_PATH: str = _resolve_under_backend(
+    _s("V4_FULL_EMBEDDING_MODEL_PATH", str(_DEFAULT_MODEL_DIR / "skill_embedding_model_gemini_whitened.pt"))
 )
 SKILL_TO_ROW_PATH: str = _resolve_under_backend(
     _s("SKILL_TO_ROW_PATH", str(_DEFAULT_MODEL_DIR / "skill_to_row.json"))
