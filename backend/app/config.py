@@ -71,6 +71,10 @@ JOBS_RETRIEVAL_LIMIT: int = _i("JOBS_RETRIEVAL_LIMIT", 10_000)
 # Mongo find() inclusion projection (fields used by build_job_dict_from_ranked). Set 0 to load full documents.
 JOBS_FIND_USE_PROJECTION: bool = _b("JOBS_FIND_USE_PROJECTION", True)
 
+# GET /jobs cursor-paginated browse endpoint: default and hard-cap page sizes.
+JOBS_PAGE_DEFAULT_LIMIT: int = _i("JOBS_PAGE_DEFAULT_LIMIT", 20)
+JOBS_PAGE_MAX_LIMIT: int = _i("JOBS_PAGE_MAX_LIMIT", 100)
+
 
 # ---------------------------------------------------------------------------
 # Modes

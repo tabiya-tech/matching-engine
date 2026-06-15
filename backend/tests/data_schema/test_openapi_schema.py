@@ -6,6 +6,7 @@ If a router registration breaks, the endpoint silently vanishes.
 
 EXPECTED_ENDPOINTS = {
     "/health": "get",
+    "/jobs": "get",
     "/match": "post",
     "/experiments/v2/match": "post",
     "/experiments/v3/match": "post",
@@ -13,11 +14,11 @@ EXPECTED_ENDPOINTS = {
     "/experiments/v5/match": "post",
 }
 
-AUTH_REQUIRED_PATHS = {"/health", "/match"}
+AUTH_REQUIRED_PATHS = {"/health", "/jobs", "/match"}
 
 
 class TestOpenAPIEndpoints:
-    """All 6 endpoints must be registered with correct HTTP methods."""
+    """All registered endpoints must be present with correct HTTP methods."""
 
     def test_all_endpoints_registered(self, test_client):
         resp = test_client.get("/openapi.json")

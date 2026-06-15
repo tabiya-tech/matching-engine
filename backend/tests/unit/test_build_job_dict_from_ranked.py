@@ -228,6 +228,47 @@ class TestEmbeddingPassthrough:
         assert job["concat_skill_embedding_gemini"] is gem
 
 
+class TestCompassConsumerContractFields:
+    """Fields added for the Compass jobs board: category, source_platform, skills."""
+
+    def test_category_prefers_explicit_field(self):
+        doc = _base_doc()
+        doc["classifier_metadata"]["category"] = "Healthcare"
+        job = build_job_dict_from_ranked(doc)
+        assert job["category"] == "Healthcare"
+
+    def test_category_falls_back_to_sector_then_isco_group(self):
+        doc = _base_doc()
+        doc["classifier_metadata"]["sector"] = "Tech sector"
+        job = build_job_dict_from_ranked(doc)
+        assert job["category"] == "Tech sector"
+
+        doc = _base_doc()  # no category, no sector → ISCO group label
+        job = build_job_dict_from_ranked(doc)
+        assert job["category"] == "Software developers"
+
+    def test_source_platform_candidate_fields(self):
+        doc = _base_doc()
+        doc["classifier_metadata"]["source"] = "BrighterMonday"
+        job = build_job_dict_from_ranked(doc)
+        assert job["source_platform"] == "BrighterMonday"
+
+    def test_skills_flattens_essential_then_optional_deduped(self):
+        doc = _base_doc()
+        doc["llm_classified_skills"] = {
+            "essential": [
+                {"tabiya_skill_id": "s1", "label": "Python"},
+                {"tabiya_skill_id": "s2", "label": "SQL"},
+            ],
+            "optional": [
+                {"tabiya_skill_id": "s3", "label": "SQL"},  # duplicate label dropped
+                {"tabiya_skill_id": "s4", "label": "Docker"},
+            ],
+        }
+        job = build_job_dict_from_ranked(doc)
+        assert job["skills"] == ["Python", "SQL", "Docker"]
+
+
 class TestClassifierMetadataHappyPath:
     """1:1 passthrough fields — one test avoids per-field duplication."""
 

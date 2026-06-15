@@ -1,12 +1,18 @@
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Optional, Sequence
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from bson import ObjectId
+from bson.errors import InvalidId
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ASCENDING, DESCENDING, IndexModel
 from dotenv import load_dotenv
 
 from app.config import (
@@ -17,6 +23,7 @@ from app.config import (
     OCCUPATION_CONCAT_EMBEDDINGS_PATH,
     OCCUPATION_JSON_PATH,
 )
+from app.schemas import JobsStats, JobListItem
 
 load_dotenv()
 
@@ -257,6 +264,13 @@ RANKED_JOB_FIND_PROJECTION: Dict[str, int] = {
     "classifier_metadata.date_posted": 1,
     "classifier_metadata.isco_occupation_group": 1,
     "classifier_metadata.isco_occupation_group_id": 1,
+    # Compass jobs-board consumer contract: sector/category and source platform.
+    # Best-effort candidate names — absent fields are simply not returned by Mongo.
+    "classifier_metadata.category": 1,
+    "classifier_metadata.sector": 1,
+    "classifier_metadata.source_platform": 1,
+    "classifier_metadata.source": 1,
+    "classifier_metadata.platform": 1,
     "llm_classified_skills": 1,
     "llm_job_attributes": 1,
     "onet_work_activities": 1,
@@ -463,6 +477,20 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     )
     isco_group = meta.get("isco_occupation_group")
     isco_group_id = meta.get("isco_occupation_group_id")
+    # Compass jobs-board consumer contract: sector/category (explicit field, else the ISCO
+    # occupation group label as a sensible fallback), the source platform the posting was
+    # scraped from, and the flat list of skill labels (essential first, then optional).
+    category = meta.get("category") or meta.get("sector") or isco_group
+    source_platform = (
+        meta.get("source_platform") or meta.get("source") or meta.get("platform")
+    )
+    skill_labels: List[str] = []
+    _seen_labels: set = set()
+    for s in essential_skills + optional_skills:
+        lbl = s.get("label")
+        if lbl and lbl not in _seen_labels:
+            _seen_labels.add(lbl)
+            skill_labels.append(lbl)
     out: Dict[str, Any] = {
         "uuid": job_id,
         "originUuid": (
@@ -503,6 +531,9 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "opportunity_description": meta.get("job_description")
         or meta.get("description")
         or "",
+        "category": category,
+        "source_platform": source_platform,
+        "skills": skill_labels,
         "onet_work_activities": onet_wa,
     }
     if job_fp_s:
@@ -595,6 +626,306 @@ async def get_all_jobs_with_timing(users: Optional[Sequence[dict]] = None):
         "jobs_retrieval_filter_applied": retrieval_applied,
         "jobs_find_use_projection": JOBS_FIND_USE_PROJECTION,
     }
+
+
+class InvalidCursor(ValueError):
+    """Raised when a /jobs pagination cursor cannot be decoded into a Mongo _id."""
+
+
+# GET /jobs is sorted by ``_id`` descending (newest first). ``_id`` is always indexed, so the
+# keyset seek stays fast without a dedicated sort index.
+JOBS_PAGE_SORT = [("_id", -1)]
+
+
+def _encode_jobs_cursor(object_id: ObjectId) -> str:
+    """Opaque, URL-safe cursor wrapping a Mongo ``_id`` (the last item on the page)."""
+    return base64.urlsafe_b64encode(str(object_id).encode("ascii")).decode("ascii")
+
+
+def _decode_jobs_cursor(cursor: str) -> ObjectId:
+    """Inverse of _encode_jobs_cursor. Raises InvalidCursor on any malformed input."""
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("ascii")
+        return ObjectId(raw)
+    except (ValueError, InvalidId, binascii.Error, UnicodeDecodeError) as e:
+        raise InvalidCursor(f"invalid cursor: {cursor!r}") from e
+
+
+def build_jobs_browse_filter(
+    *,
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    employment_type: Optional[str] = None,
+    location: Optional[str] = None,
+    skills: Optional[str] = None,
+    days: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Mongo filter for the /jobs browse endpoint, composed with ``is_active``.
+
+    Every clause is optional; all supplied clauses are AND-ed together (a job must match
+    all of them). Field paths target the raw ``classifier_metadata`` / ``llm_classified_skills``
+    document so the filter is applied by Mongo before shaping. ``category`` and ``location``
+    span several candidate field names because the stored data is not uniform.
+    """
+    clauses: List[Dict[str, Any]] = [RANKED_JOBS_ACTIVE_FILTER]
+
+    if search and search.strip():
+        clauses.append(
+            {"classifier_metadata.title": {"$regex": re.escape(search.strip()), "$options": "i"}}
+        )
+    if category and category.strip():
+        rx = {"$regex": re.escape(category.strip()), "$options": "i"}
+        clauses.append(
+            {
+                "$or": [
+                    {"classifier_metadata.category": rx},
+                    {"classifier_metadata.sector": rx},
+                    {"classifier_metadata.isco_occupation_group": rx},
+                ]
+            }
+        )
+    if employment_type and employment_type.strip():
+        clauses.append({"classifier_metadata.employment_type": employment_type.strip()})
+    if location and location.strip():
+        rx = {"$regex": re.escape(location.strip()), "$options": "i"}
+        clauses.append({"$or": [{_M_CITY: rx}, {_M_COUNTY: rx}, {_M_PROVINCE: rx}]})
+    if skills and skills.strip():
+        rx = {"$regex": re.escape(skills.strip()), "$options": "i"}
+        clauses.append(
+            {
+                "$or": [
+                    {"llm_classified_skills.essential.label": rx},
+                    {"llm_classified_skills.optional.label": rx},
+                ]
+            }
+        )
+    if days is not None:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=int(days))
+        ).date().isoformat()
+        gte = {"$gte": cutoff}
+        clauses.append(
+            {
+                "$or": [
+                    {"classifier_metadata.posted_date": gte},
+                    {"classifier_metadata.date_posted": gte},
+                ]
+            }
+        )
+
+    if len(clauses) == 1:
+        return dict(RANKED_JOBS_ACTIVE_FILTER)
+    return {"$and": clauses}
+
+
+# Indexes on MONGO_JOBS_COLLECTION that the /jobs (browse, stats) and /match queries rely on.
+#
+# MongoDB uses ONE index per query (index intersection is rarely chosen by the planner, and never
+# when a sort is present), so these are not combined at query time — each is sized for a specific
+# access pattern:
+#
+#   * {is_active: 1, _id: -1}  — the workhorse. The browse endpoint always filters is_active, sorts
+#     by _id desc, and seeks with a keyset (_id < cursor); this one index serves the equality, the
+#     sort, AND the cursor range together (also covers count_documents(is_active...) and the
+#     active-jobs load behind /match). Without it every such call is a full scan + in-memory sort.
+#   * {is_active: 1, employment_type: 1, _id: -1}  — the only exact-match browse filter. The trailing
+#     _id key lets an employment_type-filtered browse use the index for the equality AND the sort.
+#   * {is_active: 1, <category|isco_group|source_platform>: 1}  — back the distinct() calls in
+#     /jobs/stats (used by those, not by the sorted browse query).
+#
+# Substring/regex filters (title, category, location, skills) cannot use a B-tree index in any
+# combination — they are always applied as residual filters. Speeding those up further would need
+# an Atlas Search / ``$text`` index plus a query change.
+JOBS_INDEX_MODELS = [
+    IndexModel([("is_active", ASCENDING), ("_id", DESCENDING)], name="is_active_-_id"),
+    IndexModel(
+        [
+            ("is_active", ASCENDING),
+            ("classifier_metadata.employment_type", ASCENDING),
+            ("_id", DESCENDING),
+        ],
+        name="is_active_employment_type_-_id",
+    ),
+    IndexModel(
+        [("is_active", ASCENDING), ("classifier_metadata.category", ASCENDING)],
+        name="is_active_category",
+    ),
+    IndexModel(
+        [("is_active", ASCENDING), ("classifier_metadata.isco_occupation_group", ASCENDING)],
+        name="is_active_isco_group",
+    ),
+    IndexModel(
+        [("is_active", ASCENDING), ("classifier_metadata.source_platform", ASCENDING)],
+        name="is_active_source_platform",
+    ),
+]
+
+
+async def ensure_jobs_indexes() -> List[str]:
+    """Create (idempotently) the indexes the jobs queries need, on ``MONGO_JOBS_COLLECTION``.
+
+    ``create_indexes`` is a no-op for indexes that already exist with the same spec, so this is
+    safe to run on every startup. Returns the list of ensured index names.
+    """
+    t0 = time.perf_counter()
+    col = db[MONGO_JOBS_COLLECTION]
+    created = await col.create_indexes(JOBS_INDEX_MODELS)
+    logger.info(
+        "Ensured %d indexes on %s in %.2f ms: %s",
+        len(created),
+        MONGO_JOBS_COLLECTION,
+        _ms(t0),
+        created,
+    )
+    return created
+
+
+async def get_jobs_stats() -> JobsStats:
+    """Aggregate counts over the active jobs catalog for the /jobs/stats endpoint.
+
+    ``sectors`` counts distinct, case-insensitively-deduplicated categories (falling back
+    to the ISCO occupation group label, matching ``build_job_dict_from_ranked``);
+    ``platforms`` counts distinct source platforms.
+    """
+    col = db[MONGO_JOBS_COLLECTION]
+    total = await col.count_documents(RANKED_JOBS_ACTIVE_FILTER)
+
+    raw_categories = await col.distinct("classifier_metadata.category", RANKED_JOBS_ACTIVE_FILTER)
+    if not raw_categories:
+        raw_categories = await col.distinct(
+            "classifier_metadata.isco_occupation_group", RANKED_JOBS_ACTIVE_FILTER
+        )
+    sectors = len({str(c).strip().lower() for c in raw_categories if str(c).strip()})
+
+    platforms_set: set = set()
+    for field in (
+        "classifier_metadata.source_platform",
+        "classifier_metadata.source",
+        "classifier_metadata.platform",
+    ):
+        for p in await col.distinct(field, RANKED_JOBS_ACTIVE_FILTER):
+            if str(p).strip():
+                platforms_set.add(str(p).strip().lower())
+
+    return JobsStats(total=total, sectors=sectors, platforms=len(platforms_set))
+
+
+async def get_jobs_page_with_timing(
+    cursor: Optional[str] = None,
+    limit: int = 20,
+    *,
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    employment_type: Optional[str] = None,
+    location: Optional[str] = None,
+    skills: Optional[str] = None,
+    days: Optional[int] = None,
+    include_total: bool = False,
+) -> Tuple[List[JobListItem], Optional[str], Optional[int], Dict[str, Any]]:
+    """Cursor-paginated, filterable browse over active jobs in ``MONGO_JOBS_COLLECTION``.
+
+    Reads from the same collection and through the same ``build_job_dict_from_ranked``
+    shaping as ``get_all_jobs_with_timing`` (the matched-jobs data source), so browse
+    and match return identical job objects.
+
+    Pagination is keyset-based on ``_id`` descending (newest first, stable under inserts):
+    ``cursor`` is an opaque token wrapping the last ``_id`` of the previous page, and the
+    next page is ``_id < cursor_id``. One extra document is fetched to compute ``has_more``
+    and the next cursor without a second round-trip. Optional ``search``/``category``/
+    ``employment_type``/``location``/``skills``/``days`` filters narrow the catalog
+    (see ``build_jobs_browse_filter``); when ``include_total`` is set, the total count of
+    the filtered catalog (ignoring the cursor) is returned for client-side pagination UIs.
+
+    Returns ``(jobs, next_cursor, total, timing)``. ``next_cursor`` is ``None`` on the last
+    page; ``total`` is ``None`` unless ``include_total`` is set. Raises ``InvalidCursor`` if
+    ``cursor`` is malformed.
+    """
+    t_total = time.perf_counter()
+    limit = max(1, int(limit))
+
+    base_filt = build_jobs_browse_filter(
+        search=search,
+        category=category,
+        employment_type=employment_type,
+        location=location,
+        skills=skills,
+        days=days,
+    )
+    filt: Dict[str, Any] = dict(base_filt)
+    if cursor:
+        # Compose the keyset seek with the (possibly compound) filter without clobbering it.
+        filt = {"$and": [base_filt, {"_id": {"$lt": _decode_jobs_cursor(cursor)}}]}
+
+    col = db[MONGO_JOBS_COLLECTION]
+    projection = RANKED_JOB_FIND_PROJECTION if JOBS_FIND_USE_PROJECTION else None
+    # Fetch limit+1 so we can tell whether another page exists.
+    t0 = time.perf_counter()
+    query = col.find(filt, projection) if projection else col.find(filt)
+    query = query.sort(JOBS_PAGE_SORT).limit(limit + 1)
+    raw_docs = [d async for d in query]
+    mongo_find_ms = _ms(t0)
+
+    total: Optional[int] = None
+    if include_total:
+        total = await col.count_documents(base_filt)
+
+    has_more = len(raw_docs) > limit
+    page_docs = raw_docs[:limit]
+
+    t0 = time.perf_counter()
+    jobs: List[JobListItem] = []
+    skipped = 0
+    for rd in page_docs:
+        built = build_job_dict_from_ranked(rd)
+        if built is None:
+            skipped += 1
+            continue
+        jobs.append(JobListItem(
+            uuid=built.get("uuid"),
+            originUuid=built.get("originUuid"),
+            url=built.get("url"),
+            opportunity_title=built.get("opportunity_title", "No title"),
+            opportunity_isco_occupation_group=built.get("opportunity_isco_occupation_group"),
+            opportunity_isco_occupation_group_id=built.get("opportunity_isco_occupation_group_id"),
+            related_occupation_id=built.get("related_occupation_id"),
+            location=built.get("location"),
+            city=built.get("city"),
+            province=built.get("province"),
+            employer=built.get("employer"),
+            employment_type=built.get("employment_type"),
+            contract_type=built.get("contract_type"),
+            salary_text=built.get("salary_text"),
+            closing_date=built.get("closing_date"),
+            posted_date=built.get("posted_date"),
+            opportunity_description=built.get("opportunity_description"),
+            # Consumer-contract fields (Compass jobs board)=built.get("# Consumer-contract fields (Compass jobs board),
+            # posting was scraped from, and the flat list of skill labels for this opportunity.
+            category=built.get("category"),
+            source_platform=built.get("source_platform"),
+            skills=built.get("skills", [])
+        ))
+    python_build_ms = _ms(t0)
+
+    next_cursor = (
+        _encode_jobs_cursor(page_docs[-1]["_id"]) if has_more and page_docs else None
+    )
+
+    return (
+        jobs,
+        next_cursor,
+        total,
+        {
+            "mongo_find_ms": mongo_find_ms,
+            "python_build_jobs_ms": python_build_ms,
+            "n_page_raw": len(page_docs),
+            "n_jobs": len(jobs),
+            "n_skipped_inactive": skipped,
+            "has_more": has_more,
+            "limit": limit,
+            "total": total,
+            "get_jobs_page_total_ms": _ms(t_total),
+        },
+    )
 
 
 _cached_occupations = None
@@ -842,6 +1173,14 @@ async def warmup_on_startup() -> None:
             logger.exception("Mongo warmup: ping failed")
     else:
         logger.info("Mongo warmup skipped (MONGO_WARMUP_ON_STARTUP=0)")
+
+    if _env_warmup_flag("ENSURE_INDEXES_ON_STARTUP", True):
+        try:
+            await ensure_jobs_indexes()
+        except Exception:
+            logger.exception("Ensuring jobs indexes failed")
+    else:
+        logger.info("Index creation skipped (ENSURE_INDEXES_ON_STARTUP=0)")
 
     if _env_warmup_flag("WARMUP_OCCUPATIONS_CACHE", True):
         t0 = time.perf_counter()

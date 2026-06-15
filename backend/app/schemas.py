@@ -239,6 +239,55 @@ class MatchResponse(BaseModel):
     )
 
 
+class JobListItem(BaseModel):
+    """A single browsable job, built from the same source/shape as matched-job
+    opportunities (see database.build_job_dict_from_ranked) minus the per-user
+    scoring/matching fields, which only exist after a /match request."""
+
+    uuid: str
+    originUuid: Optional[str] = None
+    url: Optional[str] = None
+    opportunity_title: str
+    opportunity_isco_occupation_group: Optional[str] = None
+    opportunity_isco_occupation_group_id: Optional[str] = None
+    related_occupation_id: Optional[str] = None
+    location: Optional[str] = None
+    city: Optional[str] = None
+    province: Optional[str] = None
+    employer: Optional[str] = None
+    employment_type: Optional[str] = None
+    contract_type: Optional[str] = None
+    salary_text: Optional[str] = None
+    closing_date: Optional[str] = None
+    posted_date: Optional[str] = None
+    opportunity_description: Optional[str] = None
+    # Consumer-contract fields (Compass jobs board): sector/category, the platform the
+    # posting was scraped from, and the flat list of skill labels for this opportunity.
+    category: Optional[str] = None
+    source_platform: Optional[str] = None
+    skills: List[str] = Field(default_factory=list)
+
+
+class JobsPage(BaseModel):
+    """A cursor-paginated page of jobs. ``next_cursor`` is null on the last page;
+    otherwise pass it back as the ``cursor`` query param to fetch the next page.
+
+    ``total`` is the count of all jobs matching the current filters (ignoring the
+    cursor); it is only populated when the request asks for it (``include_total=true``)."""
+
+    items: List[JobListItem] = Field(default_factory=list)
+    next_cursor: Optional[str] = None
+    total: Optional[int] = None
+
+
+class JobsStats(BaseModel):
+    """Aggregate counts over the active jobs catalog (the /jobs/stats endpoint)."""
+
+    total: int
+    sectors: int
+    platforms: int
+
+
 class MatchV2JobRecommendation(BaseModel):
     """One job from hybrid ``column_fused_weighted_minmax`` (pool min–max fusion)."""
 

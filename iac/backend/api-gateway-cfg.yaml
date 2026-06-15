@@ -38,7 +38,7 @@ x-google-management:
         metric: "request-metric"
         unit: "1/min/{project}"
         values:
-          STANDARD: 120
+          STANDARD: 12000
 
 paths:
   '/docs':
@@ -68,6 +68,52 @@ paths:
           description: Status of the application
           schema:
             type: string
+  '/jobs':
+    get:
+      description: Browse active jobs with cursor-based pagination. Reads from the same data source as matched jobs.
+      operationId: list_jobs
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          type: string
+          description: Opaque pagination cursor returned as next_cursor by the previous response. Omit for the first page.
+        - name: limit
+          in: query
+          required: false
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+          description: Page size (1-100). Default 20.
+      responses:
+        '200':
+          description: A page of jobs (items + next_cursor)
+        '400':
+          description: Bad Request - invalid cursor
+        '429':
+          description: Too Many Requests - rate limit exceeded
+        '500':
+          description: Internal Server Error
+      summary: Browse jobs
+      tags:
+        - Jobs
+      x-google-quota:
+        metricCosts:
+          request-metric: 1
+      security:
+        - gcp_api_key: []
+    options:
+      description: CORS preflight for /jobs
+      operationId: jobs_options
+      responses:
+        '200':
+          description: Success
+      tags:
+        - Jobs
+      x-google-quota:
+        metricCosts:
+          request-metric: 1
   '/match':
     post:
       description: Match one or many users against jobs and occupations.
@@ -97,7 +143,7 @@ paths:
           request-metric: 1
       security:
         - gcp_api_key: []
-  '/match_v2':
+  '/experiments/v2/match':
     post:
       description: Match one or many users against jobs and occupations. 2.0 version.
       operationId: match_v2
@@ -137,7 +183,7 @@ paths:
       x-google-quota:
         metricCosts:
           request-metric: 1
-  '/match_v3':
+  '/experiments/v3/match':
     post:
       description: Match one or many users against jobs and occupations. 3.0 version.
       operationId: match_v3
@@ -209,6 +255,46 @@ paths:
     options:
       description: CORS preflight for /match
       operationId: match_options_v4
+      responses:
+        '200':
+          description: Success
+      tags:
+        - Matching
+      x-google-quota:
+        metricCosts:
+          request-metric: 1
+  '/experiments/v5/match':
+    post:
+      description: Match one or many users against jobs and occupations, with ZQF education annotation on opportunities. 5.0 experiment.
+      operationId: match_v5_experiment
+      parameters:
+        - name: body
+          in: body
+          required: true
+          description: User(s) to match. Single object or array of MatchRequestV5 (adds zqf_level).
+          schema:
+            type: object
+            description: MatchRequestV5 or array of MatchRequestV5
+      responses:
+        '200':
+          description: Match recommendations
+        '400':
+          description: Bad Request - invalid payload
+        '429':
+          description: Too Many Requests - rate limit exceeded
+        '500':
+          description: Internal Server Error
+      summary: Match users to opportunities
+      tags:
+        - Matching
+      x-google-quota:
+        metricCosts:
+          request-metric: 1
+      security:
+        - gcp_api_key: [ ]
+    options:
+      description: CORS preflight for /match
+      operationId: match_options_v5
       responses:
         '200':
           description: Success
