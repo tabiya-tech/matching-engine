@@ -202,7 +202,9 @@ def run_match_v4_full(
             if v is not None:
                 occ_concat[str(o.get("uuid") or "")] = v
         u_white = whiten_concat_rows(u_norm)
-        u_white_by_uid = {str(u.get("user_id") or ""): u_white[i] for i, u in enumerate(users)}
+        u_white_by_uid = {
+            str(u.get("user_id") or ""): u_white[i] for i, u in enumerate(users)
+        }
 
     job_v3 = run_match_concat_gemini_ce(
         users,
@@ -242,7 +244,9 @@ def run_match_v4_full(
         to id/label mismatches.
         """
         try:
-            _score = matcher.score_pair_v4 if V4_FULL_WHITENED_GATE else matcher.score_pair
+            _score = (
+                matcher.score_pair_v4 if V4_FULL_WHITENED_GATE else matcher.score_pair
+            )
             per = _score(user, item).get("per_job_skill", []) or []
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("score_pair failed for %s: %s", item.get("uuid"), e)
@@ -280,9 +284,13 @@ def run_match_v4_full(
                 p_over[uuid] = min(1.0, max(0.0, cos) / target)
             per, ess_ids = _skill_detail(user, item)
             det_cache[uuid] = (per, ess_ids)
-            ms = fmt.build_matched_skills(per, ess_ids, sim_threshold=V4_FULL_SIM_THRESHOLD)
+            ms = fmt.build_matched_skills(
+                per, ess_ids, sim_threshold=V4_FULL_SIM_THRESHOLD
+            )
             n_ess = len(item.get("essential_skills") or [])
-            cov_over[uuid] = fmt.essential_coverage(ms["essential_skill_matches"], n_ess)
+            cov_over[uuid] = fmt.essential_coverage(
+                ms["essential_skill_matches"], n_ess
+            )
         return p_over, cov_over, det_cache
 
     out: List[Dict[str, Any]] = []
@@ -296,8 +304,12 @@ def run_match_v4_full(
         occ_p, occ_cov, occ_det = ({}, {}, {})
         if demote_active:
             uw = u_white_by_uid.get(uid)
-            job_p, job_cov, job_det = _rank_overrides(user, job_v3_by_uid.get(uid), job_index, job_concat, uw)
-            occ_p, occ_cov, occ_det = _rank_overrides(user, occ_v3_by_uid.get(uid), occ_index, occ_concat, uw)
+            job_p, job_cov, job_det = _rank_overrides(
+                user, job_v3_by_uid.get(uid), job_index, job_concat, uw
+            )
+            occ_p, occ_cov, occ_det = _rank_overrides(
+                user, occ_v3_by_uid.get(uid), occ_index, occ_concat, uw
+            )
 
         # Opportunities. Jobs keep the existing /match_v4 location scoping (Mongo prefilter via
         # get_all_jobs_with_timing(users=...)); no extra python location filter so we don't risk
@@ -317,7 +329,9 @@ def run_match_v4_full(
             item = job_index.get(str(rec.get("job_uuid") or ""))
             if not item:
                 continue
-            per, ess_ids = job_det.get(str(rec.get("job_uuid") or "")) or _skill_detail(user, item)
+            per, ess_ids = job_det.get(str(rec.get("job_uuid") or "")) or _skill_detail(
+                user, item
+            )
             opportunities.append(
                 fmt.build_opportunity_row(
                     rec,
@@ -366,7 +380,9 @@ def run_match_v4_full(
             if not code or code in seen_codes:
                 continue
             seen_codes.add(code)
-            per, ess_ids = occ_det.get(str(rec.get("job_uuid") or "")) or _skill_detail(user, item)
+            per, ess_ids = occ_det.get(str(rec.get("job_uuid") or "")) or _skill_detail(
+                user, item
+            )
             occupations_out.append(
                 fmt.build_occupation_row(
                     rec,

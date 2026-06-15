@@ -102,7 +102,9 @@ DATASETS = {
 DEFAULT_DATASET = "kenya"
 
 # Default data paths (override with JOBS_JSON_PATH / USERS_JSONL_PATH env or CLI).
-DEFAULT_JOBS_PATH = Path(os.getenv("JOBS_JSON_PATH", str(_DATA / "kenya_jobs_for_pipeline.json")))
+DEFAULT_JOBS_PATH = Path(
+    os.getenv("JOBS_JSON_PATH", str(_DATA / "kenya_jobs_for_pipeline.json"))
+)
 DEFAULT_USERS_PATH = Path(os.getenv("USERS_JSONL_PATH", str(DATASETS[DEFAULT_DATASET])))
 
 BLOCKING_TAGS = {"skills_missing", "preferences_missing", "bws_missing"}
@@ -112,7 +114,9 @@ def _load_jobs(path: Path) -> list:
     with open(path, "r", encoding="utf-8") as f:
         jobs = json.load(f)
     if not isinstance(jobs, list):
-        raise ValueError(f"Expected a JSON array of jobs in {path}, got {type(jobs).__name__}")
+        raise ValueError(
+            f"Expected a JSON array of jobs in {path}, got {type(jobs).__name__}"
+        )
     return jobs
 
 
@@ -154,40 +158,110 @@ def _completeness(u: dict, require_bws: bool) -> tuple[bool, str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run /match_v4 locally against offline files (no Mongo)")
+    parser = argparse.ArgumentParser(
+        description="Run /match_v4 locally against offline files (no Mongo)"
+    )
     grp = parser.add_mutually_exclusive_group()
-    grp.add_argument("--user", metavar="USER_ID", help="Run a single user_id (must pass completeness unless --all-users)")
-    grp.add_argument("--all-users", action="store_true", help="Bypass the completeness gate (debug/contrast)")
-    parser.add_argument("--limit", type=int, default=None, metavar="N", help="Cap to first N selected users")
+    grp.add_argument(
+        "--user",
+        metavar="USER_ID",
+        help="Run a single user_id (must pass completeness unless --all-users)",
+    )
+    grp.add_argument(
+        "--all-users",
+        action="store_true",
+        help="Bypass the completeness gate (debug/contrast)",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap to first N selected users",
+    )
     bws_grp = parser.add_mutually_exclusive_group()
-    bws_grp.add_argument("--require-bws", dest="require_bws", action="store_true", default=None,
-                         help="Force the bws requirement on in the completeness gate")
-    bws_grp.add_argument("--no-require-bws", dest="require_bws", action="store_false", default=None,
-                         help="Force the bws requirement off (e.g. kenya: 8 -> 10 users)")
-    parser.add_argument("--dataset", choices=sorted(DATASETS), default=None,
-                        help=f"Named users-input preset (default {DEFAULT_DATASET}). Overridden by --users. "
-                             f"BWS requirement auto-adapts per dataset unless --require-bws/--no-require-bws is given.")
-    parser.add_argument("--jobs", type=Path, default=DEFAULT_JOBS_PATH, help="Jobs JSON array path (shared across datasets)")
-    parser.add_argument("--users", type=Path, default=None, help="Users JSONL path (overrides --dataset)")
-    parser.add_argument("--retrieve-top-k", type=int, default=None, help="Stage-1 cosine shortlist (default: MATCH_V4_RETRIEVE_TOP_K, the live /match_v4 default)")
-    parser.add_argument("--final-top-k", type=int, default=None, help="Final ranked rows per user / pool sent to whitening (default: MATCH_V4_FINAL_TOP_K, the live /match_v4 default)")
-    parser.add_argument("--final-score-combiner", choices=["product", "geometric_mean"], default=None,
-                        help="u_hat/p_hat combiner (default: env FINAL_SCORE_COMBINER)")
-    parser.add_argument("--preference-scorer-mode", default=None,
-                        help="Override PREFERENCE_SCORER_MODE (e.g. hybrid_v1) before scorers are imported")
-    parser.add_argument("--no-system-trust", action="store_true",
-                        help="Do not route TLS through the OS trust store (truststore). Use only if certifi "
-                             "already trusts the Gemini endpoint and no TLS-inspecting proxy/AV is present.")
-    parser.add_argument("--out", type=Path, default=REPO_ROOT / "output_results" / "match_v4_local",
-                        help="Output root dir (a timestamped subdir is created)")
-    parser.add_argument("--live-jobs", action="store_true",
-                        help="Read jobs from the live MongoDB in backend/.env (MONGO_URL / "
-                             "MONGO_DB_NAME / MONGO_JOBS_COLLECTION) instead of the --jobs JSON file. "
-                             "Needs 'motor' installed and network access to the DB.")
-    parser.add_argument("--jobs-location-filter", action="store_true",
-                        help="With --live-jobs, apply the per-user Mongo location prefilter "
-                             "(JOBS_RETRIEVAL_FILTER=true). Off by default so the full active corpus "
-                             "is returned (mirrors the offline harness; test users have city='Unknown').")
+    bws_grp.add_argument(
+        "--require-bws",
+        dest="require_bws",
+        action="store_true",
+        default=None,
+        help="Force the bws requirement on in the completeness gate",
+    )
+    bws_grp.add_argument(
+        "--no-require-bws",
+        dest="require_bws",
+        action="store_false",
+        default=None,
+        help="Force the bws requirement off (e.g. kenya: 8 -> 10 users)",
+    )
+    parser.add_argument(
+        "--dataset",
+        choices=sorted(DATASETS),
+        default=None,
+        help=f"Named users-input preset (default {DEFAULT_DATASET}). Overridden by --users. "
+        f"BWS requirement auto-adapts per dataset unless --require-bws/--no-require-bws is given.",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=Path,
+        default=DEFAULT_JOBS_PATH,
+        help="Jobs JSON array path (shared across datasets)",
+    )
+    parser.add_argument(
+        "--users",
+        type=Path,
+        default=None,
+        help="Users JSONL path (overrides --dataset)",
+    )
+    parser.add_argument(
+        "--retrieve-top-k",
+        type=int,
+        default=None,
+        help="Stage-1 cosine shortlist (default: MATCH_V4_RETRIEVE_TOP_K, the live /match_v4 default)",
+    )
+    parser.add_argument(
+        "--final-top-k",
+        type=int,
+        default=None,
+        help="Final ranked rows per user / pool sent to whitening (default: MATCH_V4_FINAL_TOP_K, the live /match_v4 default)",
+    )
+    parser.add_argument(
+        "--final-score-combiner",
+        choices=["product", "geometric_mean"],
+        default=None,
+        help="u_hat/p_hat combiner (default: env FINAL_SCORE_COMBINER)",
+    )
+    parser.add_argument(
+        "--preference-scorer-mode",
+        default=None,
+        help="Override PREFERENCE_SCORER_MODE (e.g. hybrid_v1) before scorers are imported",
+    )
+    parser.add_argument(
+        "--no-system-trust",
+        action="store_true",
+        help="Do not route TLS through the OS trust store (truststore). Use only if certifi "
+        "already trusts the Gemini endpoint and no TLS-inspecting proxy/AV is present.",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=REPO_ROOT / "output_results" / "match_v4_local",
+        help="Output root dir (a timestamped subdir is created)",
+    )
+    parser.add_argument(
+        "--live-jobs",
+        action="store_true",
+        help="Read jobs from the live MongoDB in backend/.env (MONGO_URL / "
+        "MONGO_DB_NAME / MONGO_JOBS_COLLECTION) instead of the --jobs JSON file. "
+        "Needs 'motor' installed and network access to the DB.",
+    )
+    parser.add_argument(
+        "--jobs-location-filter",
+        action="store_true",
+        help="With --live-jobs, apply the per-user Mongo location prefilter "
+        "(JOBS_RETRIEVAL_FILTER=true). Off by default so the full active corpus "
+        "is returned (mirrors the offline harness; test users have city='Unknown').",
+    )
     args = parser.parse_args()
 
     # Resolve which users file to run: explicit --users wins, else --dataset preset, else default.
@@ -196,7 +270,11 @@ def main() -> None:
         dataset_label = f"custom ({users_path.name})"
     else:
         dataset_label = args.dataset or DEFAULT_DATASET
-        users_path = Path(os.getenv("USERS_JSONL_PATH") or DATASETS[dataset_label]) if args.dataset is None else DATASETS[dataset_label]
+        users_path = (
+            Path(os.getenv("USERS_JSONL_PATH") or DATASETS[dataset_label])
+            if args.dataset is None
+            else DATASETS[dataset_label]
+        )
     args.users = users_path
 
     # Route TLS through the OS trust store so the live Gemini call works behind TLS-inspecting
@@ -207,7 +285,10 @@ def main() -> None:
             import truststore
 
             truststore.inject_into_ssl()
-            print("TLS: using OS trust store via truststore.inject_into_ssl()", file=sys.stderr)
+            print(
+                "TLS: using OS trust store via truststore.inject_into_ssl()",
+                file=sys.stderr,
+            )
         except ImportError:
             print(
                 "WARNING: truststore not installed; relying on certifi. If you see "
@@ -220,7 +301,9 @@ def main() -> None:
     # second-guess it — app.config is the source of truth and validates/aliases the value at import.
     # Only --preference-scorer-mode overrides it.
     if args.preference_scorer_mode:
-        os.environ["PREFERENCE_SCORER_MODE"] = args.preference_scorer_mode.strip().lower()
+        os.environ["PREFERENCE_SCORER_MODE"] = (
+            args.preference_scorer_mode.strip().lower()
+        )
 
     # Safety net (harmless when unneeded): if the DCE attribute schema env var is unset and the
     # canonical schema file is present in the package, point HYBRID_PREF_SCHEMA_PATH at it. On
@@ -228,7 +311,13 @@ def main() -> None:
     # matters on branches whose default path is stale/missing. The scorer degrades gracefully
     # (BWS-only) if neither resolves.
     if not (os.getenv("HYBRID_PREF_SCHEMA_PATH") or "").strip():
-        canonical_schema = BACKEND_ROOT / "app" / "services" / "preference_score_v1" / "job_attributes_schema.json"
+        canonical_schema = (
+            BACKEND_ROOT
+            / "app"
+            / "services"
+            / "preference_score_v1"
+            / "job_attributes_schema.json"
+        )
         if canonical_schema.is_file():
             os.environ["HYBRID_PREF_SCHEMA_PATH"] = str(canonical_schema)
 
@@ -238,8 +327,11 @@ def main() -> None:
         import importlib.util
 
         if importlib.util.find_spec("motor") is None:
-            print("ERROR: --live-jobs needs the 'motor' MongoDB driver. Install it:\n"
-                  "    pip install motor", file=sys.stderr)
+            print(
+                "ERROR: --live-jobs needs the 'motor' MongoDB driver. Install it:\n"
+                "    pip install motor",
+                file=sys.stderr,
+            )
             sys.exit(1)
         mongo_url = (os.getenv("MONGO_URL") or "").strip()
         if not mongo_url or mongo_url == "mongodb://localhost:27017":
@@ -261,9 +353,12 @@ def main() -> None:
             os.environ["JOBS_RETRIEVAL_FILTER"] = "false"
         # Log the host only (split off any user:pass@ credentials) so secrets never hit the console.
         _host = mongo_url.split("@")[-1].split("/")[0][:60]
-        print(f"LIVE JOBS: MongoDB host={_host}  db={os.getenv('MONGO_DB_NAME')!r}  "
-              f"collection={os.getenv('MONGO_JOBS_COLLECTION') or 'RankedJobsEnriched'!r}  "
-              f"JOBS_RETRIEVAL_FILTER={os.getenv('JOBS_RETRIEVAL_FILTER')}", file=sys.stderr)
+        print(
+            f"LIVE JOBS: MongoDB host={_host}  db={os.getenv('MONGO_DB_NAME')!r}  "
+            f"collection={os.getenv('MONGO_JOBS_COLLECTION') or 'RankedJobsEnriched'!r}  "
+            f"JOBS_RETRIEVAL_FILTER={os.getenv('JOBS_RETRIEVAL_FILTER')}",
+            file=sys.stderr,
+        )
 
     # ── 3. Import app modules (order mirrors run_local.py: config & scorers first for DLL load order) ──
     # NOTE: we deliberately do NOT import app.routes — it pulls in fastapi (not installed in this
@@ -286,13 +381,20 @@ def main() -> None:
     import app.services.demand_score  # noqa: F401
     import app.services.skill_score  # noqa: F401
     from app.config import (
-        COSINE_CROSS_ENCODER_RETRIEVE_TOP_K, FINAL_SCORE_COMBINER, PREFERENCE_SCORER_MODE,
-        MATCH_TOP_K_SKILL_GAPS, MATCH_V4_TOP_K_OCCUPATIONS, MATCH_V4_OCC_DEMAND_GAMMA,
-        MATCH_V4_RETRIEVE_TOP_K, MATCH_V4_FINAL_TOP_K,
+        FINAL_SCORE_COMBINER,
+        PREFERENCE_SCORER_MODE,
+        MATCH_TOP_K_SKILL_GAPS,
+        MATCH_V4_TOP_K_OCCUPATIONS,
+        MATCH_V4_OCC_DEMAND_GAMMA,
+        MATCH_V4_RETRIEVE_TOP_K,
+        MATCH_V4_FINAL_TOP_K,
     )
     from app.services.cross_encoder.gemini_embeddings import EMBEDDING_DIM
     from app.services.match_v4_full_service import run_match_v4_full
-    from app.services.education_eligibility import job_requires_post_secondary, user_lacks_post_secondary
+    from app.services.education_eligibility import (
+        job_requires_post_secondary,
+        user_lacks_post_secondary,
+    )
     from app.schemas import MatchRequest, MatchResponse
 
     # ── 4. Job source. Offline (default): patch the Mongo job loader to serve the local JSON corpus
@@ -356,7 +458,10 @@ def main() -> None:
                 print(f"User '{args.user}' not found in {args.users}", file=sys.stderr)
                 sys.exit(1)
             _, why = _completeness(match[0], require_bws)
-            print(f"User '{args.user}' is not complete ({why}). Use --all-users to run anyway.", file=sys.stderr)
+            print(
+                f"User '{args.user}' is not complete ({why}). Use --all-users to run anyway.",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
     if args.limit is not None:
@@ -366,10 +471,18 @@ def main() -> None:
         print("No users selected after filtering. Nothing to run.", file=sys.stderr)
         sys.exit(1)
 
-    retrieve_top_k = args.retrieve_top_k if args.retrieve_top_k is not None else MATCH_V4_RETRIEVE_TOP_K
+    retrieve_top_k = (
+        args.retrieve_top_k
+        if args.retrieve_top_k is not None
+        else MATCH_V4_RETRIEVE_TOP_K
+    )
     if args.final_top_k is None:
         args.final_top_k = MATCH_V4_FINAL_TOP_K
-    combiner = args.final_score_combiner if args.final_score_combiner is not None else FINAL_SCORE_COMBINER
+    combiner = (
+        args.final_score_combiner
+        if args.final_score_combiner is not None
+        else FINAL_SCORE_COMBINER
+    )
 
     # Validate users once (production parity), then fetch jobs from the active source. Both modes
     # go through db_module.get_all_jobs_with_timing — offline it's the local JSON closure patched
@@ -379,7 +492,9 @@ def main() -> None:
     users_dicts = [m.model_dump() for m in payload]
     t0 = _dt.datetime.now()
     try:
-        jobs_list, mongo_timing = asyncio.run(db_module.get_all_jobs_with_timing(users=users_dicts))
+        jobs_list, mongo_timing = asyncio.run(
+            db_module.get_all_jobs_with_timing(users=users_dicts)
+        )
     except Exception as e:  # noqa: BLE001 — surface live-DB failures with an actionable hint
         if USE_LIVE_JOBS:
             print(
@@ -430,7 +545,9 @@ def main() -> None:
         mongo_timing=mongo_timing,
     )
     responses = [MatchResponse(**row) for row in raw]
-    resp_dicts = [r.model_dump() if hasattr(r, "model_dump") else dict(r) for r in responses]
+    resp_dicts = [
+        r.model_dump() if hasattr(r, "model_dump") else dict(r) for r in responses
+    ]
     wall_s = (_dt.datetime.now() - t0).total_seconds()
 
     # ── 7. Write outputs ──────────────────────────────────────────────────────
@@ -439,7 +556,8 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     (out_dir / "match_v4_response.json").write_text(
-        json.dumps(resp_dicts, indent=2, default=str, ensure_ascii=False), encoding="utf-8"
+        json.dumps(resp_dicts, indent=2, default=str, ensure_ascii=False),
+        encoding="utf-8",
     )
 
     # Lookups for joining recs back to source item dicts + the validated user dicts.
@@ -456,14 +574,21 @@ def main() -> None:
         return " | ".join(parts)
 
     def _fmt_item_skills(skills: list) -> str:
-        return " | ".join(str(s.get("label") or s.get("id") or "") for s in (skills or []))
+        return " | ".join(
+            str(s.get("label") or s.get("id") or "") for s in (skills or [])
+        )
 
     def _join(xs) -> str:
         return " | ".join(str(x) for x in (xs or []))
 
     PREF_KEYS = [
-        "earnings_per_month", "task_content", "physical_demand", "work_flexibility",
-        "social_interaction", "career_growth", "social_meaning",
+        "earnings_per_month",
+        "task_content",
+        "physical_demand",
+        "work_flexibility",
+        "social_interaction",
+        "career_growth",
+        "social_meaning",
     ]
 
     def _sb(rec: dict, key: str):
@@ -475,7 +600,9 @@ def main() -> None:
         cols = {
             "user_top_skills": _fmt_user_skills(u),
             "user_skill_groups_origin_uuids": _join(u.get("skill_groups_origin_uuids")),
-            "user_bws_scores": json.dumps(pv.get("bws_scores") or {}, ensure_ascii=False),
+            "user_bws_scores": json.dumps(
+                pv.get("bws_scores") or {}, ensure_ascii=False
+            ),
             "user_top_10_bws": _join(pv.get("top_10_bws")),
         }
         for k in PREF_KEYS:
@@ -484,8 +611,17 @@ def main() -> None:
 
     # ── 7a. Opportunities (jobs): flat CSV + detailed CSV with vectors ──
     opp_base_cols = [
-        "user_id", "rank", "job_uuid", "opportunity_title", "employer", "location",
-        "is_eligible", "u_hat", "p_hat", "final_score", "demand_label",
+        "user_id",
+        "rank",
+        "job_uuid",
+        "opportunity_title",
+        "employer",
+        "location",
+        "is_eligible",
+        "u_hat",
+        "p_hat",
+        "final_score",
+        "demand_label",
     ]
 
     def _opp_base_row(uid, rec):
@@ -520,7 +656,12 @@ def main() -> None:
         + ["user_top_skills", "user_skill_groups_origin_uuids"]
         + [f"user_pref_{k}" for k in PREF_KEYS]
         + ["user_bws_scores", "user_top_10_bws"]
-        + ["job_essential_skills", "job_optional_skills", "job_skill_groups_origin_uuids", "job_attributes"]
+        + [
+            "job_essential_skills",
+            "job_optional_skills",
+            "job_skill_groups_origin_uuids",
+            "job_attributes",
+        ]
     )
     n_vec_rows = 0
     with open(vec_csv_path, "w", encoding="utf-8", newline="") as f:
@@ -531,20 +672,40 @@ def main() -> None:
             uc = _user_vec_cols(user_by_id.get(str(uid or "")) or {})
             for rec in resp.get("opportunity_recommendations") or []:
                 j = job_by_uuid.get(str(rec.get("uuid") or "")) or {}
-                w.writerow({
-                    **_opp_base_row(uid, rec),
-                    "job_essential_skills": _fmt_item_skills(j.get("essential_skills")),
-                    "job_optional_skills": _fmt_item_skills(j.get("optional_skills")),
-                    "job_skill_groups_origin_uuids": _join(j.get("skill_groups_origin_uuids")),
-                    "job_attributes": json.dumps(j.get("attributes") or {}, ensure_ascii=False),
-                    **uc,
-                })
+                w.writerow(
+                    {
+                        **_opp_base_row(uid, rec),
+                        "job_essential_skills": _fmt_item_skills(
+                            j.get("essential_skills")
+                        ),
+                        "job_optional_skills": _fmt_item_skills(
+                            j.get("optional_skills")
+                        ),
+                        "job_skill_groups_origin_uuids": _join(
+                            j.get("skill_groups_origin_uuids")
+                        ),
+                        "job_attributes": json.dumps(
+                            j.get("attributes") or {}, ensure_ascii=False
+                        ),
+                        **uc,
+                    }
+                )
                 n_vec_rows += 1
 
     # ── 7b. Careers (occupations): flat CSV + detailed CSV with vectors ──
     career_base_cols = [
-        "user_id", "rank", "occupation_uuid", "occupation_code", "occupation_label", "province",
-        "is_eligible", "u_hat", "p_hat", "final_score", "demand_label", "salary_range",
+        "user_id",
+        "rank",
+        "occupation_uuid",
+        "occupation_code",
+        "occupation_label",
+        "province",
+        "is_eligible",
+        "u_hat",
+        "p_hat",
+        "final_score",
+        "demand_label",
+        "salary_range",
     ]
 
     def _career_base_row(uid, rec):
@@ -580,9 +741,13 @@ def main() -> None:
         + ["user_top_skills", "user_skill_groups_origin_uuids"]
         + [f"user_pref_{k}" for k in PREF_KEYS]
         + ["user_bws_scores", "user_top_10_bws"]
-        + ["occupation_essential_skills", "occupation_optional_skills",
-           "occupation_skill_groups_origin_uuids", "occupation_attributes",
-           "occupation_requires_post_secondary"]
+        + [
+            "occupation_essential_skills",
+            "occupation_optional_skills",
+            "occupation_skill_groups_origin_uuids",
+            "occupation_attributes",
+            "occupation_requires_post_secondary",
+        ]
     )
     n_career_vec_rows = 0
     with open(career_vec_csv_path, "w", encoding="utf-8", newline="") as f:
@@ -593,20 +758,40 @@ def main() -> None:
             uc = _user_vec_cols(user_by_id.get(str(uid or "")) or {})
             for rec in resp.get("occupation_recommendations") or []:
                 occ = occ_by_uuid.get(str(rec.get("uuid") or "")) or {}
-                w.writerow({
-                    **_career_base_row(uid, rec),
-                    "occupation_essential_skills": _fmt_item_skills(occ.get("essential_skills")),
-                    "occupation_optional_skills": _fmt_item_skills(occ.get("optional_skills")),
-                    "occupation_skill_groups_origin_uuids": _join(occ.get("skill_groups_origin_uuids")),
-                    "occupation_attributes": json.dumps(occ.get("attributes") or {}, ensure_ascii=False),
-                    "occupation_requires_post_secondary": occ.get("requires_post_secondary"),
-                    **uc,
-                })
+                w.writerow(
+                    {
+                        **_career_base_row(uid, rec),
+                        "occupation_essential_skills": _fmt_item_skills(
+                            occ.get("essential_skills")
+                        ),
+                        "occupation_optional_skills": _fmt_item_skills(
+                            occ.get("optional_skills")
+                        ),
+                        "occupation_skill_groups_origin_uuids": _join(
+                            occ.get("skill_groups_origin_uuids")
+                        ),
+                        "occupation_attributes": json.dumps(
+                            occ.get("attributes") or {}, ensure_ascii=False
+                        ),
+                        "occupation_requires_post_secondary": occ.get(
+                            "requires_post_secondary"
+                        ),
+                        **uc,
+                    }
+                )
                 n_career_vec_rows += 1
 
     # ── 7c. Skill-gap recommendations (Node2Vec; same as /match_v4) ──
     sg_csv_path = out_dir / "skill_gap_recommendations.csv"
-    sg_cols = ["user_id", "skill_id", "skill_label", "proximity_score", "job_unlock_count", "combined_score", "reasoning"]
+    sg_cols = [
+        "user_id",
+        "skill_id",
+        "skill_label",
+        "proximity_score",
+        "job_unlock_count",
+        "combined_score",
+        "reasoning",
+    ]
     n_sg_rows = 0
     with open(sg_csv_path, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=sg_cols)
@@ -653,17 +838,31 @@ def main() -> None:
         u = user_by_id.get(uid) or {}
         opps = resp.get("opportunity_recommendations") or []
         occs = resp.get("occupation_recommendations") or []
-        n_opp_req = sum(1 for rec in opps if job_requires_post_secondary(job_by_uuid.get(str(rec.get("uuid") or "")) or {}))
-        n_occ_req = sum(1 for rec in occs if job_requires_post_secondary(occ_by_uuid.get(str(rec.get("uuid") or "")) or {}))
-        education_gate["per_user"].append({
-            "user_id": uid,
-            "any_post_secondary_educ": u.get("any_post_secondary_educ"),
-            "lacks_post_secondary": user_lacks_post_secondary(u),
-            "n_opportunities": len(opps),
-            "n_opportunities_requiring_post_secondary": n_opp_req,
-            "n_occupations": len(occs),
-            "n_occupations_requiring_post_secondary": n_occ_req,
-        })
+        n_opp_req = sum(
+            1
+            for rec in opps
+            if job_requires_post_secondary(
+                job_by_uuid.get(str(rec.get("uuid") or "")) or {}
+            )
+        )
+        n_occ_req = sum(
+            1
+            for rec in occs
+            if job_requires_post_secondary(
+                occ_by_uuid.get(str(rec.get("uuid") or "")) or {}
+            )
+        )
+        education_gate["per_user"].append(
+            {
+                "user_id": uid,
+                "any_post_secondary_educ": u.get("any_post_secondary_educ"),
+                "lacks_post_secondary": user_lacks_post_secondary(u),
+                "n_opportunities": len(opps),
+                "n_opportunities_requiring_post_secondary": n_opp_req,
+                "n_occupations": len(occs),
+                "n_occupations_requiring_post_secondary": n_occ_req,
+            }
+        )
     print(
         f"education_gate: {n_jobs_requiring_ps} jobs / {n_occ_requiring_ps} occupation-rows require "
         f"post-secondary; {sum(1 for p in education_gate['per_user'] if p['lacks_post_secondary'])} of "
@@ -681,15 +880,16 @@ def main() -> None:
             "jobs_source": "live_mongo" if USE_LIVE_JOBS else "local_json",
             "jobs_path": (
                 f"mongo://{os.getenv('MONGO_DB_NAME')}/{os.getenv('MONGO_JOBS_COLLECTION') or 'RankedJobsEnriched'}"
-                if USE_LIVE_JOBS else str(args.jobs.resolve())
+                if USE_LIVE_JOBS
+                else str(args.jobs.resolve())
             ),
             "users_path": str(args.users.resolve()),
             "n_jobs": len(jobs),
             "n_occupation_rows_corpus": len(occ_corpus),
             "job_loader": (
                 f"live_mongo (app.database.get_all_jobs_with_timing; JOBS_RETRIEVAL_FILTER={os.getenv('JOBS_RETRIEVAL_FILTER')})"
-                if USE_LIVE_JOBS else
-                "local_json (full active corpus; users= location prefilter intentionally ignored)"
+                if USE_LIVE_JOBS
+                else "local_json (full active corpus; users= location prefilter intentionally ignored)"
             ),
             "mongo_timing": mongo_timing,
         },
@@ -722,7 +922,9 @@ def main() -> None:
             "n_recommendation_rows": n_rows,
             "recommendations_per_user": per_user_counts,
             "career_recommendations_csv": str(career_csv_path.resolve()),
-            "career_recommendations_with_vectors_csv": str(career_vec_csv_path.resolve()),
+            "career_recommendations_with_vectors_csv": str(
+                career_vec_csv_path.resolve()
+            ),
             "n_career_recommendation_rows": n_career_rows,
             "career_recommendations_per_user": career_per_user_counts,
             "skill_gap_recommendations_csv": str(sg_csv_path.resolve()),
@@ -736,24 +938,34 @@ def main() -> None:
             (
                 "Live Mongo loader: jobs read from MONGO_JOBS_COLLECTION; JOBS_RETRIEVAL_FILTER "
                 "controls the per-user location prefilter (off here unless --jobs-location-filter)."
-                if USE_LIVE_JOBS else
-                "Offline job loader returns the full active corpus and ignores per-user location prefilter (users have city='Unknown')."
+                if USE_LIVE_JOBS
+                else "Offline job loader returns the full active corpus and ignores per-user location prefilter (users have city='Unknown')."
             ),
             "Cross-encoder downloads from HuggingFace on first run unless HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE are set.",
         ],
     }
     (out_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, default=str, ensure_ascii=False), encoding="utf-8"
+        json.dumps(manifest, indent=2, default=str, ensure_ascii=False),
+        encoding="utf-8",
     )
 
     print(f"\nWrote outputs to {out_dir}", file=sys.stderr)
     print(f"  match_v4_response.json  ({len(resp_dicts)} users)", file=sys.stderr)
-    print(f"  recommendations.csv               ({n_rows} opportunity rows)", file=sys.stderr)
+    print(
+        f"  recommendations.csv               ({n_rows} opportunity rows)",
+        file=sys.stderr,
+    )
     print(f"  recommendations_with_vectors.csv  ({n_vec_rows} rows)", file=sys.stderr)
-    print(f"  career_recommendations.csv               ({n_career_rows} occupation rows)", file=sys.stderr)
-    print(f"  career_recommendations_with_vectors.csv  ({n_career_vec_rows} rows)", file=sys.stderr)
+    print(
+        f"  career_recommendations.csv               ({n_career_rows} occupation rows)",
+        file=sys.stderr,
+    )
+    print(
+        f"  career_recommendations_with_vectors.csv  ({n_career_vec_rows} rows)",
+        file=sys.stderr,
+    )
     print(f"  skill_gap_recommendations.csv     ({n_sg_rows} rows)", file=sys.stderr)
-    print(f"  manifest.json", file=sys.stderr)
+    print("  manifest.json", file=sys.stderr)
     for uid in per_user_counts:
         print(
             f"    {uid}: {per_user_counts[uid]} opportunities, "

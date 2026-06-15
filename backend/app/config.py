@@ -269,7 +269,10 @@ V4_FULL_COVERAGE_GAMMA: float = _f("V4_FULL_COVERAGE_GAMMA", 1.0)
 # Whitening transform for the COMBINED (concat) embedding used by the whitened p_hat skills-fit,
 # built by build_whitened_concat.py (mu, W=Sigma^-1/2, target). Refit on the live corpus for prod.
 V4_FULL_CONCAT_WHITENING_PATH: str = _resolve_under_backend(
-    _s("V4_FULL_CONCAT_WHITENING_PATH", str(_DEFAULT_MODEL_DIR / "concat_whitening_gemini.npz"))
+    _s(
+        "V4_FULL_CONCAT_WHITENING_PATH",
+        str(_DEFAULT_MODEL_DIR / "concat_whitening_gemini.npz"),
+    )
 )
 # /match_v4 shortlist sizing (v4-only; v3/zqf keep COSINE_CROSS_ENCODER_RETRIEVE_TOP_K/30). Stage-1 raw
 # concat cosine is near-uninformative (sd ~0.02), so the meaningful ranking is the WHITENED p_hat +
@@ -366,7 +369,10 @@ EMBEDDING_MODEL_PATH: str = _resolve_under_backend(
 # rescale target in metadata). Kept separate from the shared EMBEDDING_MODEL_PATH so v2/v3 + the
 # Node2Vec/skill-gap/hybrid paths are untouched.
 V4_FULL_EMBEDDING_MODEL_PATH: str = _resolve_under_backend(
-    _s("V4_FULL_EMBEDDING_MODEL_PATH", str(_DEFAULT_MODEL_DIR / "skill_embedding_model_gemini_whitened.pt"))
+    _s(
+        "V4_FULL_EMBEDDING_MODEL_PATH",
+        str(_DEFAULT_MODEL_DIR / "skill_embedding_model_gemini_whitened.pt"),
+    )
 )
 SKILL_TO_ROW_PATH: str = _resolve_under_backend(
     _s("SKILL_TO_ROW_PATH", str(_DEFAULT_MODEL_DIR / "skill_to_row.json"))

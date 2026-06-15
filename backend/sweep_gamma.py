@@ -10,6 +10,7 @@ occupation_recommendations, reports:
 Usage: python sweep_gamma.py <label=path> <label=path> ...
        e.g.  python sweep_gamma.py base=runs/p2_baseline/.../r.json g1.0=runs/.../r.json
 """
+
 import json
 import sys
 from pathlib import Path
@@ -24,7 +25,8 @@ def pearson(pairs):
     if len(pairs) < 3:
         return None
     n = len(pairs)
-    xs = [a for a, _ in pairs]; ys = [b for _, b in pairs]
+    xs = [a for a, _ in pairs]
+    ys = [b for _, b in pairs]
     mx, my = sum(xs) / n, sum(ys) / n
     cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
     sx = sum((x - mx) ** 2 for x in xs) ** 0.5
@@ -39,7 +41,11 @@ def cov_of(r):
 
 def report(label, data, key):
     rank_cov = []
-    top1 = []; top5 = []; allc = []; weak5 = []; final5 = []
+    top1 = []
+    top5 = []
+    allc = []
+    weak5 = []
+    final5 = []
     for u, rec in data.items():
         rows = sorted(rec.get(key) or [], key=lambda r: r.get("rank") or 999)
         if not rows:
@@ -52,11 +58,16 @@ def report(label, data, key):
         top5.append(sum(cov_of(r) for r in t5) / len(t5))
         weak5.append(sum(1 for r in t5 if cov_of(r) < 0.4))
         final5.append(sum((r.get("final_score") or 0) for r in t5) / len(t5))
-    def avg(x): return sum(x)/len(x) if x else float("nan")
+
+    def avg(x):
+        return sum(x) / len(x) if x else float("nan")
+
     pc = pearson(rank_cov)
-    print(f"  {label:8s}  corr(rank,cov)={pc:+.3f}  cov@1={avg(top1):.3f}  "
-          f"cov@5={avg(top5):.3f}  cov@all={avg(allc):.3f}  weak@5={avg(weak5):.2f}  "
-          f"final@5={avg(final5):.3f}")
+    print(
+        f"  {label:8s}  corr(rank,cov)={pc:+.3f}  cov@1={avg(top1):.3f}  "
+        f"cov@5={avg(top5):.3f}  cov@all={avg(allc):.3f}  weak@5={avg(weak5):.2f}  "
+        f"final@5={avg(final5):.3f}"
+    )
 
 
 def main():

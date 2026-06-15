@@ -82,12 +82,16 @@ def _get_v4_matcher() -> CosineSkillMatcher:
     if _v4_matcher_instance is None:
         with _v4_matcher_lock:
             if _v4_matcher_instance is None:
-                _v4_matcher_instance = CosineSkillMatcher(model_path=V4_FULL_EMBEDDING_MODEL_PATH)
+                _v4_matcher_instance = CosineSkillMatcher(
+                    model_path=V4_FULL_EMBEDDING_MODEL_PATH
+                )
     return _v4_matcher_instance
 
 
 _concat_white_lock = threading.Lock()
-_concat_white: Optional[Dict[str, Any]] = None  # {mu,W,target} once loaded; {} if missing/disabled
+_concat_white: Optional[Dict[str, Any]] = (
+    None  # {mu,W,target} once loaded; {} if missing/disabled
+)
 
 
 def _get_concat_whitening() -> Optional[Dict[str, Any]]:
@@ -103,20 +107,35 @@ def _get_concat_whitening() -> Optional[Dict[str, Any]]:
                     mu = z["mu"].astype(np.float64)
                     W = z["W"].astype(np.float64)
                     target = float(z["target"])
-                    if mu.shape[0] != EMBEDDING_DIM or W.shape[0] != EMBEDDING_DIM or target <= 0:
+                    if (
+                        mu.shape[0] != EMBEDDING_DIM
+                        or W.shape[0] != EMBEDDING_DIM
+                        or target <= 0
+                    ):
                         # Dim/target mismatch (e.g. embedding model changed without rebuilding the
                         # artifact). Disable rather than risk a mid-request matmul error / bad rescale.
                         logger.error(
                             "concat whitening artifact %s incompatible (mu_dim=%d W_dim=%d target=%.4f, "
                             "expected dim=%d, target>0); whitened p_hat disabled",
-                            path, mu.shape[0], W.shape[0], target, EMBEDDING_DIM,
+                            path,
+                            mu.shape[0],
+                            W.shape[0],
+                            target,
+                            EMBEDDING_DIM,
                         )
                         _concat_white = {}
                     else:
                         _concat_white = {"mu": mu, "W": W, "target": target}
-                        logger.info("loaded concat whitening artifact %s (target=%.4f)", path, target)
+                        logger.info(
+                            "loaded concat whitening artifact %s (target=%.4f)",
+                            path,
+                            target,
+                        )
                 else:
-                    logger.warning("concat whitening artifact not found at %s; whitened p_hat disabled", path)
+                    logger.warning(
+                        "concat whitening artifact not found at %s; whitened p_hat disabled",
+                        path,
+                    )
                     _concat_white = {}
     return _concat_white or None
 

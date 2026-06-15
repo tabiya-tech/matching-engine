@@ -8,6 +8,7 @@ Checks, per user, over opportunity_recommendations (and occupations):
 
 Usage:  python compare_p2.py <baseline_response.json> <demote_response.json>
 """
+
 import json
 import sys
 from pathlib import Path
@@ -25,7 +26,7 @@ def spearman(pairs):
     # pairs: list of (rank, coverage); rank correlation via simple Pearson on ranks of coverage
     if len(pairs) < 3:
         return None
-    import statistics
+
     xs = [a for a, _ in pairs]
     ys = [b for _, b in pairs]
     n = len(xs)
@@ -42,7 +43,10 @@ def main():
     users = sorted(set(base) & set(dem))
     print(f"users compared: {len(users)}\n")
 
-    for key, occ in (("opportunity_recommendations", False), ("occupation_recommendations", True)):
+    for key, occ in (
+        ("opportunity_recommendations", False),
+        ("occupation_recommendations", True),
+    ):
         print(f"==== {key} ====")
         inv_base_bad = inv_dem_bad = 0
         n_items = 0
@@ -73,25 +77,50 @@ def main():
                 cov_rank_dem.append((r.get("rank"), cov if cov is not None else 1.0))
             for uuid, r in b.items():
                 sb = r.get("score_breakdown") or {}
-                cov_rank_base.append((r.get("rank"), sb.get("essential_coverage") if sb.get("essential_coverage") is not None else 1.0))
+                cov_rank_base.append(
+                    (
+                        r.get("rank"),
+                        sb.get("essential_coverage")
+                        if sb.get("essential_coverage") is not None
+                        else 1.0,
+                    )
+                )
             # ranking moves
             for uuid in set(b) & set(d):
                 rb, rd = b[uuid].get("rank"), d[uuid].get("rank")
                 all_moves.append(rd - rb)
                 cov = (d[uuid].get("score_breakdown") or {}).get("essential_coverage")
                 if rd - rb >= 2 and (cov is not None and cov < 0.5):
-                    demotions.append((u, b[uuid].get("opportunity_title") or b[uuid].get("occupation_label"),
-                                      cov, rb, rd, b[uuid].get("final_score"), d[uuid].get("final_score")))
-        print(f"  items: {n_items}  invariant violations: baseline={inv_base_bad} demote={inv_dem_bad}")
+                    demotions.append(
+                        (
+                            u,
+                            b[uuid].get("opportunity_title")
+                            or b[uuid].get("occupation_label"),
+                            cov,
+                            rb,
+                            rd,
+                            b[uuid].get("final_score"),
+                            d[uuid].get("final_score"),
+                        )
+                    )
+        print(
+            f"  items: {n_items}  invariant violations: baseline={inv_base_bad} demote={inv_dem_bad}"
+        )
         if all_moves:
             moved = sum(1 for m in all_moves if m != 0)
-            print(f"  rank moves: {moved}/{len(all_moves)} items changed rank; "
-                  f"max drop={max(all_moves)} max rise={min(all_moves)}")
-        print(f"  corr(rank,coverage) baseline={spearman(cov_rank_base)}  demote={spearman(cov_rank_dem)}")
+            print(
+                f"  rank moves: {moved}/{len(all_moves)} items changed rank; "
+                f"max drop={max(all_moves)} max rise={min(all_moves)}"
+            )
+        print(
+            f"  corr(rank,coverage) baseline={spearman(cov_rank_base)}  demote={spearman(cov_rank_dem)}"
+        )
         demotions.sort(key=lambda t: t[4] - t[3], reverse=True)
         for row in demotions[:8]:
-            print(f"    demoted: user={row[0][:8]} cov={row[2]:.2f} rank {row[3]}->{row[4]} "
-                  f"final {row[5]:.4f}->{row[6]:.4f}  {row[1]}")
+            print(
+                f"    demoted: user={row[0][:8]} cov={row[2]:.2f} rank {row[3]}->{row[4]} "
+                f"final {row[5]:.4f}->{row[6]:.4f}  {row[1]}"
+            )
         print()
 
 

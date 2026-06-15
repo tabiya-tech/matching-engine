@@ -36,13 +36,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--jobs", type=Path, default=DEFAULT_JOBS)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
-    ap.add_argument("--shrinkage", type=float, default=2.0, help="Tikhonov lambda (× mean diag)")
+    ap.add_argument(
+        "--shrinkage", type=float, default=2.0, help="Tikhonov lambda (× mean diag)"
+    )
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
     rng = np.random.default_rng(args.seed)
 
     data = json.loads(Path(args.jobs).read_text(encoding="utf-8"))
-    vecs = [j["job_embedding"] for j in data if isinstance(j.get("job_embedding"), list)]
+    vecs = [
+        j["job_embedding"] for j in data if isinstance(j.get("job_embedding"), list)
+    ]
     if not vecs:
         raise SystemExit(f"No job_embedding vectors in {args.jobs}")
     X = _l2(np.asarray(vecs, dtype=np.float64))
@@ -53,7 +57,9 @@ def main():
     Xc = X - mu
     Sigma = (Xc.T @ Xc) / n
     dm = float(np.mean(np.diag(Sigma)))
-    Sigma += args.shrinkage * dm * np.eye(d)  # shrinkage (cov underdetermined at d≈3072)
+    Sigma += (
+        args.shrinkage * dm * np.eye(d)
+    )  # shrinkage (cov underdetermined at d≈3072)
     vals, vecsZ = np.linalg.eigh(Sigma)
     W = (vecsZ * (1.0 / np.sqrt(np.maximum(vals, 1e-12)))) @ vecsZ.T  # Sigma^-1/2
 
@@ -64,12 +70,20 @@ def main():
     mask = ia != ib
     cos = np.sum(Xw[ia[mask]] * Xw[ib[mask]], axis=1)
     target = float(np.percentile(cos, 99))
-    print(f"random-pair whitened cosine: mean={cos.mean():.4f} p99(target)={target:.4f} max={cos.max():.4f}")
+    print(
+        f"random-pair whitened cosine: mean={cos.mean():.4f} p99(target)={target:.4f} max={cos.max():.4f}"
+    )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(args.out, mu=mu.astype(np.float32), W=W.astype(np.float32),
-             target=np.float32(target), dim=np.int64(d), n_fit=np.int64(n))
-    print(f"wrote {args.out}  ({args.out.stat().st_size/1e6:.0f} MB)")
+    np.savez(
+        args.out,
+        mu=mu.astype(np.float32),
+        W=W.astype(np.float32),
+        target=np.float32(target),
+        dim=np.int64(d),
+        n_fit=np.int64(n),
+    )
+    print(f"wrote {args.out}  ({args.out.stat().st_size / 1e6:.0f} MB)")
 
 
 if __name__ == "__main__":

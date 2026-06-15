@@ -91,7 +91,9 @@ class ScoreBreakdown(BaseModel):
     # --- Multiplicative (paper-aligned) fields ---
     u_hat: Optional[float] = None
     p_hat: Optional[float] = None
-    p_hat_source: Optional[str] = None  # 'concat_cosine_whitened' when Phase-2 demotion is active
+    p_hat_source: Optional[str] = (
+        None  # 'concat_cosine_whitened' when Phase-2 demotion is active
+    )
     p_hat_components: Optional[PHatComponents] = None
     # --- Legacy additive fields ---
     total_skill_utility: Optional[float] = None

@@ -60,7 +60,9 @@ def compact_cosine_matched_skill_lines(
 class CosineSkillMatcher:
     """Row-normalised embedding matrix + label-based skill lookup."""
 
-    def __init__(self, model_path: Optional[str] = None, rescale_target: Optional[float] = None) -> None:
+    def __init__(
+        self, model_path: Optional[str] = None, rescale_target: Optional[float] = None
+    ) -> None:
         self.MODEL_PATH = Path(model_path or EMBEDDING_MODEL_PATH)
         self.MAPPING_PATH = Path(SKILL_TO_ROW_PATH)
         self.SKILLS_CSV_PATH = Path(SKILLS_CSV_PATH)
@@ -73,8 +75,14 @@ class CosineSkillMatcher:
         self.W = W / np.where(norms > 0, norms, 1.0)
         # Whitened artifacts carry a rescale target (``target_max_p999``) so de-anisotropised cosines
         # map toward [0,1]; raw artifacts don't (target 0 => rescale is a no-op = historical behaviour).
-        _meta_t = (state.get("whitening") or {}).get("target_max_p999") if isinstance(state, dict) else None
-        self._rescale_target = float(rescale_target if rescale_target is not None else (_meta_t or 0.0))
+        _meta_t = (
+            (state.get("whitening") or {}).get("target_max_p999")
+            if isinstance(state, dict)
+            else None
+        )
+        self._rescale_target = float(
+            rescale_target if rescale_target is not None else (_meta_t or 0.0)
+        )
 
         with open(self.MAPPING_PATH, "r", encoding="utf-8") as f:
             self.skill_to_row = json.load(f)
@@ -294,7 +302,9 @@ class CosineSkillMatcher:
         t = self._rescale_target
         return np.minimum(1.0, sims / t) if t and t > 0 else sims
 
-    def score_pair_v4(self, user_profile: Dict[str, Any], job_posting: Dict[str, Any]) -> Dict[str, Any]:
+    def score_pair_v4(
+        self, user_profile: Dict[str, Any], job_posting: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """v4 GATE matching: rescaled (whitened) similarity + one-to-one greedy assignment + exact-id
         flag. Each job skill is matched to AT MOST ONE distinct user skill, so extra user skills can't
         inflate coverage. ``per_job_skill`` rows mirror ``score_pair`` plus ``cosine_similarity_raw``
@@ -317,7 +327,11 @@ class CosineSkillMatcher:
                 "job_skill_id": jid,
                 "job_skill_label": self.skill_labels.get(jid) or job_labels.get(jid),
                 "best_user_skill_id": uid,
-                "best_user_skill_label": (self.skill_labels.get(uid) or user_labels.get(uid)) if uid else None,
+                "best_user_skill_label": (
+                    self.skill_labels.get(uid) or user_labels.get(uid)
+                )
+                if uid
+                else None,
                 "cosine_similarity": round(float(sim_resc), 4),
                 "cosine_similarity_raw": round(float(sim_raw), 4),
                 "exact": jid in user_id_set,
@@ -350,7 +364,11 @@ class CosineSkillMatcher:
         per: List[Dict[str, Any]] = []
         for j, jid in enumerate(j_valid):
             u = assigned[j]
-            per.append(_row(jid, None, 0.0, 0.0) if u < 0 else _row(jid, u_valid[u], resc[j, u], raw[j, u]))
+            per.append(
+                _row(jid, None, 0.0, 0.0)
+                if u < 0
+                else _row(jid, u_valid[u], resc[j, u], raw[j, u])
+            )
         return {"per_job_skill": per}
 
     def resolved_user_skill_labels_ordered(

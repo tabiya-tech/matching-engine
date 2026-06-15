@@ -257,7 +257,7 @@ def enrich_recommendations_with_preferences(
             cov = coverage_by_uuid.get(uid)
             if cov is not None:
                 cov = max(0.0, min(1.0, float(cov)))
-                factor = cov ** coverage_gamma
+                factor = cov**coverage_gamma
                 final = final * factor
                 breakdown["final_score"] = round(final, 4)
                 breakdown["essential_coverage"] = round(cov, 4)

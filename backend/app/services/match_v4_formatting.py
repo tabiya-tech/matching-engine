@@ -80,7 +80,9 @@ def build_matched_skills(
             continue
         sim = float(r.get("cosine_similarity") or 0.0)
         exact = bool(r.get("exact"))
-        meets = exact or (sim >= sim_threshold)        # exact-id overlap always counts as "has it"
+        meets = exact or (
+            sim >= sim_threshold
+        )  # exact-id overlap always counts as "has it"
         tier = "exact" if exact else ("embedding" if sim >= sim_threshold else "none")
         if jid in essential_ids:
             essential.append(
@@ -195,7 +197,9 @@ def _score_breakdown(
     return {
         "u_hat": rec.get("u_hat"),
         "p_hat": rec.get("p_hat"),
-        "p_hat_source": rec.get("p_hat_source"),  # 'concat_cosine_whitened' when Phase-2 demotion is on
+        "p_hat_source": rec.get(
+            "p_hat_source"
+        ),  # 'concat_cosine_whitened' when Phase-2 demotion is on
         "preference_score": rec.get("u_hat"),
         "preference_score_legacy": sb.get("preference_score_legacy"),
         # v4 cosine approximations of the legacy Node2Vec skill breakdown (all in [0,1];
@@ -362,8 +366,12 @@ def build_opportunity_row(
     matched_prefs, wa_bws = split_pref_details(rec.get("preference_details"))
     final_score = float(rec.get("final_score") or 0.0)
     n_ess_total = len(item.get("essential_skills") or [])
-    coverage = essential_coverage(matched_skills["essential_skill_matches"], n_ess_total)
-    sb = _score_breakdown(rec, item, per_job_skill, essential_ids, sim_threshold=sim_threshold)
+    coverage = essential_coverage(
+        matched_skills["essential_skill_matches"], n_ess_total
+    )
+    sb = _score_breakdown(
+        rec, item, per_job_skill, essential_ids, sim_threshold=sim_threshold
+    )
     sb["essential_coverage"] = round(coverage, 4)
     sb["skill_match_level"] = skill_match_level(coverage, n_ess_total)
     return {
@@ -422,8 +430,12 @@ def build_occupation_row(
     matched_prefs, wa_bws = split_pref_details(rec.get("preference_details"))
     final_score = float(rec.get("final_score") or 0.0)
     n_ess_total = len(item.get("essential_skills") or [])
-    coverage = essential_coverage(matched_skills["essential_skill_matches"], n_ess_total)
-    sb = _score_breakdown(rec, item, per_job_skill, essential_ids, sim_threshold=sim_threshold)
+    coverage = essential_coverage(
+        matched_skills["essential_skill_matches"], n_ess_total
+    )
+    sb = _score_breakdown(
+        rec, item, per_job_skill, essential_ids, sim_threshold=sim_threshold
+    )
     sb["essential_coverage"] = round(coverage, 4)
     sb["skill_match_level"] = skill_match_level(coverage, n_ess_total)
     return {
