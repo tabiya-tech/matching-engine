@@ -1,0 +1,4 @@
+config:
+  gcp:region: us-central1
+  gcp:project: matching-algo-494308
+  docker-repository_name: docker-repository
