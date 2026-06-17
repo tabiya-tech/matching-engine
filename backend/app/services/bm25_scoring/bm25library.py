@@ -137,6 +137,18 @@ def avg_doc_length(docs: List[List[str]]) -> float:
     return float(sum(len(d) for d in docs)) / len(docs)
 
 
+def _sanitize_corpus_for_bm25(corpus: List[List[str]]) -> List[List[str]]:
+    """Avoid rank_bm25's ZeroDivisionError when every doc is empty.
+
+    rank_bm25._calc_idf divides by len(self.idf); if all docs tokenize to [] the
+    IDF dict ends up empty and BM25Okapi construction throws. Substitute a single
+    sentinel token in any empty doc so the corpus has a nonzero IDF — downstream
+    queries score these docs as 0 against any real query token, preserving
+    behavior.
+    """
+    return [doc if doc else ["__empty_doc__"] for doc in corpus]
+
+
 def build_okapi_indexes(
     skills_corpus: List[List[str]],
     full_corpus: List[List[str]],
@@ -147,8 +159,8 @@ def build_okapi_indexes(
     """Return ``(skills_bm25, full_bm25)`` ``BM25Okapi`` instances."""
     _require_rank_bm25()
     return (
-        BM25Okapi(skills_corpus, k1=k1, b=b),
-        BM25Okapi(full_corpus, k1=k1, b=b),
+        BM25Okapi(_sanitize_corpus_for_bm25(skills_corpus), k1=k1, b=b),
+        BM25Okapi(_sanitize_corpus_for_bm25(full_corpus), k1=k1, b=b),
     )
 
 

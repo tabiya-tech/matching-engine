@@ -15,6 +15,9 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
+
+from app.match_timing_log import log_match_step
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -272,6 +275,9 @@ def run_match_concat_gemini_ce(
     rt = max(1, int(retrieve_top_k))
     fk = max(1, int(final_top_k))
 
+    t_engine_start = time.perf_counter()
+
+    t0 = time.perf_counter()
     job_rows: List[Dict[str, Any]] = []
     vectors: List[np.ndarray] = []
     for j in jobs:
@@ -290,6 +296,7 @@ def run_match_concat_gemini_ce(
 
     # Post-secondary education gate: aligned with job_rows, used to skip candidates per user.
     job_requires_ps = [job_requires_post_secondary(j) for j in job_rows]
+    prep_job_vectors_ms = (time.perf_counter() - t0) * 1000.0
 
     if not job_rows:
         empty_summary = {
@@ -319,10 +326,13 @@ def run_match_concat_gemini_ce(
             for u in users
         ]
 
+    t0 = time.perf_counter()
     j_mat = np.stack(vectors, axis=0).astype(np.float64)
     j_norm = l2_normalize_rows(j_mat.astype(np.float32)).astype(np.float64)
     jid_list = [str(j.get("uuid") or "") for j in job_rows]
+    job_mat_build_ms = (time.perf_counter() - t0) * 1000.0
 
+    t0 = time.perf_counter()
     if user_unit_vectors is not None:
         u_norm = np.asarray(user_unit_vectors, dtype=np.float64)
         if (
@@ -333,14 +343,22 @@ def run_match_concat_gemini_ce(
             raise RuntimeError(
                 f"user_unit_vectors shape {u_norm.shape} != ({len(users)}, {EMBEDDING_DIM})"
             )
+        gemini_embed_ms = 0.0  # supplied by caller
     else:
         u_norm = embed_user_unit_vectors(users)
+        gemini_embed_ms = (time.perf_counter() - t0) * 1000.0
 
     matcher = _get_matcher()
     reranker = _get_reranker()
 
+    cosine_shortlist_ms = 0.0
+    score_pair_ms = 0.0
+    ce_rerank_ms = 0.0
+    format_user_recs_ms = 0.0
+
     out_results: List[Dict[str, Any]] = []
     for i, user in enumerate(users):
+        t_user = time.perf_counter()
         sim_row = (u_norm[i : i + 1] @ j_norm.T).reshape(-1)
         order = _sorted_indices_desc(sim_row)
         user_no_ps = user_lacks_post_secondary(user)
@@ -374,7 +392,9 @@ def run_match_concat_gemini_ce(
 
         for r_i, row in enumerate(cosine_recs, start=1):
             row["rank"] = r_i
+        cosine_shortlist_ms += (time.perf_counter() - t_user) * 1000.0
 
+        t_ce = time.perf_counter()
         labels = user_skill_labels_for_concat(user)
         reranked = rerank_cosine_recommendations(
             labels,
@@ -382,7 +402,9 @@ def run_match_concat_gemini_ce(
             reranker=reranker,
             final_top_k=fk,
         )
+        ce_rerank_ms += (time.perf_counter() - t_ce) * 1000.0
 
+        t_fmt = time.perf_counter()
         recs: List[Dict[str, Any]] = []
         for row in reranked:
             recs.append(
@@ -429,5 +451,26 @@ def run_match_concat_gemini_ce(
                 "config_summary": cfg,
             }
         )
+        format_user_recs_ms += (time.perf_counter() - t_fmt) * 1000.0
+
+    engine_total_ms = (time.perf_counter() - t_engine_start) * 1000.0
+    try:
+        log_match_step(
+            "engine concat_gemini_ce",
+            "sub-stages (sum across all users)",
+            n_users=len(users),
+            n_jobs_with_emb=n_with_emb,
+            retrieve_top_k=rt,
+            final_top_k=fk,
+            prep_job_vectors_ms=prep_job_vectors_ms,
+            job_mat_build_ms=job_mat_build_ms,
+            gemini_embed_ms=gemini_embed_ms,
+            cosine_shortlist_ms=cosine_shortlist_ms,
+            ce_rerank_ms=ce_rerank_ms,
+            format_user_recs_ms=format_user_recs_ms,
+            engine_total_ms=engine_total_ms,
+        )
+    except Exception:
+        pass
 
     return out_results

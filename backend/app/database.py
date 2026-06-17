@@ -577,7 +577,8 @@ async def get_all_jobs_with_timing(users: Optional[Sequence[dict]] = None):
       jobs_retrieval_filter_applied, jobs_find_use_projection
     """
     t_total = time.perf_counter()
-    t0 = time.perf_counter()
+
+    t_filter_build = time.perf_counter()
     filt: Dict[str, Any] = RANKED_JOBS_ACTIVE_FILTER
     retrieval_applied = False
     if JOBS_RETRIEVAL_FILTER and users:
@@ -585,6 +586,9 @@ async def get_all_jobs_with_timing(users: Optional[Sequence[dict]] = None):
         if built is not None and built != RANKED_JOBS_ACTIVE_FILTER:
             filt = built
             retrieval_applied = True
+    filter_build_ms = _ms(t_filter_build)
+
+    t_cursor_create = time.perf_counter()
     col = db[MONGO_JOBS_COLLECTION]
     if JOBS_FIND_USE_PROJECTION:
         cursor = col.find(filt, RANKED_JOB_FIND_PROJECTION)
@@ -594,8 +598,21 @@ async def get_all_jobs_with_timing(users: Optional[Sequence[dict]] = None):
         cursor = cursor.sort([("_id", -1)])
         if JOBS_RETRIEVAL_LIMIT > 0:
             cursor = cursor.limit(JOBS_RETRIEVAL_LIMIT)
-    ranked_docs = [d async for d in cursor]
-    mongo_ranked_find_ms = _ms(t0)
+    cursor_create_ms = _ms(t_cursor_create)
+
+    # Drain the cursor: time-to-first-doc (server exec + first network batch) vs
+    # remaining drain (the rest of the network transfer + iter overhead).
+    t_drain_start = time.perf_counter()
+    ranked_docs: List[dict] = []
+    cursor_first_doc_ms = 0.0
+    first = True
+    async for d in cursor:
+        if first:
+            cursor_first_doc_ms = _ms(t_drain_start)
+            first = False
+        ranked_docs.append(d)
+    cursor_drain_remaining_ms = _ms(t_drain_start) - cursor_first_doc_ms
+    mongo_ranked_find_ms = _ms(t_filter_build)  # legacy total kept for back-compat
 
     t0 = time.perf_counter()
     jobs: List[dict] = []
@@ -616,8 +633,31 @@ async def get_all_jobs_with_timing(users: Optional[Sequence[dict]] = None):
         len(ranked_docs),
         skipped,
     )
+    try:
+        from app.match_timing_log import log_match_step as _log_match_step
+        _log_match_step(
+            "mongo /jobs",
+            "fetch sub-stages",
+            n_jobs=len(jobs),
+            n_ranked_raw=len(ranked_docs),
+            filter_build_ms=filter_build_ms,
+            cursor_create_ms=cursor_create_ms,
+            cursor_first_doc_ms=cursor_first_doc_ms,
+            cursor_drain_remaining_ms=cursor_drain_remaining_ms,
+            python_build_jobs_ms=python_build_jobs_ms,
+            get_all_jobs_total_ms=total_ms,
+            retrieval_filter_applied=retrieval_applied,
+            projection_enabled=JOBS_FIND_USE_PROJECTION,
+        )
+    except Exception:
+        pass
+
     return jobs, {
         "mongo_ranked_find_ms": mongo_ranked_find_ms,
+        "filter_build_ms": filter_build_ms,
+        "cursor_create_ms": cursor_create_ms,
+        "cursor_first_doc_ms": cursor_first_doc_ms,
+        "cursor_drain_remaining_ms": cursor_drain_remaining_ms,
         "python_build_jobs_ms": python_build_jobs_ms,
         "n_ranked_raw": len(ranked_docs),
         "n_jobs": len(jobs),
