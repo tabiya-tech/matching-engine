@@ -109,4 +109,5 @@ jobs:
           # Use the Poetry-managed virtualenv that holds the Pulumi SDK packages.
           source "$(poetry env info --path)/bin/activate"
           pulumi login
+          pulumi org set-default tabiya-tech
           pulumi up -s "${{ inputs.env-name }}" -C backend --yes
