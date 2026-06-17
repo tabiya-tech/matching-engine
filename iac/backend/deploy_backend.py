@@ -134,7 +134,7 @@ def deploy_backend(*,
         template=gcp.cloudrunv2.ServiceTemplateArgs(
             timeout="300s",
             scaling=gcp.cloudrunv2.ServiceTemplateScalingArgs(
-                min_instance_count=0,
+                min_instance_count=1,
                 max_instance_count=3,
             ),
             containers=[
