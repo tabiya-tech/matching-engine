@@ -1,0 +1,112 @@
+name: Deploy
+
+run-name: Deploy to ${{ inputs.env-name }} (${{ github.ref_name }} - ${{ github.sha }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      env-name:
+        required: true
+        description: 'The Pulumi stack / environment to deploy. Maps to iac/backend/Pulumi.<env-name>.yaml.'
+        type: choice
+        options:
+          - dev
+          - shp
+          - zmb
+          - sa
+          - eth
+
+concurrency:
+  group: deploy-${{ inputs.env-name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env-name }}
+    env:
+      GCP_REGION: us-central1
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Poetry
+        run: pipx install poetry
+      - name: Install IaC dependencies
+        working-directory: iac
+        run: poetry install --no-root
+      - name: Cache Pulumi plugins
+        uses: actions/cache@v4
+        with:
+          path: ~/.pulumi/plugins
+          key: ${{ runner.os }}-pulumi-plugins-${{ hashFiles('iac/poetry.lock') }}
+      - name: Install Pulumi CLI
+        uses: pulumi/actions@v6
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+      - name: Authenticate to Google Cloud
+        env:
+          GCP_SA_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+        run: |
+          printf '%s' "$GCP_SA_JSON" > "$HOME/gcp-key.json"
+          # Expose the key path to later steps; pulumi-gcp reads it for auth.
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/gcp-key.json" >> "$GITHUB_ENV"
+          gcloud auth activate-service-account --key-file="$HOME/gcp-key.json"
+          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+      - name: Deploy with Pulumi
+        working-directory: iac
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          MONGO_URL: ${{ secrets.MONGO_URL }}
+          MONGO_DB_NAME: ${{ secrets.MONGO_DB_NAME }}
+          MONGO_JOBS_COLLECTION: ${{ secrets.MONGO_JOBS_COLLECTION }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SCORING_MODE: ${{ vars.SCORING_MODE }}
+          ADDITIVE_W1_SKILLS: ${{ vars.ADDITIVE_W1_SKILLS }}
+          ADDITIVE_W2_PREFERENCE: ${{ vars.ADDITIVE_W2_PREFERENCE }}
+          ADDITIVE_W3_MARKET: ${{ vars.ADDITIVE_W3_MARKET }}
+          MATCH_TOP_K_OPPORTUNITIES: ${{ vars.MATCH_TOP_K_OPPORTUNITIES }}
+          MATCH_TOP_K_OCCUPATIONS: ${{ vars.MATCH_TOP_K_OCCUPATIONS }}
+          MATCH_TOP_K_SKILL_GAPS: ${{ vars.MATCH_TOP_K_SKILL_GAPS }}
+          GATE_SIMILARITY_THRESHOLD: ${{ vars.GATE_SIMILARITY_THRESHOLD }}
+          PHAT_ALPHA_ESSENTIAL: ${{ vars.PHAT_ALPHA_ESSENTIAL }}
+          PHAT_BETA_READINESS: ${{ vars.PHAT_BETA_READINESS }}
+          PHAT_GAMMA_MARKET: ${{ vars.PHAT_GAMMA_MARKET }}
+          SKILL_U_W_LOC: ${{ vars.SKILL_U_W_LOC }}
+          SKILL_U_W_ESS: ${{ vars.SKILL_U_W_ESS }}
+          SKILL_U_W_OPT: ${{ vars.SKILL_U_W_OPT }}
+          SKILL_U_W_GRP: ${{ vars.SKILL_U_W_GRP }}
+          SKILL_U_GAP_PENALTY: ${{ vars.SKILL_U_GAP_PENALTY }}
+          SKILL_U_TAU_ELIG: ${{ vars.SKILL_U_TAU_ELIG }}
+          SKILL_MIN_ESSENTIAL_MATCH_SHARE: ${{ vars.SKILL_MIN_ESSENTIAL_MATCH_SHARE }}
+          SKILL_ESSENTIAL_GEO_FLOOR: ${{ vars.SKILL_ESSENTIAL_GEO_FLOOR }}
+          PREFERENCE_BASE_CONSTANT: ${{ vars.PREFERENCE_BASE_CONSTANT }}
+          PREFERENCE_LEGACY_SCORE_SCALE: ${{ vars.PREFERENCE_LEGACY_SCORE_SCALE }}
+          PREFERENCE_SIGMOID_NUMERATOR: ${{ vars.PREFERENCE_SIGMOID_NUMERATOR }}
+          PREF_ENABLE_EARNINGS: ${{ vars.PREF_ENABLE_EARNINGS }}
+          PREF_ENABLE_TASK_CONTENT: ${{ vars.PREF_ENABLE_TASK_CONTENT }}
+          PREF_ENABLE_PHYSICAL_DEMAND: ${{ vars.PREF_ENABLE_PHYSICAL_DEMAND }}
+          PREF_ENABLE_WORK_FLEXIBILITY: ${{ vars.PREF_ENABLE_WORK_FLEXIBILITY }}
+          PREF_ENABLE_SOCIAL: ${{ vars.PREF_ENABLE_SOCIAL }}
+          PREF_ENABLE_CAREER_GROWTH: ${{ vars.PREF_ENABLE_CAREER_GROWTH }}
+          PREF_ENABLE_SOCIAL_MEANING: ${{ vars.PREF_ENABLE_SOCIAL_MEANING }}
+          OCCUPATION_JSON_PATH: ${{ vars.OCCUPATION_JSON_PATH }}
+          EMBEDDING_MODEL_PATH: ${{ vars.EMBEDDING_MODEL_PATH }}
+          SKILL_TO_ROW_PATH: ${{ vars.SKILL_TO_ROW_PATH }}
+          SKILLS_CSV_PATH: ${{ vars.SKILLS_CSV_PATH }}
+          SKILL_GROUPS_CSV_PATH: ${{ vars.SKILL_GROUPS_CSV_PATH }}
+          SKILL_HIERARCHY_CSV_PATH: ${{ vars.SKILL_HIERARCHY_CSV_PATH }}
+          SKILL_ESSENTIAL_DAMPING_ALPHA: ${{ vars.SKILL_ESSENTIAL_DAMPING_ALPHA }}
+          JOBS_RETRIEVAL_FILTER: ${{ vars.JOBS_RETRIEVAL_FILTER }}
+        run: |
+          # Use the Poetry-managed virtualenv that holds the Pulumi SDK packages.
+          source "$(poetry env info --path)/bin/activate"
+          pulumi login
+          pulumi up -s "${{ inputs.env-name }}" -C backend --yes
