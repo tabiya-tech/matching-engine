@@ -114,6 +114,32 @@ paths:
       x-google-quota:
         metricCosts:
           request-metric: 1
+  '/jobs/stats':
+    get:
+      description: Get the stats of different jobs
+      operationId: list_jobs_stats
+      responses:
+        '200':
+          description: Stats of jobs
+      summary: Browse jobs stats
+      tags:
+        - Jobs
+      x-google-quota:
+        metricCosts:
+          request-metric: 1
+      security:
+        - gcp_api_key: []
+    options:
+      description: CORS preflight for /jobs
+      operationId: jobs_stats_options
+      responses:
+        '200':
+          description: Success
+      tags:
+        - Jobs
+      x-google-quota:
+        metricCosts:
+          request-metric: 1
   '/match':
     post:
       description: Match one or many users against jobs and occupations.
