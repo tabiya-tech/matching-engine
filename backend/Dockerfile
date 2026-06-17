@@ -16,7 +16,7 @@ COPY setup.sh setup.sh
 
 COPY app/ app/
 COPY resources/ resources/
-RUN ["sh", "./setup.sh"]
+RUN ["sh", "-c", "./setup.sh"]
 
 ENV PYTHONUNBUFFERED=1
 

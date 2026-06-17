@@ -1,4 +1,5 @@
 MODEL_DIR="./resources/models/cross-encoder"
+mkdir -p $MODEL_DIR
 
 if [ ! -d "$MODEL_DIR" ]; then
   echo "Downloading model to $MODEL_DIR..."
