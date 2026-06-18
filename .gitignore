@@ -13,3 +13,6 @@ output_results_*
 backend/runs/
 index_based_matching/
 *.iml
+# Large local jobs corpus for the offline harness (~197MB; exceeds GitHub's 100MB limit). Use
+# --live-jobs, or keep this file locally / in object storage rather than committing it.
+data/kenya_jobs_for_pipeline.json

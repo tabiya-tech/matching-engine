@@ -23,6 +23,7 @@ from app.config import (
     V4_FULL_MIN_ESS_SHARE,
     V4_FULL_RANK_DEMOTE,
     V4_FULL_SIM_THRESHOLD,
+    V4_FULL_UNPARSED_COVERAGE,
     V4_FULL_WHITENED_GATE,
 )
 from app.services import match_v4_formatting as fmt
@@ -268,6 +269,8 @@ def run_match_v4_full(
         p_over: Dict[str, float] = {}
         cov_over: Dict[str, float] = {}
         det_cache: Dict[str, Any] = {}
+        parsed_covs: List[float] = []  # coverages of items WITH parsed essential skills
+        unparsed_uuids: List[str] = []  # items with no essential skills (back-filled below)
         target = concat_rescale_target()
         ce = (v3_row or {}).get("concat_gemini_ce_recommendations") or []
         for r in ce:
@@ -288,9 +291,20 @@ def run_match_v4_full(
                 per, ess_ids, sim_threshold=V4_FULL_SIM_THRESHOLD
             )
             n_ess = len(item.get("essential_skills") or [])
-            cov_over[uuid] = fmt.essential_coverage(
-                ms["essential_skill_matches"], n_ess
+            if n_ess:
+                cov = fmt.essential_coverage(ms["essential_skill_matches"], n_ess)
+                cov_over[uuid] = cov
+                parsed_covs.append(cov)
+            else:
+                unparsed_uuids.append(uuid)
+        # Back-fill unparsed items with the typical (mean) parsed coverage of this shortlist (or the
+        # configured override / neutral fallback) so they no longer escape the achievability demotion.
+        if unparsed_uuids:
+            fill = fmt.unparsed_ranking_coverage(
+                parsed_covs, override=V4_FULL_UNPARSED_COVERAGE
             )
+            for uuid in unparsed_uuids:
+                cov_over[uuid] = fill
         return p_over, cov_over, det_cache
 
     out: List[Dict[str, Any]] = []

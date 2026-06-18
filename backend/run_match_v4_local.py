@@ -1,12 +1,24 @@
 """
-Run the live ``POST /match_v4`` algorithm locally against offline datasets — no MongoDB.
+Run the live ``POST /match``, ``POST /experiments/v3/match``, ``POST /match_v4`` or
+``POST /experiments/v5/match`` algorithm locally against offline datasets — no MongoDB. Pick the
+engine with ``--version {match,v3,v4,v5}`` (default v4).
 
-This calls ``run_match_v4_full`` — the SAME function the live ``app.routes.match_v4`` route calls —
-so the local output is identical to what ``/match_v4`` consumers receive:
-    Pydantic validation -> Gemini user embedding -> concat-cosine retrieval -> cross-encoder rerank
-    -> u_hat/p_hat preference final score -> ``MatchResponse`` with opportunities (jobs),
-    occupations/careers (demand-gamma weighting + per-user location filter + top-k) and Node2Vec
-    skill-gap recommendations.
+Each version calls the SAME function its live route calls, so the local output is identical to what
+that endpoint's consumers receive:
+  * ``--version v3`` -> ``run_match_v3_full`` (app.routes.match_v3): Gemini concat-cosine -> cross-
+    encoder rerank. ``final_score`` is the raw concat cosine; NO preference layer (u_hat/p_hat empty).
+    Same ``MatchResponse`` shape. Route defaults: retrieve=50 / final=30.
+  * ``--version v4`` -> ``run_match_v4_full`` (app.routes.match_v4): Pydantic validation -> Gemini
+    user embedding -> concat-cosine retrieval -> cross-encoder rerank -> u_hat/p_hat preference final
+    score -> ``MatchResponse`` with opportunities (jobs), occupations/careers (demand-gamma weighting
+    + per-user location filter + top-k) and Node2Vec skill-gap recommendations.
+  * ``--version v5`` -> the SAME ``run_match_v4_full`` engine, then per-opportunity ZQF (Zambia)
+    eligibility annotation (zqf_eligible/zqf_gap + labels) from the user's ``zqf_level`` and each job's
+    ``zqf_min`` (app.routes.match_v5) -> ``MatchResponseV5``. Null unless the data carries ZQF fields.
+  * ``--version match`` -> ``match_user_with_data`` (app.routes.match): the legacy skill/Node2Vec
+    engine — no Gemini user embedding, no cross-encoder, no retrieve/final top-k. Same ``MatchResponse``
+    shape (opportunities + occupations + skill-gaps), so all the CSV/manifest outputs below apply; the
+    v4-only u_hat/p_hat/demand columns are simply empty.
 
 The only swap is the Mongo job read: ``app.database.get_all_jobs_with_timing`` is monkeypatched
 to serve jobs from a local JSON file instead of MongoDB (occupations always load from local resource
@@ -25,8 +37,11 @@ Data sources (override via env or CLI):
 
 Completeness gate (decided requirement): only users with a *full* set of information are run.
 By default a user is "complete" when it has non-empty ``skills_vector.top_skills`` AND a populated
-``preference_vector`` AND non-empty ``preference_vector.bws_scores`` (equivalently: none of the
-blocking prep_status_tags {skills_missing, preferences_missing, bws_missing}).
+``preference_vector`` (``earnings_per_month`` present) AND non-empty ``preference_vector.bws_scores``.
+The gate is computed directly from the payload — the live product input no longer carries
+prep_status / prep_status_tags fields, so completeness is derived from the data itself. The
+{skills_missing, preferences_missing, bws_missing} labels are just the human-readable reasons we
+emit (BLOCKING_TAGS below), not fields read from the request.
 
 Caveats (also recorded in manifest.json):
   * PREFERENCE_SCORER_MODE: we run whatever the active branch's .env sets (faithful to live);
@@ -38,7 +53,7 @@ Caveats (also recorded in manifest.json):
   * GEMINI_API_KEY is consumed to embed users (one small network batch per run).
 
 Datasets / toggling input:
-    --dataset kenya   -> data/kenya_match_input.jsonl  (default; 8 complete users, all with BWS)
+    --dataset kenya   -> data/kenya_match_input.jsonl  (default; 85 users, 38 complete with BWS)
     --dataset njila   -> data/njila_match_input.jsonl  (71 users, no BWS collected)
     --users <path>    -> any JSONL of MatchRequest-shaped users (overrides --dataset)
   The jobs corpus is shared across datasets (--jobs to change). The BWS completeness requirement
@@ -46,10 +61,12 @@ Datasets / toggling input:
   force it with --require-bws / --no-require-bws.
 
 Usage (from backend/ directory):
-    python run_match_v4_local.py                          # kenya (default): 8 complete users, full corpus
+    python run_match_v4_local.py                          # v4 (default), kenya: 38 complete users, full corpus
+    python run_match_v4_local.py --version match          # legacy /match engine (no Gemini/cross-encoder)
+    python run_match_v4_local.py --version v5             # v4 engine + ZQF annotation (/experiments/v5/match)
     python run_match_v4_local.py --dataset njila          # njila: 71 users (BWS auto-relaxed)
     python run_match_v4_local.py --users data/my.jsonl    # arbitrary users file
-    python run_match_v4_local.py --no-require-bws          # kenya without bws gate (10 users)
+    python run_match_v4_local.py --no-require-bws          # kenya without bws gate (51 users)
     python run_match_v4_local.py --user <user_id>         # one user
     python run_match_v4_local.py --limit 3                # first N complete users
     python run_match_v4_local.py --all-users              # bypass completeness gate (debug)
@@ -107,6 +124,11 @@ DEFAULT_JOBS_PATH = Path(
 )
 DEFAULT_USERS_PATH = Path(os.getenv("USERS_JSONL_PATH", str(DATASETS[DEFAULT_DATASET])))
 
+# Human-readable reasons surfaced when a user fails the completeness gate. These are derived from
+# the payload by _completeness() below — they are NOT prep_status_tags read off the request (the
+# live product input no longer carries prep_status / prep_status_tags). The post-secondary
+# education fields the new payload does carry (any_post_secondary_educ / number_post_secondary_educ
+# / total_duration_postsec) feed the algorithm's education gate, not this completeness gate.
 BLOCKING_TAGS = {"skills_missing", "preferences_missing", "bws_missing"}
 
 
@@ -159,7 +181,24 @@ def _completeness(u: dict, require_bws: bool) -> tuple[bool, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run /match_v4 locally against offline files (no Mongo)"
+        description="Run /match, /match_v3, /match_v4 or /match_v5 locally against offline files (no Mongo)"
+    )
+    parser.add_argument(
+        "--version",
+        choices=["match", "v3", "v4", "v5"],
+        default="v4",
+        help=(
+            "Which endpoint engine to run (default v4):\n"
+            "  match -> POST /match            : legacy skill/Node2Vec engine (match_user_with_data); "
+            "no Gemini/cross-encoder, no retrieve/final top-k.\n"
+            "  v3    -> POST /experiments/v3/match : Gemini concat-cosine -> cross-encoder rerank "
+            "(run_match_v3_full); final_score is the raw concat cosine, NO preference layer "
+            "(u_hat/p_hat empty). Defaults retrieve=50/final=30.\n"
+            "  v4    -> POST /match_v4         : Gemini concat-cosine -> cross-encoder -> u_hat x p_hat "
+            "(run_match_v4_full). Defaults retrieve=100/final=50.\n"
+            "  v5    -> POST /experiments/v5/match : same engine as v4 plus per-opportunity ZQF "
+            "(Zambia) eligibility annotation from the user's zqf_level and each job's zqf_min."
+        ),
     )
     grp = parser.add_mutually_exclusive_group()
     grp.add_argument(
@@ -384,18 +423,36 @@ def main() -> None:
         FINAL_SCORE_COMBINER,
         PREFERENCE_SCORER_MODE,
         MATCH_TOP_K_SKILL_GAPS,
+        MATCH_TOP_K_OPPORTUNITIES,
+        MATCH_TOP_K_OCCUPATIONS,
         MATCH_V4_TOP_K_OCCUPATIONS,
         MATCH_V4_OCC_DEMAND_GAMMA,
         MATCH_V4_RETRIEVE_TOP_K,
         MATCH_V4_FINAL_TOP_K,
+        COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
     )
     from app.services.cross_encoder.gemini_embeddings import EMBEDDING_DIM
     from app.services.match_v4_full_service import run_match_v4_full
+    from app.services.match_v3_full_service import run_match_v3_full
+    from app.services.matching_service import match_user_with_data
     from app.services.education_eligibility import (
         job_requires_post_secondary,
         user_lacks_post_secondary,
     )
-    from app.schemas import MatchRequest, MatchResponse
+    from app.schemas import (
+        MatchRequest,
+        MatchResponse,
+        MatchRequestV5,
+        MatchResponseV5,
+    )
+
+    # v3/v4/v5 all run the Gemini concat → CE engine (need user embedding + cross-encoder +
+    # occupation embeddings + retrieve/final top-k). HAS_PREF is the narrower v4/v5 family that
+    # adds the u_hat/p_hat preference layer + final_score_combiner (v3 has no preference signal).
+    IS_GEMINI = args.version in ("v3", "v4", "v5")
+    HAS_PREF = args.version in ("v4", "v5")
+    # v3 keeps the route's own shortlist defaults (retrieve=50/final=30); v4/v5 use the wider 100/50.
+    V3_DEFAULT_FINAL_TOP_K = 30
 
     # ── 4. Job source. Offline (default): patch the Mongo job loader to serve the local JSON corpus
     # (full active set; ignore users=). Live (--live-jobs): leave app.database's real Mongo-backed
@@ -471,13 +528,21 @@ def main() -> None:
         print("No users selected after filtering. Nothing to run.", file=sys.stderr)
         sys.exit(1)
 
+    # Shortlist sizing mirrors each route's own defaults: v3 uses COSINE_CROSS_ENCODER_RETRIEVE_TOP_K
+    # (50) / 30; v4/v5 use the wider MATCH_V4_RETRIEVE_TOP_K (100) / MATCH_V4_FINAL_TOP_K (50). CLI
+    # --retrieve-top-k / --final-top-k override either. (Unused by --version match.)
+    if args.version == "v3":
+        default_retrieve, default_final = (
+            COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
+            V3_DEFAULT_FINAL_TOP_K,
+        )
+    else:
+        default_retrieve, default_final = MATCH_V4_RETRIEVE_TOP_K, MATCH_V4_FINAL_TOP_K
     retrieve_top_k = (
-        args.retrieve_top_k
-        if args.retrieve_top_k is not None
-        else MATCH_V4_RETRIEVE_TOP_K
+        args.retrieve_top_k if args.retrieve_top_k is not None else default_retrieve
     )
     if args.final_top_k is None:
-        args.final_top_k = MATCH_V4_FINAL_TOP_K
+        args.final_top_k = default_final
     combiner = (
         args.final_score_combiner
         if args.final_score_combiner is not None
@@ -487,8 +552,10 @@ def main() -> None:
     # Validate users once (production parity), then fetch jobs from the active source. Both modes
     # go through db_module.get_all_jobs_with_timing — offline it's the local JSON closure patched
     # above; with --live-jobs it's the real Mongo-backed loader. Done before the banner so the
-    # n_jobs count and all downstream lookups reflect the corpus actually used.
-    payload = [MatchRequest(**u) for u in selected]
+    # n_jobs count and all downstream lookups reflect the corpus actually used. v5 validates with
+    # MatchRequestV5 so the user's optional ``zqf_level`` survives model_dump into the engine.
+    request_model = MatchRequestV5 if args.version == "v5" else MatchRequest
+    payload = [request_model(**u) for u in selected]
     users_dicts = [m.model_dump() for m in payload]
     t0 = _dt.datetime.now()
     try:
@@ -518,33 +585,98 @@ def main() -> None:
         f"n_users_selected={len(selected)}  n_jobs={len(jobs)}",
         file=sys.stderr,
     )
-    print(
-        f"PREFERENCE_SCORER_MODE={PREFERENCE_SCORER_MODE}  retrieve_top_k={retrieve_top_k}  "
-        f"final_top_k={args.final_top_k}  final_score_combiner={combiner}",
-        file=sys.stderr,
-    )
+    endpoint_label = {
+        "match": "/match",
+        "v3": "/experiments/v3/match",
+        "v4": "/match_v4",
+        "v5": "/experiments/v5/match",
+    }[args.version]
+    if HAS_PREF:
+        print(
+            f"version={args.version} ({endpoint_label})  "
+            f"PREFERENCE_SCORER_MODE={PREFERENCE_SCORER_MODE}  retrieve_top_k={retrieve_top_k}  "
+            f"final_top_k={args.final_top_k}  final_score_combiner={combiner}",
+            file=sys.stderr,
+        )
+    elif args.version == "v3":
+        print(
+            f"version=v3 ({endpoint_label})  Gemini concat-cosine -> cross-encoder (no preference layer; "
+            f"final_score=raw concat cosine)  retrieve_top_k={retrieve_top_k}  final_top_k={args.final_top_k}",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"version={args.version} ({endpoint_label})  legacy skill/Node2Vec engine  "
+            f"top_k_opportunities={MATCH_TOP_K_OPPORTUNITIES}  "
+            f"top_k_occupations={MATCH_TOP_K_OCCUPATIONS}  "
+            f"skill_gap_top_k={MATCH_TOP_K_SKILL_GAPS}",
+            file=sys.stderr,
+        )
 
-    # ── 6. Run the /match_v4 code path — mirrors app.routes.match_v4 EXACTLY ──────────────────
-    # Route body: validate -> model_dump -> (get_all_jobs_with_timing, get_all_occupations_with_timing)
-    # -> attach_occupation_embeddings -> run_match_v4_full -> [MatchResponse(**row)]. We call
-    # run_match_v4_full directly (the same function the live route calls), so opportunities,
-    # occupations (with demand-gamma + per-user location filter + top-k), and skill-gaps are all
-    # produced identically to what /match_v4 consumers receive. Occupations load from local resource
-    # files via app.database, so this works in both offline and --live-jobs modes. (users_dicts built
-    # and jobs fetched above so the banner's n_jobs is accurate.)
+    # ── 6. Run the chosen endpoint's code path — mirrors the matching app.routes EXACTLY ──────
+    # Occupations load from local resource files via app.database (works offline and with --live-jobs).
     occ_corpus, _occ_timing = asyncio.run(db_module.get_all_occupations_with_timing())
-    occ_corpus = db_module.attach_occupation_embeddings(occ_corpus)
-    raw = run_match_v4_full(
-        users_dicts,
-        jobs_list,
-        occ_corpus,
-        retrieve_top_k=retrieve_top_k,
-        final_top_k=args.final_top_k,
-        final_score_combiner=combiner,
-        skill_gap_top_k=MATCH_TOP_K_SKILL_GAPS,
-        mongo_timing=mongo_timing,
-    )
-    responses = [MatchResponse(**row) for row in raw]
+
+    if IS_GEMINI:
+        # v3/v4/v5 route bodies all: validate -> model_dump -> (jobs, occ) ->
+        # attach_occupation_embeddings -> run_match_v{3,4}_full -> [MatchResponse(**row)]. We call the
+        # same engine function the live route calls, so opportunities, occupations (county-scoped +
+        # top-k) and skill-gaps are produced identically to live consumers.
+        occ_corpus = db_module.attach_occupation_embeddings(occ_corpus)
+
+    if args.version == "v3":
+        # /match_v3: Gemini concat-cosine -> cross-encoder rerank. final_score is the raw concat
+        # cosine; NO preference layer (u_hat/p_hat empty). No combiner / mongo_timing args.
+        raw = run_match_v3_full(
+            users_dicts,
+            jobs_list,
+            occ_corpus,
+            retrieve_top_k=retrieve_top_k,
+            final_top_k=args.final_top_k,
+            skill_gap_top_k=MATCH_TOP_K_SKILL_GAPS,
+        )
+        responses = [MatchResponse(**row) for row in raw]
+    elif HAS_PREF:
+        # /match_v4 + /match_v5: Gemini concat-cosine -> CE -> u_hat x p_hat (demand-gamma + per-user
+        # location filter + top-k). v5 then annotates each opportunity with ZQF eligibility (same loop
+        # as app.routes.match_v5) and validates the rows with MatchResponseV5.
+        raw = run_match_v4_full(
+            users_dicts,
+            jobs_list,
+            occ_corpus,
+            retrieve_top_k=retrieve_top_k,
+            final_top_k=args.final_top_k,
+            final_score_combiner=combiner,
+            skill_gap_top_k=MATCH_TOP_K_SKILL_GAPS,
+            mongo_timing=mongo_timing,
+        )
+        if args.version == "v5":
+            job_by_uuid_v5 = {str(j.get("uuid")): j for j in jobs_list}
+            for row, user in zip(raw, users_dicts):
+                user_zqf = user.get("zqf_level")
+                for opp in row.get("opportunity_recommendations") or []:
+                    job = job_by_uuid_v5.get(str(opp.get("uuid") or ""))
+                    job_zqf_min = job.get("zqf_min") if job else None
+                    if user_zqf is not None and isinstance(job_zqf_min, (int, float)):
+                        jmin, ulevel = int(job_zqf_min), int(user_zqf)
+                        opp["zqf_eligible"] = ulevel >= jmin
+                        opp["zqf_gap"] = abs(ulevel - jmin)
+                    else:
+                        opp["zqf_eligible"] = None
+                        opp["zqf_gap"] = None
+                    opp["zqf_min_label"] = job.get("zqf_min_label") if job else None
+                    opp["zqf_max_label"] = job.get("zqf_max_label") if job else None
+            responses = [MatchResponseV5(**row) for row in raw]
+        else:
+            responses = [MatchResponse(**row) for row in raw]
+    else:
+        # /match route body: validate -> model_dump -> (jobs, occ) -> match_user_with_data per user
+        # (CPU-bound, thread-pooled live; sequential here) -> [MatchResponse(**row)]. Legacy skill/
+        # Node2Vec engine — no Gemini user embedding, no cross-encoder, no retrieve/final top-k. Uses
+        # occupations as loaded (no attach_occupation_embeddings; that is a v3/v4/v5-only step).
+        raw = [match_user_with_data(u, jobs_list, occ_corpus) for u in users_dicts]
+        responses = [MatchResponse(**row) for row in raw]
+
     resp_dicts = [
         r.model_dump() if hasattr(r, "model_dump") else dict(r) for r in responses
     ]
@@ -555,7 +687,13 @@ def main() -> None:
     out_dir = args.out / ts
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    (out_dir / "match_v4_response.json").write_text(
+    response_filename = {
+        "match": "match_response.json",
+        "v3": "match_v3_response.json",
+        "v4": "match_v4_response.json",
+        "v5": "match_v5_response.json",
+    }[args.version]
+    (out_dir / response_filename).write_text(
         json.dumps(resp_dicts, indent=2, default=str, ensure_ascii=False),
         encoding="utf-8",
     )
@@ -610,22 +748,28 @@ def main() -> None:
         return cols
 
     # ── 7a. Opportunities (jobs): flat CSV + detailed CSV with vectors ──
-    opp_base_cols = [
-        "user_id",
-        "rank",
-        "job_uuid",
-        "opportunity_title",
-        "employer",
-        "location",
-        "is_eligible",
-        "u_hat",
-        "p_hat",
-        "final_score",
-        "demand_label",
-    ]
+    # v5 carries the per-opportunity ZQF annotation; expose those columns only for v5.
+    is_v5 = args.version == "v5"
+    zqf_cols = ["zqf_eligible", "zqf_gap", "zqf_min_label", "zqf_max_label"]
+    opp_base_cols = (
+        [
+            "user_id",
+            "rank",
+            "job_uuid",
+            "opportunity_title",
+            "employer",
+            "location",
+            "is_eligible",
+            "u_hat",
+            "p_hat",
+            "final_score",
+            "demand_label",
+        ]
+        + (zqf_cols if is_v5 else [])
+    )
 
     def _opp_base_row(uid, rec):
-        return {
+        row = {
             "user_id": uid,
             "rank": rec.get("rank"),
             "job_uuid": rec.get("uuid"),
@@ -638,6 +782,10 @@ def main() -> None:
             "final_score": rec.get("final_score"),
             "demand_label": _sb(rec, "demand_label"),
         }
+        if is_v5:
+            for k in zqf_cols:
+                row[k] = rec.get(k)
+        return row
 
     csv_path = out_dir / "recommendations.csv"
     n_rows = 0
@@ -871,8 +1019,17 @@ def main() -> None:
     )
 
     manifest = {
-        "endpoint": "/match_v4",
-        "engine": "run_match_v4_full (identical to the live POST /match_v4 route)",
+        "version": args.version,
+        "endpoint": endpoint_label,
+        "engine": (
+            "run_match_v3_full (identical to the live POST /experiments/v3/match route; "
+            "Gemini concat-cosine -> cross-encoder rerank, raw-cosine final_score, no preference layer)"
+            if args.version == "v3"
+            else f"run_match_v4_full (identical to the live POST {endpoint_label} route)"
+            + (" + per-opportunity ZQF eligibility annotation" if is_v5 else "")
+            if IS_GEMINI
+            else "match_user_with_data (identical to the live POST /match route; legacy skill/Node2Vec engine)"
+        ),
         "generated_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "wall_seconds": round(wall_s, 2),
         "data": {
@@ -893,17 +1050,38 @@ def main() -> None:
             ),
             "mongo_timing": mongo_timing,
         },
-        "config": {
-            "preference_scorer_mode": PREFERENCE_SCORER_MODE,
-            "retrieve_top_k": retrieve_top_k,
-            "final_top_k": args.final_top_k,
-            "occupation_top_k": MATCH_V4_TOP_K_OCCUPATIONS,
-            "occupation_demand_gamma": MATCH_V4_OCC_DEMAND_GAMMA,
-            "skill_gap_top_k": MATCH_TOP_K_SKILL_GAPS,
-            "final_score_combiner": combiner,
-            "gemini_user_embed_dim": EMBEDDING_DIM,
-            "cross_encoder_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
-        },
+        "config": (
+            {
+                # v3: Gemini concat-cosine -> CE rerank, raw-cosine final_score. No preference layer,
+                # so no scorer mode / combiner / demand-gamma.
+                "retrieve_top_k": retrieve_top_k,
+                "final_top_k": args.final_top_k,
+                "occupation_top_k": MATCH_V4_TOP_K_OCCUPATIONS,
+                "skill_gap_top_k": MATCH_TOP_K_SKILL_GAPS,
+                "gemini_user_embed_dim": EMBEDDING_DIM,
+                "cross_encoder_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+            }
+            if args.version == "v3"
+            else {
+                "preference_scorer_mode": PREFERENCE_SCORER_MODE,
+                "retrieve_top_k": retrieve_top_k,
+                "final_top_k": args.final_top_k,
+                "occupation_top_k": MATCH_V4_TOP_K_OCCUPATIONS,
+                "occupation_demand_gamma": MATCH_V4_OCC_DEMAND_GAMMA,
+                "skill_gap_top_k": MATCH_TOP_K_SKILL_GAPS,
+                "final_score_combiner": combiner,
+                "gemini_user_embed_dim": EMBEDDING_DIM,
+                "cross_encoder_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+            }
+            if HAS_PREF
+            else {
+                # Legacy /match engine: no Gemini/cross-encoder, no retrieve/final top-k or combiner.
+                "preference_scorer_mode": PREFERENCE_SCORER_MODE,
+                "top_k_opportunities": MATCH_TOP_K_OPPORTUNITIES,
+                "top_k_occupations": MATCH_TOP_K_OCCUPATIONS,
+                "skill_gap_top_k": MATCH_TOP_K_SKILL_GAPS,
+            }
+        ),
         "completeness": {
             "require_bws": require_bws,
             "require_bws_decision": bws_decision,
@@ -916,7 +1094,7 @@ def main() -> None:
             "inclusion_report": report,
         },
         "output": {
-            "response_json": str((out_dir / "match_v4_response.json").resolve()),
+            "response_json": str((out_dir / response_filename).resolve()),
             "recommendations_csv": str(csv_path.resolve()),
             "recommendations_with_vectors_csv": str(vec_csv_path.resolve()),
             "n_recommendation_rows": n_rows,
@@ -933,16 +1111,37 @@ def main() -> None:
         },
         "education_gate": education_gate,
         "caveats": [
-            "Drives run_match_v4_full directly — same engine, scoring, occupation demand-gamma + per-user location filter, top-k, and skill-gaps as the deployed POST /match_v4. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ.",
-            "Job vectors come from each job's 3072-dim 'job_embedding' (stage-1 fallback); same space as gemini-embedding-001.",
+            (
+                f"Drives run_match_v3_full directly — same Gemini concat-cosine -> cross-encoder engine, county-scoped occupations, top-k and skill-gaps as the deployed POST {endpoint_label}. final_score is the raw concat cosine; the v4-only u_hat/p_hat/demand columns are empty for this engine. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ."
+                if args.version == "v3"
+                else f"Drives run_match_v4_full directly — same engine, scoring, occupation demand-gamma + per-user location filter, top-k, and skill-gaps as the deployed POST {endpoint_label}. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ."
+                if IS_GEMINI
+                else "Drives match_user_with_data directly — same legacy skill/Node2Vec engine, scoring, top-k and skill-gaps as the deployed POST /match. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ."
+            ),
+            (
+                "Job vectors come from each job's 3072-dim 'job_embedding' (stage-1 fallback); same space as gemini-embedding-001."
+                if IS_GEMINI
+                else "Legacy /match scores from skills (essential/optional/skill-groups + Node2Vec), not the Gemini 'job_embedding'; u_hat/p_hat/demand columns are empty for this engine."
+            ),
             (
                 "Live Mongo loader: jobs read from MONGO_JOBS_COLLECTION; JOBS_RETRIEVAL_FILTER "
                 "controls the per-user location prefilter (off here unless --jobs-location-filter)."
                 if USE_LIVE_JOBS
                 else "Offline job loader returns the full active corpus and ignores per-user location prefilter (users have city='Unknown')."
             ),
-            "Cross-encoder downloads from HuggingFace on first run unless HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE are set.",
-        ],
+        ]
+        + (
+            ["Cross-encoder downloads from HuggingFace on first run unless HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE are set."]
+            if IS_GEMINI
+            else []
+        )
+        + (
+            [
+                "v5 ZQF annotation (zqf_eligible/zqf_gap/labels) is null unless users carry 'zqf_level' AND jobs carry 'zqf_min' (a Zambia/ZQF corpus). On the Kenya data these are null by design."
+            ]
+            if is_v5
+            else []
+        ),
     }
     (out_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, default=str, ensure_ascii=False),
@@ -950,7 +1149,7 @@ def main() -> None:
     )
 
     print(f"\nWrote outputs to {out_dir}", file=sys.stderr)
-    print(f"  match_v4_response.json  ({len(resp_dicts)} users)", file=sys.stderr)
+    print(f"  {response_filename}  ({len(resp_dicts)} users)", file=sys.stderr)
     print(
         f"  recommendations.csv               ({n_rows} opportunity rows)",
         file=sys.stderr,

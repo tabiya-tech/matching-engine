@@ -252,7 +252,12 @@ except (ValueError, TypeError, AttributeError):
 # rescaled-whitened scale, NOT the old raw-Gemini cosine — do not reuse the historical 0.6.
 V4_FULL_SIM_THRESHOLD: float = _f("V4_FULL_SIM_THRESHOLD", 0.45)
 # Min essential-coverage (share of a job's essential skills the user meets) for is_eligible=True.
-V4_FULL_MIN_ESS_SHARE: float = _f("V4_FULL_MIN_ESS_SHARE", 0.5)
+# Recalibrated 2026-06-18: 0.5 -> 0.38. The old 0.5 bar flagged genuine in-field matches ineligible
+# (electrician cov 0.39 for an "Electrician" posting; masseuse 0.44 for a "Massage Specialist") — and
+# the mean coverage of parsed jobs is only ~0.39, i.e. the TYPICAL real match sat below the bar. 0.38
+# admits both anchor cases; a live 38-user sweep moved aggregate eligible share 32% -> 43% (the
+# per-skill SIM bar stays at 0.45 to avoid loosening what counts as a match). Env-tunable for rollback.
+V4_FULL_MIN_ESS_SHARE: float = _f("V4_FULL_MIN_ESS_SHARE", 0.38)
 # Graded skill-match badge bands on essential-coverage in [0,1] (strong / partial / weak).
 V4_FULL_BADGE_STRONG: float = _f("V4_FULL_BADGE_STRONG", 0.7)
 V4_FULL_BADGE_PARTIAL: float = _f("V4_FULL_BADGE_PARTIAL", 0.4)
@@ -270,6 +275,15 @@ V4_FULL_RANK_DEMOTE: bool = _b("V4_FULL_RANK_DEMOTE", True)
 # Demotion strength: p_hat *= essential_coverage ** gamma (0 -> no demotion; 1 -> linear). 1.0 = full
 # achievability ordering (gamma sweep: corr(rank,cov) -0.42, cov@1 0.88, weak items at top ~0). Env-tunable.
 V4_FULL_COVERAGE_GAMMA: float = _f("V4_FULL_COVERAGE_GAMMA", 1.0)
+# Ranking coverage for postings with NO parsed essential skills (unparsed). essential_coverage()
+# returns 1.0 for these, which previously gave them a demotion-free ride to the top of the v4 ranking
+# even with zero genuine skill overlap (2026-06 nail-tech failure: a masseuse's top-10 was entirely
+# unparsed white-collar jobs). Default (-1.0) = treat an unparsed job as a TYPICAL job: in the RANKING
+# path, substitute the live mean of the parsed-job coverages in this user's shortlist (per pool). A
+# value in [0,1] overrides with a fixed constant (1.0 reproduces the old free-passage behaviour ->
+# instant rollback). DISPLAY essential_coverage / is_eligible are unchanged. Pilot mean parsed
+# coverage ~0.39 (opportunities) / ~0.43 (occupations).
+V4_FULL_UNPARSED_COVERAGE: float = _f("V4_FULL_UNPARSED_COVERAGE", -1.0)
 # Whitening transform for the COMBINED (concat) embedding used by the whitened p_hat skills-fit,
 # built by build_whitened_concat.py (mu, W=Sigma^-1/2, target). Refit on the live corpus for prod.
 V4_FULL_CONCAT_WHITENING_PATH: str = _resolve_under_backend(

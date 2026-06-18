@@ -115,6 +115,24 @@ def essential_coverage(essential_matches: List[dict], n_essential_total: int) ->
     return met / n
 
 
+def unparsed_ranking_coverage(parsed_covs: List[float], *, override: float) -> float:
+    """Ranking coverage to assign a posting with NO parsed essential skills (unparsed).
+
+    ``essential_coverage`` returns 1.0 for such postings, which gives them a demotion-free ride in
+    the v4 Phase-2 ranking (``final *= coverage ** gamma``) despite zero verifiable skill overlap.
+    Instead we treat an unparsed posting as a TYPICAL one:
+      * ``override >= 0``  -> use that fixed value (1.0 restores the old free-passage behaviour).
+      * else, if there are parsed coverages -> their mean (the live, per-shortlist average).
+      * else (no parsed items at all) -> a neutral 0.5 fallback.
+    Only the RANKING coverage is affected; the displayed essential_coverage is recomputed elsewhere.
+    """
+    if override >= 0:
+        return float(override)
+    if parsed_covs:
+        return sum(parsed_covs) / len(parsed_covs)
+    return 0.5
+
+
 def skill_match_level(coverage: float, n_essential_total: int) -> str:
     """Graded badge from essential-coverage: strong / partial / weak ('unknown' if no essentials)."""
     if not n_essential_total:
