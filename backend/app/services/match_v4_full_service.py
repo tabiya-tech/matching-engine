@@ -23,10 +23,13 @@ from app.config import (
     V4_FULL_MIN_ESS_SHARE,
     V4_FULL_RANK_DEMOTE,
     V4_FULL_SIM_THRESHOLD,
+    V4_FULL_UNPARSED_COVERAGE,
     V4_FULL_WHITENED_GATE,
 )
 from app.services import match_v4_formatting as fmt
-from app.services.gemini_ce_preference_matching.match_v3_bridge import v3_recommendation_to_rec
+from app.services.gemini_ce_preference_matching.match_v3_bridge import (
+    v3_recommendation_to_rec,
+)
 from app.services.gemini_ce_preference_matching.scoring import (
     enrich_recommendations_with_preferences,
 )
@@ -66,8 +69,16 @@ def _user_matches_any_county(user: Dict[str, Any], counties: List[str]) -> bool:
 
 
 def _enriched_recs(
-    user, v3_row, item_index, pref_scorer, combiner, *, location_filter=True, location_user=None,
-    include_demand: bool = False, demand_gamma: float = 0.0,
+    user,
+    v3_row,
+    item_index,
+    pref_scorer,
+    combiner,
+    *,
+    location_filter=True,
+    location_user=None,
+    include_demand: bool = False,
+    demand_gamma: float = 0.0,
     p_hat_by_uuid: Optional[Dict[str, float]] = None,
     coverage_by_uuid: Optional[Dict[str, float]] = None,
     coverage_gamma: float = 0.0,
@@ -90,11 +101,16 @@ def _enriched_recs(
 
         loc = location_user or user
         ce_http = [
-            r for r in ce_http
+            r
+            for r in ce_http
             if isinstance(r, dict)
-            and _job_matches_user_location(item_index.get(str(r.get("job_uuid") or "")) or {}, loc)
+            and _job_matches_user_location(
+                item_index.get(str(r.get("job_uuid") or "")) or {}, loc
+            )
         ]
-    ce_internal = [v3_recommendation_to_rec(r, item_index) for r in ce_http if isinstance(r, dict)]
+    ce_internal = [
+        v3_recommendation_to_rec(r, item_index) for r in ce_http if isinstance(r, dict)
+    ]
     if not ce_internal:
         return []
     return enrich_recommendations_with_preferences(
@@ -112,9 +128,15 @@ def _enriched_recs(
     )
 
 
-def _skill_gaps_for(user: Dict[str, Any], jobs: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
+def _skill_gaps_for(
+    user: Dict[str, Any], jobs: List[Dict[str, Any]], top_k: int
+) -> List[Dict[str, Any]]:
     """Reuse the existing Node2Vec skill-gap analysis (engine-agnostic). Lazy import (torch)."""
-    from app.services.matching_service import _filter_skill_gap_recommendations, scorer_skill
+    from app.services.matching_service import (
+        _filter_skill_gap_recommendations,
+        _skill_gap_candidate_pool_k,
+        scorer_skill,
+    )
     from app.services.skill_gap_analysis import analyze_skill_gaps
 
     gaps = analyze_skill_gaps(
@@ -122,11 +144,11 @@ def _skill_gaps_for(user: Dict[str, Any], jobs: List[Dict[str, Any]], top_k: int
         jobs,
         scorer_skill.engine,
         scorer_skill.skill_labels,
-        top_k=top_k,
+        top_k=_skill_gap_candidate_pool_k(top_k),
         resolve_id=scorer_skill._resolve_label,
         timing_out=None,
     )
-    return _filter_skill_gap_recommendations(gaps)
+    return _filter_skill_gap_recommendations(gaps, top_k=top_k)
 
 
 def run_match_v4_full(
@@ -181,11 +203,17 @@ def run_match_v4_full(
             if v is not None:
                 occ_concat[str(o.get("uuid") or "")] = v
         u_white = whiten_concat_rows(u_norm)
-        u_white_by_uid = {str(u.get("user_id") or ""): u_white[i] for i, u in enumerate(users)}
+        u_white_by_uid = {
+            str(u.get("user_id") or ""): u_white[i] for i, u in enumerate(users)
+        }
 
     job_v3 = run_match_concat_gemini_ce(
-        users, jobs, retrieve_top_k=retrieve_top_k, final_top_k=final_top_k,
-        mongo_timing=mongo_timing, user_unit_vectors=u_norm,
+        users,
+        jobs,
+        retrieve_top_k=retrieve_top_k,
+        final_top_k=final_top_k,
+        mongo_timing=mongo_timing,
+        user_unit_vectors=u_norm,
     )
     # Occupations are flattened into 4 identical-embedding county-rows per code (the fixed sample
     # counties Kilifi/Kitui/Mombasa/Nairobi). The per-user location filter (below) keeps only the
@@ -194,7 +222,10 @@ def run_match_v4_full(
     # safety net.
     occ_breadth = max(retrieve_top_k, final_top_k, MATCH_V4_TOP_K_OCCUPATIONS * 8)
     occ_v3 = run_match_concat_gemini_ce(
-        users, occupations, retrieve_top_k=occ_breadth, final_top_k=occ_breadth,
+        users,
+        occupations,
+        retrieve_top_k=occ_breadth,
+        final_top_k=occ_breadth,
         user_unit_vectors=u_norm,
     )
     job_v3_by_uid = {str(r.get("user_id") or ""): r for r in job_v3}
@@ -202,7 +233,9 @@ def run_match_v4_full(
 
     # Available occupation counties (Kilifi/Kitui/Mombasa/Nairobi). Safety net: if a user's province
     # matches none of them, fall back to a random available county so occupations still return.
-    occ_counties = sorted({str(o.get("province")) for o in occupations if o.get("province")})
+    occ_counties = sorted(
+        {str(o.get("province")) for o in occupations if o.get("province")}
+    )
 
     def _skill_detail(user, item):
         """Return (per_job_skill, matcher-resolved essential id set) for matched_skills.
@@ -212,7 +245,9 @@ def run_match_v4_full(
         to id/label mismatches.
         """
         try:
-            _score = matcher.score_pair_v4 if V4_FULL_WHITENED_GATE else matcher.score_pair
+            _score = (
+                matcher.score_pair_v4 if V4_FULL_WHITENED_GATE else matcher.score_pair
+            )
             per = _score(user, item).get("per_job_skill", []) or []
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("score_pair failed for %s: %s", item.get("uuid"), e)
@@ -230,10 +265,18 @@ def run_match_v4_full(
         - p_hat override = whitened+rescaled concat cosine(user, item) in [0,1]
         - coverage = essential-coverage in [0,1] (drives the achievability demotion)
         - detail cache {uuid: (per_job_skill, essential_ids)} reused by the formatters (no re-score).
+
+        Unparsed postings (no parsed essential skills) would get essential_coverage()==1.0, i.e. a
+        demotion-free ride. Instead we treat them as a TYPICAL item: back-fill their ranking coverage
+        with the live mean of the parsed-item coverages in this same shortlist (V4_FULL_UNPARSED_COVERAGE
+        overrides with a fixed value when >=0; 1.0 restores the old behaviour). DISPLAY coverage in the
+        formatters is recomputed separately and is unaffected.
         """
         p_over: Dict[str, float] = {}
         cov_over: Dict[str, float] = {}
         det_cache: Dict[str, Any] = {}
+        parsed_covs: List[float] = []  # coverages of items WITH parsed essential skills
+        unparsed_uuids: List[str] = []  # items with no essential skills (back-filled below)
         target = concat_rescale_target()
         ce = (v3_row or {}).get("concat_gemini_ce_recommendations") or []
         for r in ce:
@@ -250,9 +293,24 @@ def run_match_v4_full(
                 p_over[uuid] = min(1.0, max(0.0, cos) / target)
             per, ess_ids = _skill_detail(user, item)
             det_cache[uuid] = (per, ess_ids)
-            ms = fmt.build_matched_skills(per, ess_ids, sim_threshold=V4_FULL_SIM_THRESHOLD)
+            ms = fmt.build_matched_skills(
+                per, ess_ids, sim_threshold=V4_FULL_SIM_THRESHOLD
+            )
             n_ess = len(item.get("essential_skills") or [])
-            cov_over[uuid] = fmt.essential_coverage(ms["essential_skill_matches"], n_ess)
+            if n_ess:
+                cov = fmt.essential_coverage(ms["essential_skill_matches"], n_ess)
+                cov_over[uuid] = cov
+                parsed_covs.append(cov)
+            else:
+                unparsed_uuids.append(uuid)
+        # Back-fill unparsed items with the typical (mean) parsed coverage of this shortlist (or the
+        # configured override / neutral fallback) so they no longer escape the achievability demotion.
+        if unparsed_uuids:
+            fill = fmt.unparsed_ranking_coverage(
+                parsed_covs, override=V4_FULL_UNPARSED_COVERAGE
+            )
+            for uuid in unparsed_uuids:
+                cov_over[uuid] = fill
         return p_over, cov_over, det_cache
 
     out: List[Dict[str, Any]] = []
@@ -266,26 +324,43 @@ def run_match_v4_full(
         occ_p, occ_cov, occ_det = ({}, {}, {})
         if demote_active:
             uw = u_white_by_uid.get(uid)
-            job_p, job_cov, job_det = _rank_overrides(user, job_v3_by_uid.get(uid), job_index, job_concat, uw)
-            occ_p, occ_cov, occ_det = _rank_overrides(user, occ_v3_by_uid.get(uid), occ_index, occ_concat, uw)
+            job_p, job_cov, job_det = _rank_overrides(
+                user, job_v3_by_uid.get(uid), job_index, job_concat, uw
+            )
+            occ_p, occ_cov, occ_det = _rank_overrides(
+                user, occ_v3_by_uid.get(uid), occ_index, occ_concat, uw
+            )
 
         # Opportunities. Jobs keep the existing /match_v4 location scoping (Mongo prefilter via
         # get_all_jobs_with_timing(users=...)); no extra python location filter so we don't risk
         # dropping jobs whose location format differs from the user's.
         opportunities: List[Dict[str, Any]] = []
         for rec in _enriched_recs(
-            user, job_v3_by_uid.get(uid), job_index, pref_scorer, combiner, location_filter=False,
-            p_hat_by_uuid=job_p, coverage_by_uuid=job_cov, coverage_gamma=cov_gamma,
+            user,
+            job_v3_by_uid.get(uid),
+            job_index,
+            pref_scorer,
+            combiner,
+            location_filter=False,
+            p_hat_by_uuid=job_p,
+            coverage_by_uuid=job_cov,
+            coverage_gamma=cov_gamma,
         ):
             item = job_index.get(str(rec.get("job_uuid") or ""))
             if not item:
                 continue
-            per, ess_ids = job_det.get(str(rec.get("job_uuid") or "")) or _skill_detail(user, item)
+            per, ess_ids = job_det.get(str(rec.get("job_uuid") or "")) or _skill_detail(
+                user, item
+            )
             opportunities.append(
                 fmt.build_opportunity_row(
-                    rec, item, per, ess_ids,
+                    rec,
+                    item,
+                    per,
+                    ess_ids,
                     rank=len(opportunities) + 1,
-                    sim_threshold=V4_FULL_SIM_THRESHOLD, min_ess_share=V4_FULL_MIN_ESS_SHARE,
+                    sim_threshold=V4_FULL_SIM_THRESHOLD,
+                    min_ess_share=V4_FULL_MIN_ESS_SHARE,
                 )
             )
 
@@ -298,14 +373,25 @@ def run_match_v4_full(
             loc_user = {"city": fallback, "province": fallback, "location": fallback}
             logger.warning(
                 "User %r province=%r matches no occupation county %s; using random fallback county %r.",
-                uid, user.get("province"), occ_counties, fallback,
+                uid,
+                user.get("province"),
+                occ_counties,
+                fallback,
             )
         occupations_out: List[Dict[str, Any]] = []
         seen_codes: set = set()
         for rec in _enriched_recs(
-            user, occ_v3_by_uid.get(uid), occ_index, pref_scorer, combiner, location_user=loc_user,
-            include_demand=True, demand_gamma=MATCH_V4_OCC_DEMAND_GAMMA,
-            p_hat_by_uuid=occ_p, coverage_by_uuid=occ_cov, coverage_gamma=cov_gamma,
+            user,
+            occ_v3_by_uid.get(uid),
+            occ_index,
+            pref_scorer,
+            combiner,
+            location_user=loc_user,
+            include_demand=True,
+            demand_gamma=MATCH_V4_OCC_DEMAND_GAMMA,
+            p_hat_by_uuid=occ_p,
+            coverage_by_uuid=occ_cov,
+            coverage_gamma=cov_gamma,
         ):
             item = occ_index.get(str(rec.get("job_uuid") or ""))
             if not item:
@@ -314,12 +400,18 @@ def run_match_v4_full(
             if not code or code in seen_codes:
                 continue
             seen_codes.add(code)
-            per, ess_ids = occ_det.get(str(rec.get("job_uuid") or "")) or _skill_detail(user, item)
+            per, ess_ids = occ_det.get(str(rec.get("job_uuid") or "")) or _skill_detail(
+                user, item
+            )
             occupations_out.append(
                 fmt.build_occupation_row(
-                    rec, item, per, ess_ids,
+                    rec,
+                    item,
+                    per,
+                    ess_ids,
                     rank=len(occupations_out) + 1,
-                    sim_threshold=V4_FULL_SIM_THRESHOLD, min_ess_share=V4_FULL_MIN_ESS_SHARE,
+                    sim_threshold=V4_FULL_SIM_THRESHOLD,
+                    min_ess_share=V4_FULL_MIN_ESS_SHARE,
                 )
             )
             if len(occupations_out) >= MATCH_V4_TOP_K_OCCUPATIONS:
@@ -330,7 +422,9 @@ def run_match_v4_full(
                 "user_id": uid,
                 "occupation_recommendations": occupations_out,
                 "opportunity_recommendations": opportunities,
-                "skill_gap_recommendations": _skill_gaps_for(user, jobs, skill_gap_top_k),
+                "skill_gap_recommendations": _skill_gaps_for(
+                    user, jobs, skill_gap_top_k
+                ),
             }
         )
 
