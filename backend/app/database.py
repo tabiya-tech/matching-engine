@@ -314,86 +314,79 @@ def _norm_loc_value(v: Any) -> str:
     return s.casefold() if s else ""
 
 
-def _remote_substring_ors() -> List[Dict[str, Any]]:
-    r = "remote"
-    return [
-        {_M_CITY: {"$regex": r, "$options": "i"}},
-        {_M_COUNTY: {"$regex": r, "$options": "i"}},
-    ]
+# Case-insensitive collation used by both the location-aware indexes and the
+# location filter query. ``strength: 2`` makes string comparisons ignore case and
+# diacritics (e.g. "Nairobi" == "NAIROBI" == "nairobi"). The query MUST pass this
+# same collation to ``find()`` for the planner to pick the matching index.
+LOCATION_COLLATION: Dict[str, Any] = {"locale": "en", "strength": 2}
+
+# Value (not a flag) — included in the $in clause so fully-remote postings always match.
+_REMOTE_LOCATION_VALUE = "Remote"
 
 
-def _field_contains_substr_regex(
-    field: str, needle_cf: str
-) -> Optional[Dict[str, Any]]:
-    if not needle_cf:
-        return None
-    return {field: {"$regex": re.escape(needle_cf), "$options": "i"}}
-
-
-def _expr_haystack_contains_mongo_subfield(
-    haystack_casefold: str, dollar_field: str
-) -> Optional[Dict[str, Any]]:
-    """True when haystack (user string) contains the job’s city/county (Python: job in user).
-
-    Requires a non-empty job field: MongoDB matches an empty substring at index 0 for
-    ``$indexOfCP``, which would incorrectly match every document if city/county were missing.
-    """
-    if not haystack_casefold:
-        return None
-    needle = {"$ifNull": [{"$toLower": dollar_field}, ""]}
-    return {
-        "$expr": {
-            "$and": [
-                {"$gt": [{"$strLenCP": needle}, 0]},
-                {"$gte": [{"$indexOfCP": [haystack_casefold, needle]}, 0]},
-            ]
-        }
-    }
-
-
-def _location_or_clauses_for_one_user(user: dict) -> List[Dict[str, Any]]:
-    """Superset of matching_service._job_matches_user_location, on classifier_metadata fields."""
-    uc = _norm_loc_value(user.get("city"))
-    up = _norm_loc_value(user.get("province"))
-    ors: List[Dict[str, Any]] = list(_remote_substring_ors())
-    if not uc or not up:
-        return ors
-    for field in (_M_CITY, _M_COUNTY, _M_PROVINCE):
-        f_c = _field_contains_substr_regex(field, uc)
-        if f_c is not None:
-            ors.append(f_c)
-        f_p = _field_contains_substr_regex(field, up)
-        if f_p is not None:
-            ors.append(f_p)
-    for hay, fpath in (
-        (uc, "$classifier_metadata.city"),
-        (uc, "$classifier_metadata.county"),
-        (uc, "$classifier_metadata.province"),
-        (up, "$classifier_metadata.city"),
-        (up, "$classifier_metadata.county"),
-        (up, "$classifier_metadata.province"),
-    ):
-        ex = _expr_haystack_contains_mongo_subfield(hay, fpath)
-        if ex is not None:
-            ors.append(ex)
-    return ors
+def _stripped_user_locations(user: dict) -> List[str]:
+    """City + province for one user, stripped. Case is preserved — the query's
+    collation handles case-insensitive matching at the index level."""
+    locations: List[str] = []
+    for field_name in ("city", "province"):
+        value = user.get(field_name)
+        if value is None:
+            continue
+        stripped = str(value).strip()
+        if stripped:
+            locations.append(stripped)
+    return locations
 
 
 def build_mongo_filter_active_and_location(
     users: Sequence[dict],
 ) -> Optional[Dict[str, Any]]:
-    """
-    is_active and (OR of all per-user location clauses). None if the caller should
-    use active-only (no user context or empty list).
+    """is_active AND (city/county/province ∈ {user_cities ∪ user_provinces ∪ 'Remote'}).
+
+    Returns ``None`` if the caller should use the active-only filter (no users supplied).
+    If all users have empty city/province, the location $in collapses to ``{'Remote'}``
+    so the resulting filter restricts to remote-tagged jobs — same as the previous
+    regex-based implementation.
+
+    Match semantics: **case-insensitive equality** via Mongo collation
+    (``LOCATION_COLLATION``). Callers (the ranked-jobs find) MUST pass the same
+    collation to ``find()`` for the planner to use the matching
+    ``is_active_{city,county,province}_ci_-_id`` compound index — otherwise the
+    planner falls back to a collection scan and the filter still works but isn't
+    index-served.
+
+    Multi-user requests are folded into a single ``$in`` per field — no per-user
+    clause duplication, which keeps the query small for batch traffic.
+
+    Behavior change vs. the previous ``$regex``/``$expr/$indexOfCP`` implementation:
+    a job with ``city = "Nairobi East"`` no longer matches a user whose city is
+    ``"Nairobi"``. The collation gives us case-insensitive equality, not substring.
     """
     if not users:
         return None
-    parts: List[Dict[str, Any]] = []
-    for u in users:
-        parts.extend(_location_or_clauses_for_one_user(u))
-    if not parts:
-        return RANKED_JOBS_ACTIVE_FILTER
-    return {"$and": [RANKED_JOBS_ACTIVE_FILTER, {"$or": parts}]}
+
+    # When users have no usable city/province, location_values ends up as just
+    # {_REMOTE_LOCATION_VALUE} — the resulting filter restricts to remote-tagged jobs.
+    # That matches the previous behavior of _location_or_clauses_for_one_user (which
+    # returned only the remote-substring clauses when city or province was missing).
+    location_values: set[str] = {_REMOTE_LOCATION_VALUE}
+    for user in users:
+        for location in _stripped_user_locations(user):
+            location_values.add(location)
+
+    mongo_in_clause = {"$in": sorted(location_values)}
+    return {
+        "$and": [
+            RANKED_JOBS_ACTIVE_FILTER,
+            {
+                "$or": [
+                    {_M_CITY: mongo_in_clause},
+                    {_M_COUNTY: mongo_in_clause},
+                    {_M_PROVINCE: mongo_in_clause},
+                ]
+            },
+        ]
+    }
 
 
 def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -590,10 +583,17 @@ async def get_all_jobs_with_timing(users: Optional[Sequence[dict]] = None):
 
     t_cursor_create = time.perf_counter()
     col = db[MONGO_JOBS_COLLECTION]
+    # When the location filter is applied we MUST pass the matching collation so
+    # the planner can use the case-insensitive is_active_{city,county,province}_ci
+    # compound indexes. Without the collation the same query falls back to a
+    # collection scan. When no location filter is applied we skip the collation
+    # so Mongo can pick the simpler is_active_-_id index.
+    find_kwargs: Dict[str, Any] = {}
     if JOBS_FIND_USE_PROJECTION:
-        cursor = col.find(filt, RANKED_JOB_FIND_PROJECTION)
-    else:
-        cursor = col.find(filt)
+        find_kwargs["projection"] = RANKED_JOB_FIND_PROJECTION
+    if retrieval_applied:
+        find_kwargs["collation"] = LOCATION_COLLATION
+    cursor = col.find(filt, **find_kwargs)
     if retrieval_applied:
         cursor = cursor.sort([("_id", -1)])
         if JOBS_RETRIEVAL_LIMIT > 0:
@@ -797,6 +797,40 @@ JOBS_INDEX_MODELS = [
     IndexModel(
         [("is_active", ASCENDING), ("classifier_metadata.source_platform", ASCENDING)],
         name="is_active_source_platform",
+    ),
+    # Location-aware match retrieval. is_active + case-insensitive equality on the
+    # writer's existing classifier_metadata.{city,county,province} fields. The
+    # ``collation`` on each index (strength=2 = case + diacritic insensitive) is what
+    # makes the index serve case-insensitive equality. The query MUST pass the same
+    # collation (LOCATION_COLLATION) to find() — without that the planner ignores
+    # this index and falls back to a collection scan. Sort by _id desc so the
+    # JOBS_RETRIEVAL_LIMIT cap takes the most-recent matches.
+    IndexModel(
+        [
+            ("is_active", ASCENDING),
+            ("classifier_metadata.city", ASCENDING),
+            ("_id", DESCENDING),
+        ],
+        name="is_active_city_ci_-_id",
+        collation=LOCATION_COLLATION,
+    ),
+    IndexModel(
+        [
+            ("is_active", ASCENDING),
+            ("classifier_metadata.county", ASCENDING),
+            ("_id", DESCENDING),
+        ],
+        name="is_active_county_ci_-_id",
+        collation=LOCATION_COLLATION,
+    ),
+    IndexModel(
+        [
+            ("is_active", ASCENDING),
+            ("classifier_metadata.province", ASCENDING),
+            ("_id", DESCENDING),
+        ],
+        name="is_active_province_ci_-_id",
+        collation=LOCATION_COLLATION,
     ),
 ]
 
