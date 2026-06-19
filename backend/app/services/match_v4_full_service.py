@@ -368,8 +368,9 @@ def run_match_v4_full(
     for user in users:
         uid = str(user.get("user_id") or "")
 
-        # Phase-2 ranking overrides (whitened p_hat + coverage demotion); empty dicts when toggle off,
-        # in which case _enriched_recs falls back to the raw concat p_hat with no demotion (Phase 1).
+        # Phase-2 ranking overrides (whitened+rescaled p_hat + coverage demotion); empty dicts when the
+        # toggle is off, in which case _enriched_recs falls back to the stage-1 concat cosine p_hat
+        # (itself whitened, just unrescaled) with no demotion (Phase 1).
         job_p, job_cov, job_det = ({}, {}, {})
         occ_p, occ_cov, occ_det = ({}, {}, {})
         if demote_active:

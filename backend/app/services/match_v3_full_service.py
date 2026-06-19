@@ -72,8 +72,9 @@ def _cosine(ce_row: Dict[str, Any]) -> float:
 def _v3_rec(ce_row: Dict[str, Any]) -> Dict[str, Any]:
     """Map one CE recommendation row to the generic ``rec`` the v4 formatters consume.
 
-    ``final_score`` is the raw concat cosine; v4-only signals are left empty so the formatter
-    emits null ``u_hat``/``p_hat`` and no preferences (the v3 engine produces none).
+    ``final_score`` is the concat cosine (now whitened — stage-1 ranks in the whitened concat space
+    when the artifact is present); v4-only signals are left empty so the formatter emits null
+    ``u_hat``/``p_hat`` and no preferences (the v3 engine produces none).
     """
     return {
         "final_score": _cosine(ce_row),
@@ -150,7 +151,8 @@ def run_match_v3_full(
     for user in users:
         uid = str(user.get("user_id") or "")
 
-        # Opportunities ranked by raw concat cosine (the chosen v3 score).
+        # Opportunities ranked by concat cosine (whitened space when the artifact is present; the
+        # chosen v3 score). _cosine reads concat_cosine_similarity from the stage-1 retrieval.
         opp_sorted = sorted(job_by_uid.get(uid, []), key=_cosine, reverse=True)
         opportunities: List[Dict[str, Any]] = []
         for ce_row in opp_sorted:

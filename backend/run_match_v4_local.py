@@ -6,8 +6,8 @@ engine with ``--version {match,v3,v4,v5}`` (default v4).
 Each version calls the SAME function its live route calls, so the local output is identical to what
 that endpoint's consumers receive:
   * ``--version v3`` -> ``run_match_v3_full`` (app.routes.match_v3): Gemini concat-cosine -> cross-
-    encoder rerank. ``final_score`` is the raw concat cosine; NO preference layer (u_hat/p_hat empty).
-    Same ``MatchResponse`` shape. Route defaults: retrieve=50 / final=30.
+    encoder rerank. ``final_score`` is the concat cosine (whitened space when the artifact is present);
+    NO preference layer (u_hat/p_hat empty). Same ``MatchResponse`` shape. Route defaults: 50/30.
   * ``--version v4`` -> ``run_match_v4_full`` (app.routes.match_v4): Pydantic validation -> Gemini
     user embedding -> concat-cosine retrieval -> cross-encoder rerank -> u_hat/p_hat preference final
     score -> ``MatchResponse`` with opportunities (jobs), occupations/careers (demand-gamma weighting
@@ -192,8 +192,8 @@ def main() -> None:
             "  match -> POST /match            : legacy skill/Node2Vec engine (match_user_with_data); "
             "no Gemini/cross-encoder, no retrieve/final top-k.\n"
             "  v3    -> POST /experiments/v3/match : Gemini concat-cosine -> cross-encoder rerank "
-            "(run_match_v3_full); final_score is the raw concat cosine, NO preference layer "
-            "(u_hat/p_hat empty). Defaults retrieve=50/final=30.\n"
+            "(run_match_v3_full); final_score is the concat cosine (whitened when the artifact is "
+            "present), NO preference layer (u_hat/p_hat empty). Defaults retrieve=50/final=30.\n"
             "  v4    -> POST /match_v4         : Gemini concat-cosine -> cross-encoder -> u_hat x p_hat "
             "(run_match_v4_full). Defaults retrieve=100/final=50.\n"
             "  v5    -> POST /experiments/v5/match : same engine as v4 plus per-opportunity ZQF "
@@ -601,7 +601,7 @@ def main() -> None:
     elif args.version == "v3":
         print(
             f"version=v3 ({endpoint_label})  Gemini concat-cosine -> cross-encoder (no preference layer; "
-            f"final_score=raw concat cosine)  retrieve_top_k={retrieve_top_k}  final_top_k={args.final_top_k}",
+            f"final_score=concat cosine [whitened])  retrieve_top_k={retrieve_top_k}  final_top_k={args.final_top_k}",
             file=sys.stderr,
         )
     else:
@@ -625,7 +625,7 @@ def main() -> None:
         occ_corpus = db_module.attach_occupation_embeddings(occ_corpus)
 
     if args.version == "v3":
-        # /match_v3: Gemini concat-cosine -> cross-encoder rerank. final_score is the raw concat
+        # /match_v3: Gemini concat-cosine -> cross-encoder rerank. final_score is the concat
         # cosine; NO preference layer (u_hat/p_hat empty). No combiner / mongo_timing args.
         raw = run_match_v3_full(
             users_dicts,
@@ -1023,7 +1023,7 @@ def main() -> None:
         "endpoint": endpoint_label,
         "engine": (
             "run_match_v3_full (identical to the live POST /experiments/v3/match route; "
-            "Gemini concat-cosine -> cross-encoder rerank, raw-cosine final_score, no preference layer)"
+            "Gemini concat-cosine -> cross-encoder rerank, concat-cosine [whitened] final_score, no preference layer)"
             if args.version == "v3"
             else f"run_match_v4_full (identical to the live POST {endpoint_label} route)"
             + (" + per-opportunity ZQF eligibility annotation" if is_v5 else "")
@@ -1052,7 +1052,7 @@ def main() -> None:
         },
         "config": (
             {
-                # v3: Gemini concat-cosine -> CE rerank, raw-cosine final_score. No preference layer,
+                # v3: Gemini concat-cosine -> CE rerank, concat-cosine [whitened] final_score. No preference layer,
                 # so no scorer mode / combiner / demand-gamma.
                 "retrieve_top_k": retrieve_top_k,
                 "final_top_k": args.final_top_k,
@@ -1112,7 +1112,7 @@ def main() -> None:
         "education_gate": education_gate,
         "caveats": [
             (
-                f"Drives run_match_v3_full directly — same Gemini concat-cosine -> cross-encoder engine, county-scoped occupations, top-k and skill-gaps as the deployed POST {endpoint_label}. final_score is the raw concat cosine; the v4-only u_hat/p_hat/demand columns are empty for this engine. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ."
+                f"Drives run_match_v3_full directly — same Gemini concat-cosine -> cross-encoder engine, county-scoped occupations, top-k and skill-gaps as the deployed POST {endpoint_label}. final_score is the concat cosine (whitened space when the artifact is present); the v4-only u_hat/p_hat/demand columns are empty for this engine. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ."
                 if args.version == "v3"
                 else f"Drives run_match_v4_full directly — same engine, scoring, occupation demand-gamma + per-user location filter, top-k, and skill-gaps as the deployed POST {endpoint_label}. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ."
                 if IS_GEMINI

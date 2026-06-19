@@ -287,9 +287,11 @@ V4_FULL_WHITENED_GATE: bool = _b("V4_FULL_WHITENED_GATE", True)
 # --- /match_v4 Phase 2: ranking demotion (whitened-concat p_hat + essential-coverage factor) ---
 # Master toggle. True (default) = p_hat's skills-fit is the WHITENED+rescaled concat cosine AND
 # final_score is demoted by essential-coverage**gamma (achievability); final stays u_hat x p_hat.
-# False = Phase-1 behaviour: p_hat is the raw stage-1 concat cosine and the gate is annotation-only
-# (ranking unchanged) — INSTANT ROLLBACK via env V4_FULL_RANK_DEMOTE=false, no redeploy. Whitening is
-# applied in-process to the shortlist only (no corpus/DB migration); v2/v3 + retrieval are untouched.
+# False = Phase-1 behaviour: p_hat is the (unrescaled) stage-1 concat cosine and the gate is
+# annotation-only (ranking unchanged) — INSTANT ROLLBACK via env V4_FULL_RANK_DEMOTE=false, no redeploy.
+# NOTE: stage-1 retrieval now ranks in the WHITENED concat space whenever the artifact is present
+# (job_embedding is whitened on the DB side, or whitened in-process for raw corpora), independent of
+# this toggle — see match_concat_gemini_ce_service. So Phase-1's p_hat is the whitened stage-1 cosine.
 V4_FULL_RANK_DEMOTE: bool = _b("V4_FULL_RANK_DEMOTE", True)
 # Demotion strength: p_hat *= essential_coverage ** gamma (0 -> no demotion; 1 -> linear). 1.0 = full
 # achievability ordering (gamma sweep: corr(rank,cov) -0.42, cov@1 0.88, weak items at top ~0). Env-tunable.
@@ -311,10 +313,10 @@ V4_FULL_CONCAT_WHITENING_PATH: str = _resolve_under_backend(
         str(_DEFAULT_MODEL_DIR / "concat_whitening_gemini.npz"),
     )
 )
-# /match_v4 shortlist sizing (v4-only; v3/zqf keep COSINE_CROSS_ENCODER_RETRIEVE_TOP_K/30). Stage-1 raw
-# concat cosine is near-uninformative (sd ~0.02), so the meaningful ranking is the WHITENED p_hat +
-# coverage re-rank applied to the final_top_k CE survivors. Widen both so achievable jobs the saturated
-# stage-1 buried can still reach the whitened re-rank: retrieve feeds the CE, final is the pool sent to
+# /match_v4 shortlist sizing (v4-only; v3/zqf keep COSINE_CROSS_ENCODER_RETRIEVE_TOP_K/30). Stage-1 now
+# ranks in the WHITENED concat space (the RAW concat cosine was near-uninformative, sd ~0.02); the
+# whitened p_hat + coverage re-rank is then applied to the final_top_k CE survivors. Widen both so
+# achievable jobs can reach the whitened re-rank: retrieve feeds the CE, final is the pool sent to
 # whitening (and the max opportunities returned). Whitening itself is cheap (shortlist-only matmuls);
 # the cost is CE rerank (~retrieve_top_k) — monitor latency and dial back via env if needed.
 MATCH_V4_RETRIEVE_TOP_K: int = _i("MATCH_V4_RETRIEVE_TOP_K", 100)

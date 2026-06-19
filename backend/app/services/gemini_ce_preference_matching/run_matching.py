@@ -262,7 +262,7 @@ Requires GEMINI_API_KEY and jobs with job_embedding or concat_skill_embedding_ge
     p = argparse.ArgumentParser(
         description=(
             "match_v3 (concat Gemini cosine + CE) → u_hat × p_hat "
-            "(p_hat = raw concat_cosine_similarity, not CE min–max score)."
+            "(p_hat = concat_cosine_similarity [whitened space], not CE min–max score)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=epilog,

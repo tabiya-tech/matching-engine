@@ -567,8 +567,8 @@ async def match_v3(
     Mongo job vectors → cross-encoder rerank); only the response is reshaped to match
     ``POST /match_v4``: opportunities, occupations and skill gaps. Occupations are scored with the
     **same** v3 engine over the occupation corpus (county-scoped like v4). ``final_score`` is the
-    raw concat cosine similarity; v4-only ``u_hat``/``p_hat``/preference fields are empty (the v3
-    engine produces no such signal).
+    concat cosine similarity (whitened space when the concat artifact is present); v4-only
+    ``u_hat``/``p_hat``/preference fields are empty (the v3 engine produces no such signal).
 
     **Database:** reads active jobs via ``MONGO_URL``, ``MONGO_DB_NAME``, ``MONGO_JOBS_COLLECTION``.
     Stage-1 vectors may come from ``concat_skill_embedding_gemini.vector_bin`` **or** a numeric
