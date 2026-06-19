@@ -953,6 +953,7 @@ async def get_jobs_page_with_timing(
 
 _cached_occupations = None
 _cached_occ_embeddings = None  # {occupation_code: np.ndarray(float32, EMBEDDING_DIM)}
+_occ_prewhitened = False  # True once the cached occ embeddings are whitened (consumed directly, no per-request whitening)
 
 
 def _occ_skill_pairs(uuids: list, labels: list) -> List[Dict[str, str]]:
@@ -999,6 +1000,37 @@ def _load_occupation_embeddings() -> Dict[str, Any]:
             OCCUPATION_CONCAT_EMBEDDINGS_PATH,
             e,
         )
+    # Whiten the (static) occupation embeddings ONCE here, into the same whitened concat space the
+    # matcher uses, so the engine consumes them directly instead of re-whitening ~1700 vectors on every
+    # request (the NPZ is raw L2-normalized). Falls back to raw if the concat artifact is unavailable.
+    global _occ_prewhitened
+    _occ_prewhitened = False
+    if out:
+        try:
+            import numpy as np
+            from app.services.match_concat_gemini_ce_service import (
+                concat_rescale_target,
+                whiten_concat_rows,
+            )
+
+            if concat_rescale_target() > 0:
+                codes_list = list(out.keys())
+                wmat = whiten_concat_rows(
+                    np.stack([out[c] for c in codes_list], axis=0)
+                ).astype(np.float32)
+                for c, wv in zip(codes_list, wmat):
+                    out[c] = np.ascontiguousarray(wv, dtype=np.float32)
+                _occ_prewhitened = True
+                logger.info(
+                    "Whitened %d occupation embeddings once at load (consumed directly thereafter).",
+                    len(out),
+                )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(
+                "Could not pre-whiten occupation embeddings (%s); whitening in-process per request.",
+                e,
+            )
+            _occ_prewhitened = False
     _cached_occ_embeddings = out
     return out
 
@@ -1021,6 +1053,9 @@ def attach_occupation_embeddings(occupations: Sequence[dict]) -> List[dict]:
         else:
             o = dict(occ)
             o["job_embedding"] = vec
+            # True once the occ cache has been whitened at load -> engine consumes it directly (mirrors
+            # DB-whitened jobs); False -> raw, whitened in-process per request.
+            o["job_embedding_whitened"] = _occ_prewhitened
             out.append(o)
     return out
 
