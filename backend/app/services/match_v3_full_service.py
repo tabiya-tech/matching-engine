@@ -157,6 +157,8 @@ def run_match_v3_full(
             item = job_index.get(str(ce_row.get("job_uuid") or ""))
             if not item:
                 continue
+            if not _job_matches_user_location(item, user):
+                continue  # strict same-location: urban-pull pool broadening is v4-only
             per, ess_ids = _skill_detail(matcher, user, item)
             opportunities.append(
                 fmt.build_opportunity_row(
