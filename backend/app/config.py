@@ -120,6 +120,23 @@ MATCH_V2_MAX_USERS_PER_REQUEST: int = _i("MATCH_V2_MAX_USERS_PER_REQUEST", 32)
 # Mongo prefilter is separate: JOBS_RETRIEVAL_FILTER. Default true keeps current behaviour.
 MATCH_APPLY_LOCATION_FILTER: bool = _b("MATCH_APPLY_LOCATION_FILTER", True)
 
+# --- /match_v4 tiered urban-pull location matching (see services/location_tiers.py) ---
+# Kenyan job supply is heavily Nairobi-concentrated, so strict same-county filtering leaves non-hub
+# users (e.g. Kitui ~2 jobs, Kilifi ~10) with near-empty lists. When enabled, a user's pool is widened
+# to their hub chain (local -> regional hub -> national hub) AND v4 opportunities are softly re-ranked
+# by a per-job location tier: local=1.0, regional=W_REGIONAL, national=W_NATIONAL, off-chain=0.0. So
+# local jobs are preferred but a clearly-better hub job can still surface and scarce-local lists fill
+# from the hub. Hub counties (national/regional) do not pull outward. Set false to fully restore the
+# old strict pool + scoring (instant rollback). v4/v5 opportunities only; v1/v3/occupations unchanged.
+LOCATION_TIER_ENABLED: bool = _b("LOCATION_TIER_ENABLED", True)
+# Soft tier weights (final_score multipliers). Calibrated by composition sweep on live data; tunable.
+LOCATION_TIER_W_REGIONAL: float = _f("LOCATION_TIER_W_REGIONAL", 0.85)
+LOCATION_TIER_W_NATIONAL: float = _f("LOCATION_TIER_W_NATIONAL", 0.70)
+# County -> hub-chain exceptions (small JSON; every other county defaults to [self, national_hub]).
+LOCATION_HUB_CHAINS_PATH: str = _resolve_under_backend(
+    _s("LOCATION_HUB_CHAINS_PATH", str(_RESOURCES / "location" / "location_hub_chains.json"))
+)
+
 # ---------------------------------------------------------------------------
 # Success propensity  (p_hat = G * E^alpha * R^beta * M^gamma)
 # ---------------------------------------------------------------------------
