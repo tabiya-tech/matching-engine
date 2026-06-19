@@ -281,6 +281,10 @@ RANKED_JOB_FIND_PROJECTION: Dict[str, int] = {
     "concat_skill_embedding_gemini": 1,
     # Float array on ranked job docs (e.g. SouthAfricaJobs_V2.ranked_jobs); /match_v3 fallback if no vector_bin.
     "job_embedding": 1,
+    # Whether job_embedding is already whitened on the DB side (colleague's enrichment). When True the
+    # matching code consumes it directly instead of whitening in-process. Nested scalar only — keeps the
+    # doc small (does not pull the 3072-float raw_embedding).
+    "llm_reranker_meta.embedding.whitening.enabled": 1,
     # ZQF education annotation (Zambia); root-level fields set by scrape-time enrichment / backfill.
     "zqf_min": 1,
     "zqf_max": 1,
@@ -561,6 +565,15 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
         if len(raw_je) == _gem_concat_dim:
             out["job_embedding"] = raw_je
+    # True iff job_embedding has been whitened on the DB side (same concat artifact the code ships).
+    # The matching engine consumes such vectors directly; raw vectors (offline, occupations, not-yet-
+    # whitened jobs) are whitened in-process. Absent/False => raw (safe default).
+    out["job_embedding_whitened"] = (
+        (((rd.get("llm_reranker_meta") or {}).get("embedding") or {}).get("whitening") or {}).get(
+            "enabled"
+        )
+        is True
+    )
     return out
 
 

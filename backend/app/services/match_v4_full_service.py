@@ -41,6 +41,7 @@ from app.services.gemini_ce_preference_matching.scoring import (
 from app.services.match_concat_gemini_ce_service import (
     _get_matcher,
     _get_v4_matcher,
+    _job_is_prewhitened,
     _job_stage1_embedding_vector,
     concat_rescale_target,
     embed_user_unit_vectors,
@@ -232,18 +233,20 @@ def run_match_v4_full(
             "V4_FULL_RANK_DEMOTE is on but the concat-whitening artifact is unavailable; "
             "falling back to Phase-1 (no demotion, raw p_hat). Build/ship the artifact to enable Phase 2."
         )
-    job_concat: Dict[str, np.ndarray] = {}
-    occ_concat: Dict[str, np.ndarray] = {}
+    job_concat: Dict[str, tuple] = {}  # uuid -> (stage1_vector, is_already_whitened)
+    occ_concat: Dict[str, tuple] = {}
     u_white_by_uid: Dict[str, np.ndarray] = {}
     if demote_active:
         for j in jobs:
             v = _job_stage1_embedding_vector(j)
             if v is not None:
-                job_concat[str(j.get("uuid") or "")] = v
+                # (vector, is_already_whitened) — DB-whitened jobs are consumed directly in Phase-2;
+                # raw vectors are whitened in-process. Same artifact => identical result either way.
+                job_concat[str(j.get("uuid") or "")] = (v, _job_is_prewhitened(j))
         for o in occupations:
             v = _job_stage1_embedding_vector(o)
             if v is not None:
-                occ_concat[str(o.get("uuid") or "")] = v
+                occ_concat[str(o.get("uuid") or "")] = (v, False)  # occupations are raw
         u_white = whiten_concat_rows(u_norm)
         u_white_by_uid = {
             str(u.get("user_id") or ""): u_white[i] for i, u in enumerate(users)
@@ -325,9 +328,17 @@ def run_match_v4_full(
             item = item_index.get(uuid)
             if not item or uuid in det_cache:
                 continue
-            jv = concat_by_uuid.get(uuid)
-            if jv is not None and u_white_vec is not None and target > 0:
-                jw = whiten_concat_rows(jv.reshape(1, -1))[0]
+            jrec = concat_by_uuid.get(uuid)
+            if jrec is not None and u_white_vec is not None and target > 0:
+                jv, jv_is_white = jrec
+                # DB-whitened jobs are already in whitened space (same artifact) -> use directly (with
+                # an L2-norm guard); raw vectors (occupations, offline, not-yet-whitened jobs) are
+                # whitened in-process once.
+                if jv_is_white:
+                    _n = float(np.linalg.norm(jv))
+                    jw = jv / _n if _n else jv
+                else:
+                    jw = whiten_concat_rows(jv.reshape(1, -1))[0]
                 cos = float(np.dot(u_white_vec, jw))
                 p_over[uuid] = min(1.0, max(0.0, cos) / target)
             per, ess_ids = _skill_detail(user, item)

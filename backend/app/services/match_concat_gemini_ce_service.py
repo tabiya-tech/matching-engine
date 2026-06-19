@@ -181,6 +181,24 @@ def preload_match_v3_models() -> Dict[str, float]:
         _get_v4_matcher()  # warm the whitened v4 gate matrix so the first /match_v4 doesn't pay the load
     if V4_FULL_RANK_DEMOTE:
         _get_concat_whitening()  # warm the concat-whitening artifact for the Phase-2 whitened p_hat
+        # Log the in-process artifact's sha256 + target so ops can confirm they MATCH the DB's recorded
+        # whitening.artifact_sha256 / target. If they ever diverge, whitened-user (in-process) vs
+        # job_embedding (DB) would be an inconsistent cosine — this is the one hard dependency.
+        try:
+            import hashlib
+
+            _sha = hashlib.sha256(open(V4_FULL_CONCAT_WHITENING_PATH, "rb").read()).hexdigest()
+            logger.info(
+                "concat whitening artifact: path=%s sha256=%s target=%.6f (must match DB job whitening)",
+                V4_FULL_CONCAT_WHITENING_PATH,
+                _sha,
+                concat_rescale_target(),
+            )
+        except OSError:
+            logger.warning(
+                "concat whitening artifact not readable at %s; DB-whitened jobs will be degraded.",
+                V4_FULL_CONCAT_WHITENING_PATH,
+            )
     t1b = time.perf_counter()
     _get_reranker()
     t2 = time.perf_counter()
@@ -218,6 +236,13 @@ def _job_stage1_embedding_vector(job: Dict[str, Any]) -> Optional[np.ndarray]:
         if arr.ndim == 1 and arr.size == EMBEDDING_DIM:
             return arr
     return None
+
+
+def _job_is_prewhitened(job: Dict[str, Any]) -> bool:
+    """True iff this job's stage-1 embedding is ALREADY whitened on the DB side (set by
+    build_job_dict_from_ranked from llm_reranker_meta.embedding.whitening.enabled). Occupations and
+    offline jobs lack the flag -> raw (whitened in-process)."""
+    return bool(job.get("job_embedding_whitened"))
 
 
 def _strip_job_vectors(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -358,9 +383,30 @@ def run_match_concat_gemini_ce(
     matcher = _get_matcher()
     reranker = _get_reranker()
 
+    # Whitened-space stage-1 retrieval. The concat artifact (same one the DB used to whiten
+    # job_embedding) is present in practice, so we rank in the de-anisotropised whitened space (the
+    # meaningful signal; raw concat cosine sd ~0.02). Jobs already whitened on the DB side are used
+    # as-is; RAW vectors (occupations, offline, not-yet-whitened jobs) are whitened in-process once
+    # (numerically identical to the DB result — same artifact). When the artifact is unavailable
+    # (target==0) we fall back to the legacy raw cosine and log loudly (DB-whitened jobs degrade).
+    _whiten_target = concat_rescale_target()
+    if _whiten_target > 0:
+        j_used = j_norm.copy()
+        raw_idx = [k for k, jr in enumerate(job_rows) if not _job_is_prewhitened(jr)]
+        if raw_idx:
+            j_used[raw_idx] = whiten_concat_rows(j_mat[raw_idx])
+        u_used = whiten_concat_rows(u_norm)
+    else:
+        if any(_job_is_prewhitened(jr) for jr in job_rows):
+            logger.error(
+                "concat whitening artifact unavailable but DB job_embedding is whitened; stage-1 "
+                "cosine will be raw-user vs whitened-job (degraded). Ship concat_whitening_gemini.npz."
+            )
+        j_used, u_used = j_norm, u_norm
+
     out_results: List[Dict[str, Any]] = []
     for i, user in enumerate(users):
-        sim_row = (u_norm[i : i + 1] @ j_norm.T).reshape(-1)
+        sim_row = (u_used[i : i + 1] @ j_used.T).reshape(-1)
         # Location-tier weighting of the stage-1 ranking (urban-pull). Rank by cosine * tier so local
         # jobs are favoured for the shortlist; keep the RAW cosine for the stored similarity downstream.
         loc_tier_vec = None

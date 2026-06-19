@@ -227,6 +227,20 @@ class TestEmbeddingPassthrough:
         job = build_job_dict_from_ranked(doc)
         assert job["concat_skill_embedding_gemini"] is gem
 
+    def test_job_embedding_whitened_flag_true(self):
+        # When the DB has whitened job_embedding (whitening.enabled True), the flag is set so the
+        # matcher consumes it directly instead of re-whitening in-process.
+        doc = _base_doc()
+        doc["llm_reranker_meta"] = {"embedding": {"whitening": {"enabled": True}}}
+        assert build_job_dict_from_ranked(doc)["job_embedding_whitened"] is True
+
+    def test_job_embedding_whitened_flag_defaults_false(self):
+        # No metadata (offline corpus / not-yet-whitened jobs) -> raw -> whitened in-process.
+        assert build_job_dict_from_ranked(_base_doc())["job_embedding_whitened"] is False
+        doc = _base_doc()
+        doc["llm_reranker_meta"] = {"embedding": {"whitening": {"enabled": False}}}
+        assert build_job_dict_from_ranked(doc)["job_embedding_whitened"] is False
+
 
 class TestCompassConsumerContractFields:
     """Fields added for the Compass jobs board: category, source_platform, skills."""
