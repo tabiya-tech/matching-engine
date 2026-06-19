@@ -129,9 +129,11 @@ MATCH_APPLY_LOCATION_FILTER: bool = _b("MATCH_APPLY_LOCATION_FILTER", True)
 # from the hub. Hub counties (national/regional) do not pull outward. Set false to fully restore the
 # old strict pool + scoring (instant rollback). v4/v5 opportunities only; v1/v3/occupations unchanged.
 LOCATION_TIER_ENABLED: bool = _b("LOCATION_TIER_ENABLED", True)
-# Soft tier weights (final_score multipliers). Calibrated by composition sweep on live data; tunable.
-LOCATION_TIER_W_REGIONAL: float = _f("LOCATION_TIER_W_REGIONAL", 0.85)
-LOCATION_TIER_W_NATIONAL: float = _f("LOCATION_TIER_W_NATIONAL", 0.70)
+# Soft tier weights (cosine + final_score multipliers). Calibrated on live data; tunable. 0.70/0.50
+# encodes a strong local preference: a regional-hub job must be ~1.4x better fit (1/0.70), a national
+# job ~2x better (1/0.50), to outrank a local job. Lower = stronger local preference.
+LOCATION_TIER_W_REGIONAL: float = _f("LOCATION_TIER_W_REGIONAL", 0.70)
+LOCATION_TIER_W_NATIONAL: float = _f("LOCATION_TIER_W_NATIONAL", 0.50)
 # County -> hub-chain exceptions (small JSON; every other county defaults to [self, national_hub]).
 LOCATION_HUB_CHAINS_PATH: str = _resolve_under_backend(
     _s("LOCATION_HUB_CHAINS_PATH", str(_RESOURCES / "location" / "location_hub_chains.json"))
