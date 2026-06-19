@@ -19,6 +19,8 @@ from app.config import (
     JOBS_FIND_USE_PROJECTION,
     JOBS_RETRIEVAL_FILTER,
     JOBS_RETRIEVAL_LIMIT,
+    LOCATION_HUB_CHAINS_PATH,
+    LOCATION_TIER_ENABLED,
     MONGO_JOBS_COLLECTION,
     OCCUPATION_CONCAT_EMBEDDINGS_PATH,
     OCCUPATION_JSON_PATH,
@@ -352,30 +354,38 @@ def _expr_haystack_contains_mongo_subfield(
 
 
 def _location_or_clauses_for_one_user(user: dict) -> List[Dict[str, Any]]:
-    """Superset of matching_service._job_matches_user_location, on classifier_metadata fields."""
+    """Superset of matching_service._job_matches_user_location, on classifier_metadata fields.
+
+    By default the needle set is the user's {city, province}. When LOCATION_TIER_ENABLED (urban-pull
+    Part A), it is widened to also include the user's hub-chain regions (regional + national hub) so
+    hub jobs become candidates in the pool; the per-user soft tier re-rank (match_v4_full_service)
+    then keeps local jobs preferred. Strictly additive — remote clauses always come first.
+    """
     uc = _norm_loc_value(user.get("city"))
     up = _norm_loc_value(user.get("province"))
     ors: List[Dict[str, Any]] = list(_remote_substring_ors())
     if not uc or not up:
         return ors
-    for field in (_M_CITY, _M_COUNTY, _M_PROVINCE):
-        f_c = _field_contains_substr_regex(field, uc)
-        if f_c is not None:
-            ors.append(f_c)
-        f_p = _field_contains_substr_regex(field, up)
-        if f_p is not None:
-            ors.append(f_p)
-    for hay, fpath in (
-        (uc, "$classifier_metadata.city"),
-        (uc, "$classifier_metadata.county"),
-        (uc, "$classifier_metadata.province"),
-        (up, "$classifier_metadata.city"),
-        (up, "$classifier_metadata.county"),
-        (up, "$classifier_metadata.province"),
-    ):
-        ex = _expr_haystack_contains_mongo_subfield(hay, fpath)
-        if ex is not None:
-            ors.append(ex)
+    needles = {uc, up}
+    if LOCATION_TIER_ENABLED:
+        from app.services.location_tiers import load_hub_chains
+
+        hc = load_hub_chains(LOCATION_HUB_CHAINS_PATH)
+        if hc is not None:
+            needles.update(hc.chain_for(up))  # local + regional + national hub regions
+    for needle in sorted(n for n in needles if n):
+        for field in (_M_CITY, _M_COUNTY, _M_PROVINCE):
+            f = _field_contains_substr_regex(field, needle)
+            if f is not None:
+                ors.append(f)
+        for fpath in (
+            "$classifier_metadata.city",
+            "$classifier_metadata.county",
+            "$classifier_metadata.province",
+        ):
+            ex = _expr_haystack_contains_mongo_subfield(needle, fpath)
+            if ex is not None:
+                ors.append(ex)
     return ors
 
 

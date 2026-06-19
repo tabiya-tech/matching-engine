@@ -201,6 +201,7 @@ def enrich_recommendations_with_preferences(
     p_hat_by_uuid: Optional[Dict[str, float]] = None,
     coverage_by_uuid: Optional[Dict[str, float]] = None,
     coverage_gamma: float = 0.0,
+    location_tier_by_uuid: Optional[Dict[str, float]] = None,
 ) -> list[Dict[str, Any]]:
     """
     Stage 3 only: compute u_hat per job, p_hat from stage 1–2 cosine, re-rank by u_hat × p_hat.
@@ -263,6 +264,17 @@ def enrich_recommendations_with_preferences(
                 breakdown["essential_coverage"] = round(cov, 4)
                 breakdown["coverage_gamma"] = round(float(coverage_gamma), 4)
                 breakdown["coverage_factor"] = round(factor, 4)
+
+        # Urban-pull location tier (flat multiply): final *= tier, where tier in {1.0 local,
+        # W_REGIONAL, W_NATIONAL, 0.0 off-chain}. The tier values are themselves the tuning knobs, so
+        # no exponent. Local jobs preferred; off-chain (e.g. another batch user's locations) -> 0.
+        if location_tier_by_uuid is not None:
+            tier = location_tier_by_uuid.get(uid)
+            if tier is not None:
+                tier = max(0.0, min(1.0, float(tier)))
+                final = final * tier
+                breakdown["final_score"] = round(final, 4)
+                breakdown["location_tier_factor"] = round(tier, 4)
 
         row = dict(rec)
         row["rank_cross_encoder"] = rec.get("rank")

@@ -16,6 +16,10 @@ import numpy as np
 
 from app.config import (
     FINAL_SCORE_COMBINER,
+    LOCATION_HUB_CHAINS_PATH,
+    LOCATION_TIER_ENABLED,
+    LOCATION_TIER_W_NATIONAL,
+    LOCATION_TIER_W_REGIONAL,
     MATCH_TOP_K_SKILL_GAPS,
     MATCH_V4_OCC_DEMAND_GAMMA,
     MATCH_V4_TOP_K_OCCUPATIONS,
@@ -26,6 +30,7 @@ from app.config import (
     V4_FULL_UNPARSED_COVERAGE,
     V4_FULL_WHITENED_GATE,
 )
+from app.services.location_tiers import load_hub_chains
 from app.services import match_v4_formatting as fmt
 from app.services.gemini_ce_preference_matching.match_v3_bridge import (
     v3_recommendation_to_rec,
@@ -82,6 +87,7 @@ def _enriched_recs(
     p_hat_by_uuid: Optional[Dict[str, float]] = None,
     coverage_by_uuid: Optional[Dict[str, float]] = None,
     coverage_gamma: float = 0.0,
+    location_tier_by_uuid: Optional[Dict[str, float]] = None,
 ) -> List[Dict[str, Any]]:
     """CE recs for one user -> preference-enriched, final-score-sorted recs (rich; with details).
 
@@ -125,7 +131,43 @@ def _enriched_recs(
         p_hat_by_uuid=p_hat_by_uuid,
         coverage_by_uuid=coverage_by_uuid,
         coverage_gamma=coverage_gamma,
+        location_tier_by_uuid=location_tier_by_uuid,
     )
+
+
+def _location_tier_overrides(
+    user: Dict[str, Any],
+    v3_row: Optional[Dict[str, Any]],
+    item_index: Dict[str, Dict[str, Any]],
+) -> Dict[str, float]:
+    """Per-uuid location-tier multiplier for a user's job shortlist (urban-pull Part B).
+
+    local=1.0, regional hub=W_REGIONAL, national hub=W_NATIONAL, remote=1.0, off-chain=0.0. Returns ``{}``
+    (a no-op) when the feature is disabled or the hub-chain data is unavailable. Runs independent of the
+    Phase-2 coverage demotion (no whitening artifact needed)."""
+    if not LOCATION_TIER_ENABLED:
+        return {}
+    hc = load_hub_chains(LOCATION_HUB_CHAINS_PATH)
+    if hc is None:
+        return {}
+    county = user.get("province") or user.get("city") or ""
+    tiers: Dict[str, float] = {}
+    for r in (v3_row or {}).get("concat_gemini_ce_recommendations") or []:
+        if not isinstance(r, dict):
+            continue
+        uuid = str(r.get("job_uuid") or "")
+        if not uuid or uuid in tiers:
+            continue
+        item = item_index.get(uuid)
+        if not item:
+            continue
+        tiers[uuid] = hc.tier_factor_for_job(
+            item,
+            county,
+            w_regional=LOCATION_TIER_W_REGIONAL,
+            w_national=LOCATION_TIER_W_NATIONAL,
+        )
+    return tiers
 
 
 def _skill_gaps_for(
@@ -214,6 +256,9 @@ def run_match_v4_full(
         final_top_k=final_top_k,
         mongo_timing=mongo_timing,
         user_unit_vectors=u_norm,
+        # Urban-pull: weight the stage-1 cosine by location tier so relevant local jobs survive the
+        # retrieve_top_k cutoff (occupations keep their own county scoping, so not applied there).
+        apply_location_tier=LOCATION_TIER_ENABLED,
     )
     # Occupations are flattened into 4 identical-embedding county-rows per code (the fixed sample
     # counties Kilifi/Kitui/Mombasa/Nairobi). The per-user location filter (below) keeps only the
@@ -326,8 +371,12 @@ def run_match_v4_full(
             )
 
         # Opportunities. Jobs keep the existing /match_v4 location scoping (Mongo prefilter via
-        # get_all_jobs_with_timing(users=...)); no extra python location filter so we don't risk
-        # dropping jobs whose location format differs from the user's.
+        # get_all_jobs_with_timing(users=...)). Instead of a hard python location filter, urban-pull
+        # applies a per-user SOFT location tier (local=1.0 > regional hub > national hub; off-chain=0)
+        # as a final_score multiplier — local jobs preferred, hub jobs surface when better/needed, and
+        # off-chain jobs (e.g. another batch user's locations) are dropped. Always-on (independent of
+        # the Phase-2 coverage demotion); {} no-op when LOCATION_TIER_ENABLED is off.
+        job_tiers = _location_tier_overrides(user, job_v3_by_uid.get(uid), job_index)
         opportunities: List[Dict[str, Any]] = []
         for rec in _enriched_recs(
             user,
@@ -339,6 +388,7 @@ def run_match_v4_full(
             p_hat_by_uuid=job_p,
             coverage_by_uuid=job_cov,
             coverage_gamma=cov_gamma,
+            location_tier_by_uuid=job_tiers,
         ):
             item = job_index.get(str(rec.get("job_uuid") or ""))
             if not item:

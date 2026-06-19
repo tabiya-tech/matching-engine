@@ -1,0 +1,8 @@
+{
+  "_comment": "Tiered urban-pull location matching. Only EXCEPTIONS are stored; every other county defaults to [self, national_hub]. national_hub = the broad national fallback. regional_hubs map a regional metro -> the counties that fall back to it (local -> regional hub -> national). hub_self_only = hub counties that do NOT pull outward (they only ever surface their own jobs). All names are matched casefold/substring, consistent with _job_matches_user_location.",
+  "national_hub": "nairobi",
+  "regional_hubs": {
+    "mombasa": ["kilifi", "kwale", "lamu", "taita taveta", "tana river"]
+  },
+  "hub_self_only": ["nairobi", "mombasa"]
+}

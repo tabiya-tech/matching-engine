@@ -260,6 +260,7 @@ def run_match_concat_gemini_ce(
     final_top_k: int,
     mongo_timing: Optional[Dict[str, Any]] = None,
     user_unit_vectors: Optional[np.ndarray] = None,
+    apply_location_tier: bool = False,
 ) -> List[Dict[str, Any]]:
     """Return one result dict per user (keys align with ``MatchConcatGeminiCeResponse``).
 
@@ -290,6 +291,24 @@ def run_match_concat_gemini_ce(
 
     # Post-secondary education gate: aligned with job_rows, used to skip candidates per user.
     job_requires_ps = [job_requires_post_secondary(j) for j in job_rows]
+
+    # Tiered urban-pull (v4 opportunities only): weight each job's stage-1 cosine by the user's
+    # location tier (local=1.0 > regional hub > national hub; off-chain=0) BEFORE the retrieve_top_k
+    # cutoff, so relevant local jobs survive the funnel instead of being drowned by the (much larger)
+    # national-hub supply. Off-chain jobs (tier 0) are skipped at retrieval entirely. Soft: an
+    # irrelevant local job still loses to a much-better hub job.
+    _hub_chains = None
+    _loc_w_reg = _loc_w_nat = 1.0
+    if apply_location_tier:
+        from app.config import (
+            LOCATION_HUB_CHAINS_PATH,
+            LOCATION_TIER_W_NATIONAL,
+            LOCATION_TIER_W_REGIONAL,
+        )
+        from app.services.location_tiers import load_hub_chains
+
+        _hub_chains = load_hub_chains(LOCATION_HUB_CHAINS_PATH)
+        _loc_w_reg, _loc_w_nat = LOCATION_TIER_W_REGIONAL, LOCATION_TIER_W_NATIONAL
 
     if not job_rows:
         empty_summary = {
@@ -342,13 +361,32 @@ def run_match_concat_gemini_ce(
     out_results: List[Dict[str, Any]] = []
     for i, user in enumerate(users):
         sim_row = (u_norm[i : i + 1] @ j_norm.T).reshape(-1)
-        order = _sorted_indices_desc(sim_row)
+        # Location-tier weighting of the stage-1 ranking (urban-pull). Rank by cosine * tier so local
+        # jobs are favoured for the shortlist; keep the RAW cosine for the stored similarity downstream.
+        loc_tier_vec = None
+        if _hub_chains is not None:
+            county = user.get("province") or user.get("city") or ""
+            loc_tier_vec = np.array(
+                [
+                    _hub_chains.tier_factor_for_job(
+                        jr, county, w_regional=_loc_w_reg, w_national=_loc_w_nat
+                    )
+                    for jr in job_rows
+                ],
+                dtype=float,
+            )
+            rank_row = sim_row * loc_tier_vec
+        else:
+            rank_row = sim_row
+        order = _sorted_indices_desc(rank_row)
         user_no_ps = user_lacks_post_secondary(user)
 
         cosine_recs: List[Dict[str, Any]] = []
         for ji in order:
             if user_no_ps and job_requires_ps[int(ji)]:
                 continue  # job requires post-secondary education the user does not have
+            if loc_tier_vec is not None and loc_tier_vec[int(ji)] <= 0.0:
+                continue  # off-chain location for this user: excluded at retrieval
             jid = jid_list[int(ji)]
             job_obj = job_rows[int(ji)]
             job_plain = _strip_job_vectors(job_obj)
