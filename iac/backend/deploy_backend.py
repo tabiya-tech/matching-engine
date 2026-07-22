@@ -108,6 +108,8 @@ def deploy_backend(*,
                    gcp_project_region: str,
                    docker_repository_id: str,
                    environment_name: str,
+                   cloudrun_min_instance_count: int,
+                   cloudrun_max_instance_count: int,
                    env_vars: EnvVars):
     image_id = f"matching-algorithm-api"
     pulumi.log.info(f"Building image {image_id}")
@@ -134,8 +136,8 @@ def deploy_backend(*,
         template=gcp.cloudrunv2.ServiceTemplateArgs(
             timeout="300s",
             scaling=gcp.cloudrunv2.ServiceTemplateScalingArgs(
-                min_instance_count=1,
-                max_instance_count=3,
+                min_instance_count=cloudrun_min_instance_count,
+                max_instance_count=cloudrun_max_instance_count,
             ),
             containers=[
                 gcp.cloudrunv2.ServiceTemplateContainerArgs(

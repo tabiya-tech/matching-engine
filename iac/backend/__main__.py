@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 from env_vars import EnvVars
 
+
 def main():
     load_dotenv()
     stack = pulumi.get_stack()
@@ -19,13 +20,19 @@ def main():
     region = pulumi.Config("gcp").require("region")
     pulumi.log.info(f"using region: {region}")
 
+    cloudrun_min_instance_count: int = int(pulumi.Config("cloudrun").require("min_instance_count"))
+    cloudrun_max_instance_count: int = int(pulumi.Config("cloudrun").require_int("max_instance_count"))
+
     deploy_backend(
         gcp_project_id=project_id,
         gcp_project_region=region,
         docker_repository_id=docker_repository_name,
         environment_name=stack,
+        cloudrun_min_instance_count=cloudrun_min_instance_count,
+        cloudrun_max_instance_count=cloudrun_max_instance_count,
         env_vars=EnvVars.construct_from_env()
     )
+
 
 if __name__ == "__main__":
     main()

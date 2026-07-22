@@ -2,3 +2,5 @@ config:
   gcp:region: us-central1
   gcp:project: matching-algo-494308
   docker-repository_name: docker-repository
+  cloudrun:min_instance_count: 1
+  cloudrun:max_instance_count: 3
