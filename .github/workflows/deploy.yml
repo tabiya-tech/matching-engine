@@ -15,6 +15,7 @@ on:
           - zmb
           - sa
           - eth
+          - argentina
 
 concurrency:
   group: deploy-${{ inputs.env-name }}

@@ -7,8 +7,8 @@ from env_vars import EnvVars
 
 
 def main():
-    load_dotenv()
     stack = pulumi.get_stack()
+    load_dotenv(f".env.{stack}", override=True)
     pulumi.log.info(f"using stack: {stack}")
 
     docker_repository_name = pulumi.Config().require("docker-repository_name")
