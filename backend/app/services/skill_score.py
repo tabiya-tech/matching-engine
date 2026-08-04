@@ -17,6 +17,7 @@ from app.config import (
     SKILL_HIERARCHY_CSV_PATH,
     SKILL_TO_ROW_PATH,
 )
+from app.services.skill_label_packs import SkillLabelPacks
 from app.services.skills_utility import skills_match as _skills_match
 from app.services.skills_utility.skills_match import (
     Jobseeker,
@@ -75,43 +76,19 @@ class SkillScorer:
         self._embedding_ids = set(skill_to_row.keys())
         self.engine = SimilarityEngine(W, skill_to_row)
 
-        # Label-primary resolution maps. UUIDs are NOT used for resolution — they
-        # carry modelId-drift risk (a Compass-side UUID can resolve to a different
-        # internal skill than the user's declared label). Labels are stable across
-        # taxonomy versions; they're our trust anchor.
-        self.skill_labels: dict[
-            str, str
-        ] = {}  # internal_id -> preferredLabel (display)
-        self._preferred_to_id: dict[
-            str, str
-        ] = {}  # canonical preferredLabel -> internal_id
-        self._altlabel_to_id: dict[str, str] = {}  # canonical altLabel -> internal_id
-        self._preferred_collisions = 0
-        try:
-            with open(self.SKILLS_CSV_PATH, "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    sid = row.get("ID")
-                    label = row.get("PREFERREDLABEL") or ""
-                    if not sid or sid not in self._embedding_ids:
-                        continue
-                    if label:
-                        self.skill_labels[str(sid)] = label
-                        canon = _canon(label)
-                        if canon and canon not in self._preferred_to_id:
-                            self._preferred_to_id[canon] = str(sid)
-                        elif canon and self._preferred_to_id.get(canon) != str(sid):
-                            self._preferred_collisions += 1
-                    for alt in (row.get("ALTLABELS") or "").split("\n"):
-                        canon = _canon(alt)
-                        if not canon:
-                            continue
-                        # Don't shadow a preferredLabel hit via altLabel; first writer wins on alt.
-                        if canon in self._preferred_to_id:
-                            continue
-                        self._altlabel_to_id.setdefault(canon, str(sid))
-        except FileNotFoundError:
-            self.skill_labels = {}
+        # Label-primary resolution maps, built from every enabled language's taxonomy pack.
+        # UUIDs are NOT used for resolution — they carry modelId-drift risk (a Compass-side
+        # UUID can resolve to a different internal skill than the user's declared label).
+        # Labels are stable across taxonomy versions; they're our trust anchor.
+        #
+        # Loading several languages into one resolver is what makes a Spanish posting match
+        # a Spanish profile with nothing on the request: every pack is mapped onto this one
+        # id space, so the embeddings are shared (see services/skill_label_packs.py).
+        self._packs = SkillLabelPacks(self._embedding_ids)
+        self.skill_labels = self._packs.skill_labels  # internal_id -> preferredLabel
+        self._preferred_to_id = self._packs.preferred_to_id
+        self._altlabel_to_id = self._packs.altlabel_to_id
+        self._preferred_collisions = self._packs.preferred_collisions
 
         # Miss telemetry (per-process, lifetime-cumulative).
         self._missed_labels: Counter = Counter()
@@ -170,22 +147,20 @@ class SkillScorer:
     def _resolve_label(self, label: str) -> str | None:
         """Resolve a skill label to its internal embedding ID. Strict label-only.
 
-        Lookup chain: canonical preferredLabel → canonical altLabel → miss.
+        Lookup chain: preferredLabel → altLabel, in any loaded language → miss.
         UUIDs are deliberately not consulted — they carry modelId-drift risk.
         """
         if not label:
             return None
-        canon = _canon(label)
-        if not canon:
-            return None
-        sid = self._preferred_to_id.get(canon)
-        if sid is not None:
-            return sid
-        sid = self._altlabel_to_id.get(canon)
+        sid = self._packs.resolve_label(label)
         if sid is not None:
             return sid
         self._missed_labels[label] += 1
         return None
+
+    def display_labels(self, language: str | None = None) -> dict[str, str]:
+        """internal_id → preferredLabel in ``language`` (canonical language when absent)."""
+        return self._packs.display_labels(language)
 
     def get_resolution_stats(self) -> dict:
         """Per-process miss telemetry. Useful for batch scripts at end-of-run."""
@@ -243,6 +218,13 @@ class SkillScorer:
                 if not isinstance(s, dict):
                     continue
                 resolved = self._resolve_label(s.get("label"))
+                if resolved is None:
+                    # Fallback for a label this build has no pack for: the job's `id` is a
+                    # taxonomy skill ID written by the reranker, which the label packs
+                    # crosswalk across locales. This is not the UUID path the docstring
+                    # warns about — it is an exact per-model identifier, used only after
+                    # the label misses.
+                    resolved = self._packs.resolve_id(s.get("id"))
                 if resolved is not None:
                     out.add(resolved)
             return out

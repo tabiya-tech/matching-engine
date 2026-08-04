@@ -60,7 +60,9 @@ except ImportError as e:
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[3]  # .../backend
 load_dotenv(_BACKEND_ROOT / ".env")
-TAXONOMY_DIR = _BACKEND_ROOT / "resources" / "skill_taxonomy"
+# The canonical language pack — the artefact this builds is keyed on its ids
+# (row-aligned with skill_to_row.json). Other languages reuse these vectors.
+TAXONOMY_DIR = _BACKEND_ROOT / "resources" / "skill_taxonomy" / "en"
 MODELS_DIR = _BACKEND_ROOT / "resources" / "models"
 
 MODEL_NAME = "gemini-embedding-001"

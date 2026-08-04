@@ -205,7 +205,13 @@ def run_match_v4_full(
     skill_gap_top_k: int = MATCH_TOP_K_SKILL_GAPS,
     mongo_timing: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Return one MatchResponse-shaped dict per user (occupations + opportunities + skill-gaps)."""
+    """Return one MatchResponse-shaped dict per user (occupations + opportunities + skill-gaps).
+
+    The deployment's ``TARGET_LANGUAGE`` selects the stage-2 cross-encoder checkpoint, whose
+    passages are skill-label text. Stage-1 retrieval and the per-skill gate are
+    language-neutral: every language's labels resolve into the same shared embedding space
+    (``services/skill_label_packs``).
+    """
 
     combiner = (final_score_combiner or FINAL_SCORE_COMBINER).strip().lower()
     if combiner not in ("product", "geometric_mean"):

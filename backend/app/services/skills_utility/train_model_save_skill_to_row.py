@@ -35,7 +35,9 @@ from pathlib import Path
 from gensim.models import Word2Vec
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[3]  # .../backend
-TAXONOMY_DIR = str(_BACKEND_ROOT / "resources" / "skill_taxonomy")
+# The canonical language pack: its ids define the internal id space this script writes
+# into skill_to_row.json, and every other language's labels are mapped onto it.
+TAXONOMY_DIR = str(_BACKEND_ROOT / "resources" / "skill_taxonomy" / "en")
 MODELS_DIR = str(_BACKEND_ROOT / "resources" / "models")
 
 # =============================================================================

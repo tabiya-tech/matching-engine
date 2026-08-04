@@ -6,13 +6,13 @@ import logging
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import json
-import csv
 import re
 
 import numpy as np
 import torch
 
 from app.config import EMBEDDING_MODEL_PATH, SKILLS_CSV_PATH, SKILL_TO_ROW_PATH
+from app.services.skill_label_packs import SkillLabelPacks
 
 logger = logging.getLogger(__name__)
 
@@ -88,39 +88,16 @@ class CosineSkillMatcher:
             self.skill_to_row = json.load(f)
 
         self._embedding_ids = set(self.skill_to_row.keys())
-        self.skill_labels: Dict[str, str] = {}
-        self._preferred_to_id: Dict[str, str] = {}
-        self._altlabel_to_id: Dict[str, str] = {}
+        # Label maps come from every enabled language's taxonomy pack, all mapped onto this
+        # one id space, so a Spanish label reaches the same embedding row as its English
+        # counterpart (see services/skill_label_packs.py).
+        self._packs = SkillLabelPacks(self._embedding_ids)
+        self.skill_labels: Dict[str, str] = self._packs.skill_labels
+        self._preferred_to_id: Dict[str, str] = self._packs.preferred_to_id
+        self._altlabel_to_id: Dict[str, str] = self._packs.altlabel_to_id
         # ESCO origin/history UUID -> canonical skill id (drift-tolerant fallback resolver).
-        self._originuuid_to_id: Dict[str, str] = {}
-        self._preferred_collisions = 0
-
-        try:
-            with open(self.SKILLS_CSV_PATH, "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    sid = row.get("ID")
-                    label = row.get("PREFERREDLABEL") or ""
-                    if not sid or sid not in self._embedding_ids:
-                        continue
-                    if label:
-                        self.skill_labels[str(sid)] = label
-                        canon = _canon(label)
-                        if canon and canon not in self._preferred_to_id:
-                            self._preferred_to_id[canon] = str(sid)
-                        elif canon and self._preferred_to_id.get(canon) != str(sid):
-                            self._preferred_collisions += 1
-                    for alt in (row.get("ALTLABELS") or "").split("\n"):
-                        canon = _canon(alt)
-                        if not canon or canon in self._preferred_to_id:
-                            continue
-                        self._altlabel_to_id.setdefault(canon, str(sid))
-                    # Secondary resolver: current ESCO origin UUID + every historical UUID -> same id.
-                    for col in ("ORIGINURI", "UUIDHISTORY"):
-                        for m in _UUID_RE.findall((row.get(col) or "").lower()):
-                            self._originuuid_to_id.setdefault(m, str(sid))
-        except FileNotFoundError:
-            self.skill_labels = {}
+        self._originuuid_to_id: Dict[str, str] = self._packs.uuid_to_id
+        self._preferred_collisions = self._packs.preferred_collisions
 
         self._missed_labels: Counter[str] = Counter()
 

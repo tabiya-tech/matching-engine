@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from app.config import CROSS_ENCODER_BATCH_SIZE, CROSS_ENCODER_MODEL_NAME
+from app.config import CROSS_ENCODER_BATCH_SIZE, cross_encoder_model_name
+from app.languages import CANONICAL_LANGUAGE, default_language, normalise_language
 
 from .text_pairs import build_job_passage_from_cosine_rec, build_user_query_text
 
@@ -21,15 +22,38 @@ def _non_empty_skill_text(raw: str, *, side: str) -> str:
 
 
 class CrossEncoderReranker:
-    """Lazy-loaded Hugging Face cross-encoder (sentence-transformers)."""
+    """Lazy-loaded Hugging Face cross-encoder (sentence-transformers).
+
+    One instance serves one language: the query and passage are skill-label text, so an
+    English-only checkpoint scores Spanish labels poorly. ``language`` picks the checkpoint
+    from that language's config (``CROSS_ENCODER_MODEL_NAME_<LANG>`` overrides it), and the
+    vendored model directory it looks for first.
+    """
 
     def __init__(
         self,
         *,
         batch_size: Optional[int] = None,
+        language: Optional[str] = None,
     ) -> None:
         self.batch_size = int(batch_size or CROSS_ENCODER_BATCH_SIZE)
+        self.language = normalise_language(language) if language else default_language()
+        self.model_name = cross_encoder_model_name(self.language)
         self._model = None
+
+    def _vendored_model_dirs(self) -> List[Path]:
+        """Local checkpoint directories to try, most specific first.
+
+        ``resources/models/cross-encoder-<lang>`` lets an image vendor one checkpoint per
+        language; ``resources/models/cross-encoder`` is the pre-language location and stays
+        the only candidate for the canonical language.
+        """
+        # backend/app/services/cross_encoder/reranker.py -> parents[3] == backend/
+        models = Path(__file__).resolve().parents[3] / "resources" / "models"
+        dirs = [models / f"cross-encoder-{self.language}"]
+        if self.language == CANONICAL_LANGUAGE:
+            dirs.append(models / "cross-encoder")
+        return dirs
 
     def _ensure_model(self) -> None:
         if self._model is not None:
@@ -41,22 +65,27 @@ class CrossEncoderReranker:
                 "Cross-encoder reranking requires sentence-transformers. "
                 "Install backend dependencies: pip install sentence-transformers"
             ) from e
-        try:
-            # backend/app/services/cross_encoder/reranker.py -> parents[3] == backend/
-            path_name = (
-                Path(__file__).resolve().parents[3]
-                / "resources"
-                / "models"
-                / "cross-encoder"
-            )
-            logger.info("Loading cross-encoder model %s", path_name)
-            # sentence-transformers needs a str (it does `"\\" in name` / `name.count("/")`
-            # checks); a Path raises "argument of type 'WindowsPath' is not iterable".
-            self._model = CrossEncoder(str(path_name))
-        except Exception as e:
-            logger.exception(e)
-            logger.info("Loading cross-encoder model %s", CROSS_ENCODER_MODEL_NAME)
-            self._model = CrossEncoder(CROSS_ENCODER_MODEL_NAME)
+        for path_name in self._vendored_model_dirs():
+            if not path_name.is_dir():
+                continue
+            try:
+                logger.info(
+                    "Loading cross-encoder model %s (language=%s)",
+                    path_name,
+                    self.language,
+                )
+                # sentence-transformers needs a str (it does `"\\" in name` / `name.count("/")`
+                # checks); a Path raises "argument of type 'WindowsPath' is not iterable".
+                self._model = CrossEncoder(str(path_name))
+                return
+            except Exception as e:
+                logger.exception(e)
+        logger.info(
+            "Loading cross-encoder model %s (language=%s)",
+            self.model_name,
+            self.language,
+        )
+        self._model = CrossEncoder(self.model_name)
 
     def warmup(self) -> None:
         """Load the Hugging Face model once (can take tens of seconds on first use)."""

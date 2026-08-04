@@ -69,6 +69,8 @@ jobs:
           MONGO_DB_NAME: ${{ secrets.MONGO_DB_NAME }}
           MONGO_JOBS_COLLECTION: ${{ secrets.MONGO_JOBS_COLLECTION }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # 'en' | 'es' — the language this deployment matches in. Unset ⇒ en.
+          TARGET_LANGUAGE: ${{ vars.TARGET_LANGUAGE }}
           SCORING_MODE: ${{ vars.SCORING_MODE }}
           ADDITIVE_W1_SKILLS: ${{ vars.ADDITIVE_W1_SKILLS }}
           ADDITIVE_W2_PREFERENCE: ${{ vars.ADDITIVE_W2_PREFERENCE }}

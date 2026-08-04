@@ -21,7 +21,6 @@ import numpy as np
 
 from app.config import (
     CROSS_ENCODER_BATCH_SIZE,
-    CROSS_ENCODER_MODEL_NAME,
     V4_FULL_CONCAT_WHITENING_PATH,
     V4_FULL_EMBEDDING_MODEL_PATH,
     V4_FULL_RANK_DEMOTE,
@@ -41,6 +40,7 @@ from app.services.cross_encoder.reranker import (
     CrossEncoderReranker,
     rerank_cosine_recommendations,
 )
+from app.languages import default_language
 from app.services.cosine_similarity.skill_score import CosineSkillMatcher
 from app.services.education_eligibility import (
     job_requires_post_secondary,
@@ -58,7 +58,8 @@ _matcher_lock = threading.Lock()
 _matcher_instance: Optional[CosineSkillMatcher] = None
 
 _reranker_lock = threading.Lock()
-_reranker_instance: Optional[CrossEncoderReranker] = None
+# One cross-encoder per language: the checkpoint has to understand the label text it scores.
+_reranker_instances: Dict[str, CrossEncoderReranker] = {}
 
 
 def _get_matcher() -> CosineSkillMatcher:
@@ -157,16 +158,26 @@ def concat_rescale_target() -> float:
 
 
 def _get_reranker() -> CrossEncoderReranker:
-    global _reranker_instance
-    if _reranker_instance is None:
-        with _reranker_lock:
-            if _reranker_instance is None:
-                inst = CrossEncoderReranker(
-                    batch_size=CROSS_ENCODER_BATCH_SIZE,
-                )
-                inst.warmup()
-                _reranker_instance = inst
-    return _reranker_instance
+    """Cross-encoder for the deployment's language, loaded on first use and then reused.
+
+    Keyed by language rather than a single global so that a process whose
+    ``TARGET_LANGUAGE`` changes (tests, a script) does not reuse the wrong checkpoint.
+    """
+    lang = default_language()
+    existing = _reranker_instances.get(lang)
+    if existing is not None:
+        return existing
+    with _reranker_lock:
+        existing = _reranker_instances.get(lang)
+        if existing is not None:
+            return existing
+        inst = CrossEncoderReranker(
+            batch_size=CROSS_ENCODER_BATCH_SIZE,
+            language=lang,
+        )
+        inst.warmup()
+        _reranker_instances[lang] = inst
+        return inst
 
 
 def preload_match_v3_models() -> Dict[str, float]:
@@ -291,6 +302,11 @@ def run_match_concat_gemini_ce(
 
     ``user_unit_vectors`` (optional) supplies precomputed, L2-normalised user embeddings so the
     caller can embed users once and reuse them across corpora; if omitted they are embedded here.
+
+    The language is the deployment's (``TARGET_LANGUAGE``); it selects the cross-encoder
+    checkpoint for the stage-2 rerank, whose passages are skill-label text. Stage-1 retrieval is
+    language-neutral: the skill embeddings are shared across languages (see
+    ``services/skill_label_packs``).
     """
 
     if not users:
@@ -380,6 +396,7 @@ def run_match_concat_gemini_ce(
     else:
         u_norm = embed_user_unit_vectors(users)
 
+    lang = default_language()
     matcher = _get_matcher()
     reranker = _get_reranker()
 
@@ -489,7 +506,8 @@ def run_match_concat_gemini_ce(
             "stage1": "concat_gemini_cosine_mongo_job_vectors",
             "stage2": "cross_encoder_rerank",
             "gemini_user_embed_model": GEMINI_EMBEDDING_MODEL_NAME,
-            "cross_encoder_model": CROSS_ENCODER_MODEL_NAME,
+            "cross_encoder_model": reranker.model_name,
+            "language": lang,
             "embedding_dim": EMBEDDING_DIM,
             "retrieve_top_k": rt,
             "final_top_k": fk,

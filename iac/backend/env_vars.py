@@ -12,10 +12,16 @@ def get_env(key: str) -> str:
     return value
 
 
+def get_env_or_default(key: str, default: str) -> str:
+    """For settings a stack may leave unset (GitHub passes an unset `vars.X` as "")."""
+    return (os.getenv(key) or "").strip() or default
+
+
 class EnvKeys:
     MONGO_URL = "MONGO_URL"
     MONGO_DB_NAME = "MONGO_DB_NAME"
     MONGO_JOBS_COLLECTION = "MONGO_JOBS_COLLECTION"
+    TARGET_LANGUAGE = "TARGET_LANGUAGE"
     SCORING_MODE = "SCORING_MODE"
     ADDITIVE_W1_SKILLS = "ADDITIVE_W1_SKILLS"
     ADDITIVE_W2_PREFERENCE = "ADDITIVE_W2_PREFERENCE"
@@ -61,6 +67,9 @@ class EnvVars:
     mongodb_uri: str
     mongodb_name: str
     mongo_jobs_collection: str
+    # The language this deployment matches in ('en' | 'es'): the cross-encoder checkpoint,
+    # the BM25 stopwords and the labels echoed back. Nothing on the request selects it.
+    target_language: str
     scoring_mode: str
     additive_w1_skills: float
     additive_w2_preference: float
@@ -106,6 +115,8 @@ class EnvVars:
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MONGO_DB_NAME, value=self.mongodb_name),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MONGO_JOBS_COLLECTION,
                                                            value=self.mongo_jobs_collection),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.TARGET_LANGUAGE,
+                                                           value=self.target_language),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.SCORING_MODE, value=self.scoring_mode),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.ADDITIVE_W1_SKILLS,
                                                            value=self.additive_w1_skills),
@@ -183,6 +194,8 @@ class EnvVars:
             mongodb_uri=get_env(EnvKeys.MONGO_URL),
             mongodb_name=get_env(EnvKeys.MONGO_DB_NAME),
             mongo_jobs_collection=get_env(EnvKeys.MONGO_JOBS_COLLECTION),
+            # Stacks that predate multi-language support set nothing and stay English.
+            target_language=get_env_or_default(EnvKeys.TARGET_LANGUAGE, "en"),
             scoring_mode=get_env(EnvKeys.SCORING_MODE),
             additive_w1_skills=get_env(EnvKeys.ADDITIVE_W1_SKILLS),
             additive_w2_preference=get_env(EnvKeys.ADDITIVE_W2_PREFERENCE),

@@ -36,6 +36,9 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 # Conservative English stopword list. Small on purpose: BM25's IDF already
 # down-weights frequent tokens; the goal here is just to skip pure noise.
+from app.config import stopwords as config_stopwords
+from app.languages import CANONICAL_LANGUAGE, default_language, normalise_language
+
 _STOPWORDS = frozenset(
     {
         "a",
@@ -90,11 +93,32 @@ _STOPWORDS = frozenset(
     }
 )
 
+
+def _stopwords_for(language: str | None) -> frozenset[str]:
+    """Stopwords for a language.
+
+    The canonical language keeps this module's own list verbatim, so English tokenisation
+    (and every BM25 score computed from it) is unchanged. Other languages come from
+    ``app/languages/<lang>_config.py``; an empty set there means "filter nothing", which is
+    safer than filtering English words out of another language's text.
+    """
+    lang = normalise_language(language) if language else default_language()
+    if lang == CANONICAL_LANGUAGE:
+        return _STOPWORDS
+    return config_stopwords(lang)
+
+
 # Token = alphanumeric run, length >= 2 (so single letters / punctuation drop out).
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
-def tokenize(text: str, *, drop_stopwords: bool = True, min_len: int = 2) -> List[str]:
+def tokenize(
+    text: str,
+    *,
+    drop_stopwords: bool = True,
+    min_len: int = 2,
+    language: str | None = None,
+) -> List[str]:
     """Lowercase + ASCII alnum splitter; optional stopword + min-length filter."""
     if not text:
         return []
@@ -102,7 +126,7 @@ def tokenize(text: str, *, drop_stopwords: bool = True, min_len: int = 2) -> Lis
     if min_len > 1:
         tokens = [t for t in tokens if len(t) >= min_len]
     if drop_stopwords:
-        tokens = [t for t in tokens if t not in _STOPWORDS]
+        tokens = [t for t in tokens if t not in _stopwords_for(language)]
     return tokens
 
 

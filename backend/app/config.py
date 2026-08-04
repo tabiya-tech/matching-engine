@@ -6,11 +6,24 @@ from typing import Any, Dict
 
 from dotenv import load_dotenv
 
+from app.languages import CANONICAL_LANGUAGE, language_setting
+
 load_dotenv()
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent  # .../backend
 _RESOURCES = _BACKEND_ROOT / "resources"
-_DEFAULT_OCC = _RESOURCES / "occupations" / "combined_occupation_database_with_wa.json"
+_OCC_BASENAME = "combined_occupation_database_with_wa.json"
+
+
+def _default_occupation_json() -> Path:
+    """Canonical-language occupation database, falling back to the flat legacy layout."""
+    pack = _RESOURCES / "occupations" / CANONICAL_LANGUAGE / _OCC_BASENAME
+    if pack.is_file():
+        return pack
+    return _RESOURCES / "occupations" / _OCC_BASENAME
+
+
+_DEFAULT_OCC = _default_occupation_json()
 _DEFAULT_MODEL_DIR = _RESOURCES / "models"
 
 
@@ -396,6 +409,8 @@ PREFERENCE_CONFIG: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 # Data files (server-side)
 # ---------------------------------------------------------------------------
+# Canonical-language occupation database. Use `occupation_json_path(language)` when the
+# language matters (labels); this constant stays for the many language-neutral call sites.
 OCCUPATION_JSON_PATH: str = _s("OCCUPATION_JSON_PATH", str(_DEFAULT_OCC))
 
 EMBEDDING_MODEL_PATH: str = _resolve_under_backend(
@@ -417,10 +432,70 @@ SKILL_TO_ROW_PATH: str = _resolve_under_backend(
     _s("SKILL_TO_ROW_PATH", str(_DEFAULT_MODEL_DIR / "skill_to_row.json"))
 )
 _TAX = _RESOURCES / "skill_taxonomy"
-SKILLS_CSV_PATH: str = _s("SKILLS_CSV_PATH", str(_TAX / "skills.csv"))
-SKILL_GROUPS_CSV_PATH: str = _s("SKILL_GROUPS_CSV_PATH", str(_TAX / "skill_groups.csv"))
-SKILL_HIERARCHY_CSV_PATH: str = _s(
-    "SKILL_HIERARCHY_CSV_PATH", str(_TAX / "skill_hierarchy.csv")
-)
+
+
+def _tax_dir(language: str) -> Path:
+    """``resources/skill_taxonomy/<language>/``, falling back to the flat legacy layout.
+
+    The flat fallback keeps a checkout that predates language packs (or a deployment with
+    a mounted taxonomy directory) working unchanged.
+    """
+    subdir = language_setting(language, "resources_subdir", language) or language
+    candidate = _TAX / subdir
+    if candidate.is_dir():
+        return candidate
+    return _TAX
+
+
+def taxonomy_pack_paths(language: str) -> Dict[str, str]:
+    """The three taxonomy CSVs for one language.
+
+    ``SKILLS_CSV_PATH`` / ``SKILL_GROUPS_CSV_PATH`` / ``SKILL_HIERARCHY_CSV_PATH`` pin all
+    languages to one file when set — used by scripts that deliberately want a single pack.
+    """
+    directory = _tax_dir(language)
+    return {
+        "skills": _s("SKILLS_CSV_PATH", str(directory / "skills.csv")),
+        "skill_groups": _s("SKILL_GROUPS_CSV_PATH", str(directory / "skill_groups.csv")),
+        "skill_hierarchy": _s("SKILL_HIERARCHY_CSV_PATH", str(directory / "skill_hierarchy.csv")),
+    }
+
+
+def occupation_json_path(language: str = CANONICAL_LANGUAGE) -> str:
+    """Occupation database for a language, falling back to the canonical one.
+
+    Its work-activity and ISCO fields are language-neutral; only the labels differ, so a
+    language without its own copy is correctly served by the canonical file.
+    """
+    raw = (os.getenv("OCCUPATION_JSON_PATH") or "").strip()
+    if raw:
+        return raw
+    subdir = language_setting(language, "resources_subdir", language) or language
+    candidate = _RESOURCES / "occupations" / subdir / "combined_occupation_database_with_wa.json"
+    if candidate.is_file():
+        return str(candidate)
+    return str(_DEFAULT_OCC)
+
+
+def cross_encoder_model_name(language: str = CANONICAL_LANGUAGE) -> str:
+    """Cross-encoder checkpoint for a language (``CROSS_ENCODER_MODEL_NAME_<LANG>``).
+
+    The reranker scores skill-label text, so an English-only checkpoint on Spanish labels
+    scores poorly — hence one per language rather than one globally.
+    """
+    return str(language_setting(language, "cross_encoder_model", CROSS_ENCODER_MODEL_NAME))
+
+
+def stopwords(language: str = CANONICAL_LANGUAGE) -> frozenset[str]:
+    """BM25 / hybrid tokenisation stopwords for a language."""
+    return frozenset(language_setting(language, "stopwords", ()) or ())
+
+
+# Canonical-language paths, kept as module constants because most call sites are
+# language-neutral (the embedding id space is the canonical language's).
+_CANONICAL_TAX = taxonomy_pack_paths(CANONICAL_LANGUAGE)
+SKILLS_CSV_PATH: str = _CANONICAL_TAX["skills"]
+SKILL_GROUPS_CSV_PATH: str = _CANONICAL_TAX["skill_groups"]
+SKILL_HIERARCHY_CSV_PATH: str = _CANONICAL_TAX["skill_hierarchy"]
 
 DEBUG_MODE = True

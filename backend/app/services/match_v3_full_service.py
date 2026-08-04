@@ -105,7 +105,11 @@ def run_match_v3_full(
     final_top_k: int,
     skill_gap_top_k: int = MATCH_TOP_K_SKILL_GAPS,
 ) -> List[Dict[str, Any]]:
-    """Return one ``MatchResponse``-shaped dict per user using the v3 matching logic."""
+    """Return one ``MatchResponse``-shaped dict per user using the v3 matching logic.
+
+    The deployment's ``TARGET_LANGUAGE`` selects the cross-encoder checkpoint (see
+    ``run_match_concat_gemini_ce``); skill resolution itself is language-neutral.
+    """
     if not users:
         return []
 
