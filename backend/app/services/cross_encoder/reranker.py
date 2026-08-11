@@ -41,19 +41,45 @@ class CrossEncoderReranker:
         self.model_name = cross_encoder_model_name(self.language)
         self._model = None
 
+    @staticmethod
+    def _is_checkpoint_dir(path: Path) -> bool:
+        """A directory holding an actual checkpoint, not just a parent of several.
+
+        ``resources/models/cross-encoder/`` is a parent in the current layout, so ``is_dir()``
+        alone would hand sentence-transformers a directory with no weights in it.
+        """
+        return path.is_dir() and (path / "config.json").is_file()
+
     def _vendored_model_dirs(self) -> List[Path]:
         """Local checkpoint directories to try, most specific first.
 
-        ``resources/models/cross-encoder-<lang>`` lets an image vendor one checkpoint per
-        language; ``resources/models/cross-encoder`` is the pre-language location and stays
-        the only candidate for the canonical language.
+        ``setup.sh`` vendors one directory *per checkpoint* under
+        ``resources/models/cross-encoder/<repo-name>`` (``ms-marco-MiniLM-L-6-v2`` for
+        English, ``mmarco-mMiniLMv2-L12-H384-v1`` for Spanish), so one image can serve every
+        language. Two earlier layouts are still accepted so an existing image or mounted
+        volume keeps working: ``cross-encoder-<lang>/``, and the flat ``cross-encoder/``
+        directory that predates language support (canonical language only, and only when it
+        really holds a checkpoint).
         """
         # backend/app/services/cross_encoder/reranker.py -> parents[3] == backend/
         models = Path(__file__).resolve().parents[3] / "resources" / "models"
-        dirs = [models / f"cross-encoder-{self.language}"]
+        repo = self.model_name.strip().strip("/")
+        checkpoint = repo.rsplit("/", 1)[-1]
+        dirs = [
+            models / f"cross-encoder-{self.language}",
+            # `models / repo` covers HF ids under the cross-encoder org, i.e. exactly the
+            # `cross-encoder/<name>` paths setup.sh writes; the next entry covers ids from
+            # any other org (a CROSS_ENCODER_MODEL_NAME_<LANG> override) vendored the same way.
+            models / repo,
+            models / "cross-encoder" / checkpoint,
+        ]
         if self.language == CANONICAL_LANGUAGE:
             dirs.append(models / "cross-encoder")
-        return dirs
+        out: List[Path] = []
+        for d in dirs:
+            if d not in out:
+                out.append(d)
+        return out
 
     def _ensure_model(self) -> None:
         if self._model is not None:
@@ -66,7 +92,7 @@ class CrossEncoderReranker:
                 "Install backend dependencies: pip install sentence-transformers"
             ) from e
         for path_name in self._vendored_model_dirs():
-            if not path_name.is_dir():
+            if not self._is_checkpoint_dir(path_name):
                 continue
             try:
                 logger.info(
