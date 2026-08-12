@@ -24,6 +24,7 @@ from app.config import (
     MATCH_V4_RETRIEVE_TOP_K,
     MATCH_V4_FINAL_TOP_K,
     MATCH_TOP_K_SKILL_GAPS,
+    MATCH_V4_DISABLE_OCCUPATIONS,
     JOBS_PAGE_DEFAULT_LIMIT,
     JOBS_PAGE_MAX_LIMIT,
     DEBUG_MODE,
@@ -54,6 +55,19 @@ logger = logging.getLogger(__name__)
 
 def _ms(t0: float) -> float:
     return (time.perf_counter() - t0) * 1000.0
+
+
+async def _load_v4_occupations():
+    """Occupation corpus (+ concat embeddings) for the v4 engine, as ``(rows, timing)``.
+
+    Returns ``([], {})`` without touching disk or the embedding cache when
+    ``MATCH_V4_DISABLE_OCCUPATIONS`` is set — the v4/v5 routes are the only occupation consumers of
+    this corpus, so the flag must short-circuit the load too, not just the response rows.
+    """
+    if MATCH_V4_DISABLE_OCCUPATIONS:
+        return [], {}
+    occ, timing = await get_all_occupations_with_timing()
+    return attach_occupation_embeddings(occ), timing
 
 
 def _jobs_by_uuid(job_list: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -733,9 +747,8 @@ async def match_v4(
         t_fetch = time.perf_counter()
         (jobs, mongo_timing), (occ, _occ_timing) = await asyncio.gather(
             get_all_jobs_with_timing(users=users),
-            get_all_occupations_with_timing(),
+            _load_v4_occupations(),
         )
-        occ = attach_occupation_embeddings(occ)
         fetch_wall_ms = _ms(t_fetch)
 
         t_score = time.perf_counter()
@@ -878,9 +891,8 @@ async def match_v5(
         t_fetch = time.perf_counter()
         (jobs, mongo_timing), (occ, _occ_timing) = await asyncio.gather(
             get_all_jobs_with_timing(users=users),
-            get_all_occupations_with_timing(),
+            _load_v4_occupations(),
         )
-        occ = attach_occupation_embeddings(occ)
         fetch_wall_ms = _ms(t_fetch)
 
         job_uuid_index = _jobs_by_uuid(jobs)

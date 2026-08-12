@@ -108,6 +108,7 @@ jobs:
           SKILL_HIERARCHY_CSV_PATH: ${{ vars.SKILL_HIERARCHY_CSV_PATH }}
           SKILL_ESSENTIAL_DAMPING_ALPHA: ${{ vars.SKILL_ESSENTIAL_DAMPING_ALPHA }}
           JOBS_RETRIEVAL_FILTER: ${{ vars.JOBS_RETRIEVAL_FILTER }}
+          MATCH_V4_DISABLE_OCCUPATIONS: ${{ vars.MATCH_V4_DISABLE_OCCUPATIONS }}
         run: |
           # Use the Poetry-managed virtualenv that holds the Pulumi SDK packages.
           source "$(poetry env info --path)/bin/activate"

@@ -21,6 +21,7 @@ from app.config import (
     LOCATION_TIER_W_NATIONAL,
     LOCATION_TIER_W_REGIONAL,
     MATCH_TOP_K_SKILL_GAPS,
+    MATCH_V4_DISABLE_OCCUPATIONS,
     MATCH_V4_OCC_DEMAND_GAMMA,
     MATCH_V4_TOP_K_OCCUPATIONS,
     V4_FULL_COVERAGE_GAMMA,
@@ -219,6 +220,14 @@ def run_match_v4_full(
     if not users:
         return []
 
+    # Per-deployment kill-switch: with MATCH_V4_DISABLE_OCCUPATIONS every user gets an empty
+    # occupation_recommendations list and NO occupation work runs at all (no stage-1 retrieval, no CE
+    # rerank, no Phase-2 overrides). Dropping the corpus here makes every occupation-derived structure
+    # below empty; the remaining guards skip the calls that would otherwise run on an empty corpus.
+    occupations_enabled = not MATCH_V4_DISABLE_OCCUPATIONS
+    if not occupations_enabled:
+        occupations = []
+
     u_norm = embed_user_unit_vectors(users)  # embed users ONCE, reuse for both corpora
     pref_scorer = get_preference_scorer()
     # Per-skill GATE matcher: whitened (default) or — via the kill-switch — the legacy raw matcher.
@@ -277,12 +286,16 @@ def run_match_v4_full(
     # distinct codes survive: size at top_k * 4 (counties) * 2 (buffer). De-dup by code remains a
     # safety net.
     occ_breadth = max(retrieve_top_k, final_top_k, MATCH_V4_TOP_K_OCCUPATIONS * 8)
-    occ_v3 = run_match_concat_gemini_ce(
-        users,
-        occupations,
-        retrieve_top_k=occ_breadth,
-        final_top_k=occ_breadth,
-        user_unit_vectors=u_norm,
+    occ_v3 = (
+        run_match_concat_gemini_ce(
+            users,
+            occupations,
+            retrieve_top_k=occ_breadth,
+            final_top_k=occ_breadth,
+            user_unit_vectors=u_norm,
+        )
+        if occupations_enabled
+        else []
     )
     job_v3_by_uid = {str(r.get("user_id") or ""): r for r in job_v3}
     occ_v3_by_uid = {str(r.get("user_id") or ""): r for r in occ_v3}
@@ -386,9 +399,10 @@ def run_match_v4_full(
             job_p, job_cov, job_det = _rank_overrides(
                 user, job_v3_by_uid.get(uid), job_index, job_concat, uw
             )
-            occ_p, occ_cov, occ_det = _rank_overrides(
-                user, occ_v3_by_uid.get(uid), occ_index, occ_concat, uw
-            )
+            if occupations_enabled:
+                occ_p, occ_cov, occ_det = _rank_overrides(
+                    user, occ_v3_by_uid.get(uid), occ_index, occ_concat, uw
+                )
 
         # Opportunities. Jobs keep the existing /match_v4 location scoping (Mongo prefilter via
         # get_all_jobs_with_timing(users=...)). Instead of a hard python location filter, urban-pull
@@ -431,55 +445,61 @@ def run_match_v4_full(
         # Occupations: filter to the user's county; if the user's province matches no occupation
         # county, fall back to a random available county (location filter only — the user's real
         # preferences still drive u_hat). Then dedupe by code, keep best-ranked, take top-k.
-        loc_user = None
-        if occ_counties and not _user_matches_any_county(user, occ_counties):
-            fallback = random.choice(occ_counties)
-            loc_user = {"city": fallback, "province": fallback, "location": fallback}
-            logger.warning(
-                "User %r province=%r matches no occupation county %s; using random fallback county %r.",
-                uid,
-                user.get("province"),
-                occ_counties,
-                fallback,
-            )
+        # Skipped entirely (empty list) when MATCH_V4_DISABLE_OCCUPATIONS is set.
         occupations_out: List[Dict[str, Any]] = []
-        seen_codes: set = set()
-        for rec in _enriched_recs(
-            user,
-            occ_v3_by_uid.get(uid),
-            occ_index,
-            pref_scorer,
-            combiner,
-            location_user=loc_user,
-            include_demand=True,
-            demand_gamma=MATCH_V4_OCC_DEMAND_GAMMA,
-            p_hat_by_uuid=occ_p,
-            coverage_by_uuid=occ_cov,
-            coverage_gamma=cov_gamma,
-        ):
-            item = occ_index.get(str(rec.get("job_uuid") or ""))
-            if not item:
-                continue
-            code = str(item.get("originUuid") or item.get("uuid") or "")
-            if not code or code in seen_codes:
-                continue
-            seen_codes.add(code)
-            per, ess_ids = occ_det.get(str(rec.get("job_uuid") or "")) or _skill_detail(
-                user, item
-            )
-            occupations_out.append(
-                fmt.build_occupation_row(
-                    rec,
-                    item,
-                    per,
-                    ess_ids,
-                    rank=len(occupations_out) + 1,
-                    sim_threshold=V4_FULL_SIM_THRESHOLD,
-                    min_ess_share=V4_FULL_MIN_ESS_SHARE,
+        if occupations_enabled:
+            loc_user = None
+            if occ_counties and not _user_matches_any_county(user, occ_counties):
+                fallback = random.choice(occ_counties)
+                loc_user = {
+                    "city": fallback,
+                    "province": fallback,
+                    "location": fallback,
+                }
+                logger.warning(
+                    "User %r province=%r matches no occupation county %s; using random fallback county %r.",
+                    uid,
+                    user.get("province"),
+                    occ_counties,
+                    fallback,
                 )
-            )
-            if len(occupations_out) >= MATCH_V4_TOP_K_OCCUPATIONS:
-                break
+            seen_codes: set = set()
+            for rec in _enriched_recs(
+                user,
+                occ_v3_by_uid.get(uid),
+                occ_index,
+                pref_scorer,
+                combiner,
+                location_user=loc_user,
+                include_demand=True,
+                demand_gamma=MATCH_V4_OCC_DEMAND_GAMMA,
+                p_hat_by_uuid=occ_p,
+                coverage_by_uuid=occ_cov,
+                coverage_gamma=cov_gamma,
+            ):
+                item = occ_index.get(str(rec.get("job_uuid") or ""))
+                if not item:
+                    continue
+                code = str(item.get("originUuid") or item.get("uuid") or "")
+                if not code or code in seen_codes:
+                    continue
+                seen_codes.add(code)
+                per, ess_ids = occ_det.get(
+                    str(rec.get("job_uuid") or "")
+                ) or _skill_detail(user, item)
+                occupations_out.append(
+                    fmt.build_occupation_row(
+                        rec,
+                        item,
+                        per,
+                        ess_ids,
+                        rank=len(occupations_out) + 1,
+                        sim_threshold=V4_FULL_SIM_THRESHOLD,
+                        min_ess_share=V4_FULL_MIN_ESS_SHARE,
+                    )
+                )
+                if len(occupations_out) >= MATCH_V4_TOP_K_OCCUPATIONS:
+                    break
 
         out.append(
             {

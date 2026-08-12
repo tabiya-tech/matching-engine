@@ -133,6 +133,13 @@ MATCH_V2_MAX_USERS_PER_REQUEST: int = _i("MATCH_V2_MAX_USERS_PER_REQUEST", 32)
 # Mongo prefilter is separate: JOBS_RETRIEVAL_FILTER. Default true keeps current behaviour.
 MATCH_APPLY_LOCATION_FILTER: bool = _b("MATCH_APPLY_LOCATION_FILTER", True)
 
+# Per-deployment kill-switch for occupation recommendations on the v4 engine (POST /match_v4 and
+# POST /experiments/v5/match, which share run_match_v4_full): every user gets an empty
+# occupation_recommendations list AND the whole occupation pipeline is skipped (corpus load,
+# embedding attach, stage-1 retrieval, CE rerank, Phase-2 overrides). Opportunities and skill gaps
+# are unaffected, as are /match, /match_v2 and /match_v3. Default false keeps current behaviour.
+MATCH_V4_DISABLE_OCCUPATIONS: bool = _b("MATCH_V4_DISABLE_OCCUPATIONS", False)
+
 # --- /match_v4 tiered urban-pull location matching (see services/location_tiers.py) ---
 # Kenyan job supply is heavily Nairobi-concentrated, so strict same-county filtering leaves non-hub
 # users (e.g. Kitui ~2 jobs, Kilifi ~10) with near-empty lists. When enabled, a user's pool is widened

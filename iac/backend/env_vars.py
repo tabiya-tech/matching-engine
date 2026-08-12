@@ -60,6 +60,7 @@ class EnvKeys:
     SKILL_HIERARCHY_CSV_PATH = "SKILL_HIERARCHY_CSV_PATH"
     GEMINI_API_KEY="GEMINI_API_KEY"
     JOBS_RETRIEVAL_FILTER="JOBS_RETRIEVAL_FILTER"
+    MATCH_V4_DISABLE_OCCUPATIONS = "MATCH_V4_DISABLE_OCCUPATIONS"
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,7 @@ class EnvVars:
     skill_hierarchy_csv_path: str
     gemini_api_key: str
     jobs_retrieval_filter: str
+    match_v4_disable_occupations: str
 
     def get_env_vars(self) -> list[gcp.cloudrunv2.ServiceTemplateContainerEnvArgs]:
         return [
@@ -186,6 +188,8 @@ class EnvVars:
                                                            value=self.gemini_api_key),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.JOBS_RETRIEVAL_FILTER,
                                                            value=self.jobs_retrieval_filter),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCH_V4_DISABLE_OCCUPATIONS,
+                                                           value=self.match_v4_disable_occupations),
         ]
 
     @staticmethod
@@ -233,5 +237,10 @@ class EnvVars:
             skill_groups_csv_path=get_env(EnvKeys.SKILL_GROUPS_CSV_PATH),
             skill_hierarchy_csv_path=get_env(EnvKeys.SKILL_HIERARCHY_CSV_PATH),
             gemini_api_key=get_env(EnvKeys.GEMINI_API_KEY),
-            jobs_retrieval_filter=get_env(EnvKeys.JOBS_RETRIEVAL_FILTER)
+            jobs_retrieval_filter=get_env(EnvKeys.JOBS_RETRIEVAL_FILTER),
+            # Optional per-stack toggle: GitHub passes an unset `vars.X` as "", and most stacks will
+            # never set it, so default rather than fail the deploy.
+            match_v4_disable_occupations=get_env_or_default(
+                EnvKeys.MATCH_V4_DISABLE_OCCUPATIONS, "false"
+            ),
         )
