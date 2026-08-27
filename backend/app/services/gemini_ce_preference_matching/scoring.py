@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.preference_score import PreferenceScorer
 from app.services.demand_score import DemandScorer
-from app.config import FINAL_SCORE_COMBINER
+from app.config import FINAL_SCORE_COMBINER, V4_FULL_COVERAGE_FLOOR
 from app.services.preference_score_v1.final_score import combine_final_score
 from app.services.preference_score_v1.levels import (
     attribute_label,
@@ -251,27 +251,35 @@ def enrich_recommendations_with_preferences(
                 breakdown["demand_label"] = dres.get("label")
                 breakdown["demand_gamma"] = round(float(demand_gamma), 4)
 
-        # Phase-2 achievability demotion: final *= essential_coverage**gamma (both factors in [0,1], so
-        # final stays in range and the combination u_hat x p_hat is preserved — coverage is just an
-        # extra [0,1] factor of p_hat). Demotes high-fit-but-missing-must-haves items (woodworker x dev).
+        # Phase-2 achievability demotion: final *= floor + (1-floor) * essential_coverage**gamma (all
+        # factors in [0,1], so final stays in range and the combination u_hat x p_hat is preserved —
+        # coverage is just an extra [0,1] factor of p_hat). Demotes high-fit-but-missing-must-haves
+        # items (woodworker x dev). The floor keeps a coverage of 0 a demotion rather than an
+        # annihilation: without it every zero-coverage candidate ties at final_score 0.0, which drops
+        # the u_hat x p_hat ordering and reports a non-zero breakdown beside a 0.0 score.
         if coverage_by_uuid is not None and coverage_gamma > 0:
             cov = coverage_by_uuid.get(uid)
             if cov is not None:
                 cov = max(0.0, min(1.0, float(cov)))
-                factor = cov**coverage_gamma
+                floor = max(0.0, min(1.0, V4_FULL_COVERAGE_FLOOR))
+                factor = floor + (1.0 - floor) * cov**coverage_gamma
                 final = final * factor
                 breakdown["final_score"] = round(final, 4)
                 breakdown["essential_coverage"] = round(cov, 4)
                 breakdown["coverage_gamma"] = round(float(coverage_gamma), 4)
+                breakdown["coverage_floor"] = round(floor, 4)
                 breakdown["coverage_factor"] = round(factor, 4)
 
         # Urban-pull location tier (flat multiply): final *= tier, where tier in {1.0 local,
         # W_REGIONAL, W_NATIONAL, 0.0 off-chain}. The tier values are themselves the tuning knobs, so
-        # no exponent. Local jobs preferred; off-chain (e.g. another batch user's locations) -> 0.
+        # no exponent. Local jobs preferred; off-chain (e.g. another batch user's locations) is an
+        # exclusion, not a demotion — drop the candidate rather than return it scored 0.0.
         if location_tier_by_uuid is not None:
             tier = location_tier_by_uuid.get(uid)
             if tier is not None:
                 tier = max(0.0, min(1.0, float(tier)))
+                if tier <= 0.0:
+                    continue
                 final = final * tier
                 breakdown["final_score"] = round(final, 4)
                 breakdown["location_tier_factor"] = round(tier, 4)

@@ -316,6 +316,16 @@ V4_FULL_RANK_DEMOTE: bool = _b("V4_FULL_RANK_DEMOTE", True)
 # Demotion strength: p_hat *= essential_coverage ** gamma (0 -> no demotion; 1 -> linear). 1.0 = full
 # achievability ordering (gamma sweep: corr(rank,cov) -0.42, cov@1 0.88, weak items at top ~0). Env-tunable.
 V4_FULL_COVERAGE_GAMMA: float = _f("V4_FULL_COVERAGE_GAMMA", 1.0)
+# Floor under the coverage demotion: factor = floor + (1 - floor) * coverage ** gamma. Un-floored,
+# a coverage of exactly 0 ANNIHILATES the score (u_hat x p_hat x 0 = 0.0), which is worse than a
+# strong demotion: every such candidate ties at final_score 0.0, so the u_hat x p_hat ordering is
+# lost (the response falls back to the p_hat tie-break) and the payload reads as broken — a non-zero
+# breakdown next to final_score 0.0. Zero coverage is not rare: a user whose skills all sit outside
+# a posting's essentials scores 0, and a whole shortlist scores 0 whenever skill labels cannot be
+# resolved at all (a taxonomy pack pinned off the embedding id space — see skill_label_packs). The
+# floor keeps the demotion monotone in coverage while leaving the score interpretable.
+# 0.0 restores the un-floored behaviour exactly.
+V4_FULL_COVERAGE_FLOOR: float = min(1.0, max(0.0, _f("V4_FULL_COVERAGE_FLOOR", 0.05)))
 # Ranking coverage for postings with NO parsed essential skills (unparsed). essential_coverage()
 # returns 1.0 for these, which previously gave them a demotion-free ride to the top of the v4 ranking
 # even with zero genuine skill overlap (2026-06 nail-tech failure: a masseuse's top-10 was entirely
@@ -454,17 +464,25 @@ def _tax_dir(language: str) -> Path:
     return _TAX
 
 
-def taxonomy_pack_paths(language: str) -> Dict[str, str]:
+def taxonomy_pack_paths(language: str, *, ignore_pins: bool = False) -> Dict[str, str]:
     """The three taxonomy CSVs for one language.
 
     ``SKILLS_CSV_PATH`` / ``SKILL_GROUPS_CSV_PATH`` / ``SKILL_HIERARCHY_CSV_PATH`` pin all
     languages to one file when set — used by scripts that deliberately want a single pack.
+    That pin is a footgun in a deployment: pointing it at a non-canonical pack silently takes
+    the canonical id space with it, so ``ignore_pins=True`` returns the per-language paths the
+    layout implies. ``skill_label_packs`` uses it to recover from exactly that misconfiguration.
     """
     directory = _tax_dir(language)
+
+    def pick(key: str, filename: str) -> str:
+        default = str(directory / filename)
+        return default if ignore_pins else _s(key, default)
+
     return {
-        "skills": _s("SKILLS_CSV_PATH", str(directory / "skills.csv")),
-        "skill_groups": _s("SKILL_GROUPS_CSV_PATH", str(directory / "skill_groups.csv")),
-        "skill_hierarchy": _s("SKILL_HIERARCHY_CSV_PATH", str(directory / "skill_hierarchy.csv")),
+        "skills": pick("SKILLS_CSV_PATH", "skills.csv"),
+        "skill_groups": pick("SKILL_GROUPS_CSV_PATH", "skill_groups.csv"),
+        "skill_hierarchy": pick("SKILL_HIERARCHY_CSV_PATH", "skill_hierarchy.csv"),
     }
 
 

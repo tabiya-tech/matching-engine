@@ -107,6 +107,13 @@ class ScoreBreakdown(BaseModel):
     # v4 whitened per-skill gate: essential-coverage in [0,1] and the graded badge (strong/partial/weak)
     essential_coverage: Optional[float] = None
     skill_match_level: Optional[str] = None
+    # Multipliers actually applied to final_score on /match_v4, so a low score is auditable:
+    # final_score = u_hat x p_hat x coverage_factor x location_tier_factor. coverage_factor is
+    # floor + (1-floor) * ranking-coverage ** coverage_gamma — the RANKING coverage, which for an
+    # unparsed posting is the shortlist mean rather than the 1.0 reported in essential_coverage.
+    coverage_gamma: Optional[float] = None
+    coverage_factor: Optional[float] = None
+    location_tier_factor: Optional[float] = None
 
 
 class MatchedSkill(BaseModel):

@@ -88,8 +88,21 @@ class SkillLabelPacks:
         self.unjoined_by_language: Counter = Counter()
 
         self._uuid_to_canonical: dict[str, str] = {}
+        self._rows_cache: dict[Path, list[dict]] = {}
+        self._skills_paths = self._resolve_skills_paths()
         for language in self.languages:
             self._load_language(language)
+        self._rows_cache.clear()
+
+        if not self.preferred_to_id:
+            logger.error(
+                "SkillLabelPacks: NO labels resolved from %d language pack(s) %s — every skill on "
+                "every request will fail to resolve, so matched_skills comes back empty and "
+                "essential-coverage is 0 for every posting. Check that the packs and the embedding "
+                "artefact (skill_to_row.json) are from the same taxonomy release.",
+                len(self.loaded_languages),
+                ",".join(self.loaded_languages),
+            )
 
         logger.info(
             "SkillLabelPacks: %d language(s) %s | %d preferredLabel keys, %d altLabel keys "
@@ -113,10 +126,71 @@ class SkillLabelPacks:
 
     # ── loading ──────────────────────────────────────────────────────────────
 
-    def _load_language(self, language: str) -> None:
-        path = Path(taxonomy_pack_paths(language)["skills"])
+    def _resolve_skills_paths(self) -> dict[str, Path]:
+        """Per-language ``skills.csv`` to load, recovering from an unusable pin.
+
+        ``SKILLS_CSV_PATH`` pins *every* language to one file. Pointing it at a non-canonical
+        pack therefore loads that pack as the canonical one, and since skill ids are per-locale
+        none of them exist in the embedding artefact: the join drops all 13,896 rows, no label
+        resolves, and the service keeps serving requests with an empty resolver (every posting
+        gets essential-coverage 0). The pin cannot be honoured in that state, so prefer the
+        per-language layout and say loudly what happened.
+        """
+        pinned = {
+            lang: Path(taxonomy_pack_paths(lang)["skills"]) for lang in self.languages
+        }
+        canonical = pinned[self.canonical_language]
+        if self._pack_shares_id_space(canonical):
+            return pinned
+
+        unpinned = {
+            lang: Path(taxonomy_pack_paths(lang, ignore_pins=True)["skills"])
+            for lang in self.languages
+        }
+        if unpinned[self.canonical_language] == canonical:
+            return pinned  # not a pin: the layout's own canonical pack is the mismatched one
+        if not self._pack_shares_id_space(unpinned[self.canonical_language]):
+            logger.error(
+                "SkillLabelPacks: neither the pinned canonical pack %s nor %s shares ids with the "
+                "embedding artefact; skill resolution will fail for every request.",
+                canonical,
+                unpinned[self.canonical_language],
+            )
+            return pinned
+        logger.error(
+            "SkillLabelPacks: the %r pack is pinned to %s (SKILLS_CSV_PATH / SKILL_GROUPS_CSV_PATH / "
+            "SKILL_HIERARCHY_CSV_PATH pin EVERY language to one file), whose skill ids are not in the "
+            "embedding artefact — loading it would leave the resolver empty. Ignoring the pin and "
+            "using the per-language packs instead. Clear those env vars: the taxonomy now lives under "
+            "resources/skill_taxonomy/<lang>/ and is selected by TARGET_LANGUAGE.",
+            self.canonical_language,
+            canonical,
+        )
+        return unpinned
+
+    def _pack_shares_id_space(self, path: Path) -> bool:
+        """True if any ``ID`` in this pack is a row of the embedding artefact."""
         try:
+            rows = self._read_rows_cached(path)
+        except (OSError, UnicodeDecodeError, csv.Error):
+            return False
+        return any(
+            str(row.get("ID") or "").strip() in self._embedding_ids for row in rows
+        )
+
+    def _read_rows_cached(self, path: Path) -> list[dict]:
+        """``_read_rows`` memoised for this instance — the canonical pack is read twice
+        (id-space preflight, then loading) and these files are tens of megabytes."""
+        rows = self._rows_cache.get(path)
+        if rows is None:
             rows = self._read_rows(path)
+            self._rows_cache[path] = rows
+        return rows
+
+    def _load_language(self, language: str) -> None:
+        path = self._skills_paths[language]
+        try:
+            rows = self._read_rows_cached(path)
         except FileNotFoundError:
             if language == self.canonical_language:
                 logger.error(
@@ -182,11 +256,17 @@ class SkillLabelPacks:
 
         self.labels_by_language[language] = labels
         self.loaded_languages.append(language)
-        logger.info(
-            "SkillLabelPacks: %r pack → %d skills usable (%s)",
+        log = logger.info if joined else logger.error
+        log(
+            "SkillLabelPacks: %r pack → %d skills usable (%s)%s",
             language,
             joined,
             path.name if is_canonical else f"joined onto {self.canonical_language}",
+            ""
+            if joined
+            else f" — NOTHING in {path} lands in the embedding id space, so no label submitted "
+            f"in {language!r} can be scored; the pack and the embedding artefact are from "
+            "different taxonomy releases",
         )
 
     @staticmethod

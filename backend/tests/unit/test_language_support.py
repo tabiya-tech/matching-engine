@@ -121,6 +121,14 @@ class TestResourcePaths:
         monkeypatch.setenv("SKILLS_CSV_PATH", "/tmp/pinned-skills.csv")
         assert config.taxonomy_pack_paths("es")["skills"] == "/tmp/pinned-skills.csv"
 
+    def test_ignore_pins_returns_the_per_language_layout(self, monkeypatch):
+        # How the resolver recovers when a pin lands off the embedding id space.
+        monkeypatch.setenv("SKILLS_CSV_PATH", "/tmp/pinned-skills.csv")
+        for code in LANGUAGE_REGISTRY:
+            paths = config.taxonomy_pack_paths(code, ignore_pins=True)
+            subdir = get_language_config(code)["resources_subdir"]
+            assert f"/skill_taxonomy/{subdir}/" in paths["skills"]
+
     def test_occupation_db_falls_back_to_the_canonical_pack(self):
         # The occupation DB is keyed on ISCO codes / work activities, so English serves
         # a language that has not translated it.
@@ -250,6 +258,45 @@ class TestCrossLanguageResolution:
 
 def row_label(row: dict) -> str:
     return (row.get("PREFERREDLABEL") or "").strip()
+
+
+class TestPinnedPackOffTheIdSpace:
+    """A deployment that pins the taxonomy must not end up with a silently empty resolver.
+
+    ``SKILLS_CSV_PATH`` pins *every* language, canonical included. Pointing it at the Spanish
+    pack therefore loaded per-locale AR ids as the canonical id space, none of which exist in
+    the embedding artefact: all 13,896 rows were dropped, no label resolved, every posting came
+    back with zero essential-coverage and (via the Phase-2 demotion) final_score 0.0. The pin is
+    unusable in that state, so the resolver ignores it and loads the per-language packs.
+    """
+
+    @pytest.fixture(scope="class")
+    def embedding_ids(self):
+        path = config.taxonomy_pack_paths("en", ignore_pins=True)["skills"]
+        with open(path, encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            return {str(next(reader)["ID"]) for _ in range(50)}
+
+    def test_pin_off_the_id_space_is_ignored(self, monkeypatch, embedding_ids):
+        monkeypatch.setenv(
+            "SKILLS_CSV_PATH",
+            config.taxonomy_pack_paths("es", ignore_pins=True)["skills"],
+        )
+        packs = SkillLabelPacks(embedding_ids, languages=("en", "es"))
+        assert packs._skills_paths["en"].parent.name == "en"
+        assert packs._skills_paths["es"].parent.name == "es"
+        # The proof it recovered: labels resolve, in both languages, onto the canonical ids.
+        canonical_id = min(embedding_ids)
+        for language in ("en", "es"):
+            label = packs.labels_by_language[language][canonical_id]
+            assert packs.resolve_label(label) == canonical_id
+
+    def test_a_usable_pin_is_still_honoured(self, monkeypatch, embedding_ids):
+        # Scripts pinning the canonical pack itself must be unaffected by the recovery path.
+        pinned = config.taxonomy_pack_paths("en", ignore_pins=True)["skills"]
+        monkeypatch.setenv("SKILLS_CSV_PATH", pinned)
+        packs = SkillLabelPacks(embedding_ids, languages=("en", "es"))
+        assert [str(p) for p in packs._skills_paths.values()] == [pinned, pinned]
 
 
 class TestLanguageIsNotPerRequest:

@@ -228,6 +228,12 @@ def _score_breakdown(
         # Engine-agnostic demand (reads item attributes["expected_demand"]); null when absent.
         "demand_score": demand.get("score") if present else None,
         "demand_label": demand.get("label") if present else None,
+        # The demotions the ranker actually applied, so final_score is reproducible from the
+        # breakdown: final = u_hat x p_hat x coverage_factor x location_tier_factor. Null when the
+        # corresponding stage did not run (Phase-2 off / occupations / tiering disabled).
+        "coverage_gamma": sb.get("coverage_gamma"),
+        "coverage_factor": sb.get("coverage_factor"),
+        "location_tier_factor": sb.get("location_tier_factor"),
     }
 
 
