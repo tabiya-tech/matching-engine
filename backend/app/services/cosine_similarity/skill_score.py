@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 from app.config import EMBEDDING_MODEL_PATH, SKILLS_CSV_PATH, SKILL_TO_ROW_PATH
+from app.languages import default_language
 from app.services.skill_label_packs import SkillLabelPacks
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,14 @@ class CosineSkillMatcher:
         # one id space, so a Spanish label reaches the same embedding row as its English
         # counterpart (see services/skill_label_packs.py).
         self._packs = SkillLabelPacks(self._embedding_ids)
-        self.skill_labels: Dict[str, str] = self._packs.skill_labels
+        # DISPLAY labels follow the deployment's TARGET_LANGUAGE. Resolution is id-based and
+        # language-neutral, but these strings are echoed straight back in the response
+        # (``job_skill_label`` / ``best_user_skill_label``, the justification sentence), so a
+        # Spanish deployment has to answer in Spanish rather than in the canonical English the
+        # id space happens to be keyed on. Falls back to canonical per skill when a pack lacks one.
+        self.skill_labels: Dict[str, str] = self._packs.display_labels(
+            default_language()
+        )
         self._preferred_to_id: Dict[str, str] = self._packs.preferred_to_id
         self._altlabel_to_id: Dict[str, str] = self._packs.altlabel_to_id
         # ESCO origin/history UUID -> canonical skill id (drift-tolerant fallback resolver).

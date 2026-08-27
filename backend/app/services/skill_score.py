@@ -17,6 +17,7 @@ from app.config import (
     SKILL_HIERARCHY_CSV_PATH,
     SKILL_TO_ROW_PATH,
 )
+from app.languages import default_language
 from app.services.skill_label_packs import SkillLabelPacks
 from app.services.skills_utility import skills_match as _skills_match
 from app.services.skills_utility.skills_match import (
@@ -85,7 +86,10 @@ class SkillScorer:
         # a Spanish profile with nothing on the request: every pack is mapped onto this one
         # id space, so the embeddings are shared (see services/skill_label_packs.py).
         self._packs = SkillLabelPacks(self._embedding_ids)
-        self.skill_labels = self._packs.skill_labels  # internal_id -> preferredLabel
+        # internal_id -> preferredLabel in the DEPLOYMENT's language: these strings are echoed in
+        # responses (skill-gap labels, matched-skill labels), while resolution stays id-based and
+        # language-neutral. Per-skill fallback to the canonical label when a pack lacks one.
+        self.skill_labels = self._packs.display_labels(default_language())
         self._preferred_to_id = self._packs.preferred_to_id
         self._altlabel_to_id = self._packs.altlabel_to_id
         self._preferred_collisions = self._packs.preferred_collisions
