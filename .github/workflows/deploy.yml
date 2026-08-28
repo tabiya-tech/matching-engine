@@ -109,6 +109,13 @@ jobs:
           SKILL_ESSENTIAL_DAMPING_ALPHA: ${{ vars.SKILL_ESSENTIAL_DAMPING_ALPHA }}
           JOBS_RETRIEVAL_FILTER: ${{ vars.JOBS_RETRIEVAL_FILTER }}
           MATCH_V4_DISABLE_OCCUPATIONS: ${{ vars.MATCH_V4_DISABLE_OCCUPATIONS }}
+          MATCH_APPLY_LOCATION_FILTER: ${{ vars.MATCH_APPLY_LOCATION_FILTER }}
+          LOCATION_TIER_ENABLED: ${{ vars.LOCATION_TIER_ENABLED }}
+          JOBS_RETRIEVAL_LIMIT: ${{ vars.JOBS_RETRIEVAL_LIMIT }}
+          LOCATION_TIER_W_REGIONAL: ${{ vars.LOCATION_TIER_W_REGIONAL }}
+          LOCATION_TIER_W_NATIONAL: ${{ vars.LOCATION_TIER_W_NATIONAL }}
+          MATCH_V4_RETRIEVE_TOP_K: ${{ vars.MATCH_V4_RETRIEVE_TOP_K }}
+          MATCH_V4_FINAL_TOP_K: ${{ vars.MATCH_V4_FINAL_TOP_K }}
         run: |
           # Use the Poetry-managed virtualenv that holds the Pulumi SDK packages.
           source "$(poetry env info --path)/bin/activate"

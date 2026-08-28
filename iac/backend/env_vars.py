@@ -61,6 +61,13 @@ class EnvKeys:
     GEMINI_API_KEY="GEMINI_API_KEY"
     JOBS_RETRIEVAL_FILTER="JOBS_RETRIEVAL_FILTER"
     MATCH_V4_DISABLE_OCCUPATIONS = "MATCH_V4_DISABLE_OCCUPATIONS"
+    MATCH_APPLY_LOCATION_FILTER = "MATCH_APPLY_LOCATION_FILTER"
+    LOCATION_TIER_ENABLED = "LOCATION_TIER_ENABLED"
+    JOBS_RETRIEVAL_LIMIT = "JOBS_RETRIEVAL_LIMIT"
+    LOCATION_TIER_W_REGIONAL = "LOCATION_TIER_W_REGIONAL"
+    LOCATION_TIER_W_NATIONAL = "LOCATION_TIER_W_NATIONAL"
+    MATCH_V4_RETRIEVE_TOP_K = "MATCH_V4_RETRIEVE_TOP_K"
+    MATCH_V4_FINAL_TOP_K = "MATCH_V4_FINAL_TOP_K"
 
 
 @dataclass(frozen=True)
@@ -110,6 +117,13 @@ class EnvVars:
     gemini_api_key: str
     jobs_retrieval_filter: str
     match_v4_disable_occupations: str
+    match_apply_location_filter: str
+    location_tier_enabled: str
+    jobs_retrieval_limit: str
+    location_tier_w_regional: str
+    location_tier_w_national: str
+    match_v4_retrieve_top_k: str
+    match_v4_final_top_k: str
 
     def get_env_vars(self) -> list[gcp.cloudrunv2.ServiceTemplateContainerEnvArgs]:
         return [
@@ -190,6 +204,20 @@ class EnvVars:
                                                            value=self.jobs_retrieval_filter),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCH_V4_DISABLE_OCCUPATIONS,
                                                            value=self.match_v4_disable_occupations),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCH_APPLY_LOCATION_FILTER,
+                                                           value=self.match_apply_location_filter),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.LOCATION_TIER_ENABLED,
+                                                           value=self.location_tier_enabled),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.JOBS_RETRIEVAL_LIMIT,
+                                                           value=self.jobs_retrieval_limit),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.LOCATION_TIER_W_REGIONAL,
+                                                           value=self.location_tier_w_regional),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.LOCATION_TIER_W_NATIONAL,
+                                                           value=self.location_tier_w_national),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCH_V4_RETRIEVE_TOP_K,
+                                                           value=self.match_v4_retrieve_top_k),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCH_V4_FINAL_TOP_K,
+                                                           value=self.match_v4_final_top_k),
         ]
 
     @staticmethod
@@ -243,4 +271,16 @@ class EnvVars:
             match_v4_disable_occupations=get_env_or_default(
                 EnvKeys.MATCH_V4_DISABLE_OCCUPATIONS, "false"
             ),
+            # Both default true in app/config.py; keep that when a stack sets nothing.
+            match_apply_location_filter=get_env_or_default(
+                EnvKeys.MATCH_APPLY_LOCATION_FILTER, "true"
+            ),
+            location_tier_enabled=get_env_or_default(EnvKeys.LOCATION_TIER_ENABLED, "true"),
+            # Retrieval breadth / tier weights: defaults mirror app/config.py, so a stack that
+            # sets nothing keeps today's behaviour.
+            jobs_retrieval_limit=get_env_or_default(EnvKeys.JOBS_RETRIEVAL_LIMIT, "10000"),
+            location_tier_w_regional=get_env_or_default(EnvKeys.LOCATION_TIER_W_REGIONAL, "0.70"),
+            location_tier_w_national=get_env_or_default(EnvKeys.LOCATION_TIER_W_NATIONAL, "0.50"),
+            match_v4_retrieve_top_k=get_env_or_default(EnvKeys.MATCH_V4_RETRIEVE_TOP_K, "100"),
+            match_v4_final_top_k=get_env_or_default(EnvKeys.MATCH_V4_FINAL_TOP_K, "50"),
         )
