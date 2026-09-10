@@ -145,7 +145,7 @@ def deploy_backend(*,
                     resources=gcp.cloudrunv2.ServiceTemplateContainerResourcesArgs(
                         limits={
                             'memory': "2Gi",
-                            'cpu': "4",
+                            'cpu': "1",
                         },
                     ),
                     envs=env_vars.get_env_vars(),
