@@ -1,0 +1,15 @@
+[MAIN]
+ignore=node_modules,dist,__pycache__,venv,.venv
+
+[MESSAGES CONTROL]
+disable=
+    import-error,
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    too-many-instance-attributes,
+    too-many-arguments,
+    too-few-public-methods
+
+[FORMAT]
+max-line-length=120

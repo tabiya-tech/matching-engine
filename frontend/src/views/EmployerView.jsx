@@ -1,51 +1,53 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo } from 'react'
 
 export const EmployerView = ({ data, isLoading }) => {
-  const [selectedJob, setSelectedJob] = useState(null);
+  const [selectedJob, setSelectedJob] = useState(null)
 
   // 1. Pivot the data: Take multiple API results and group them by Job UUID
   const jobsMap = useMemo(() => {
-    const map = {};
-    
+    const map = {}
+
     // 'data' is now an array of responses from your /match endpoint
-    data.forEach(userMatchResponse => {
-      const userId = userMatchResponse.user_id;
-      
-      userMatchResponse.opportunity_recommendations.forEach(rec => {
+    data.forEach((userMatchResponse) => {
+      const userId = userMatchResponse.user_id
+
+      userMatchResponse.opportunity_recommendations.forEach((rec) => {
         if (!map[rec.uuid]) {
-          map[rec.uuid] = { 
-            title: rec.opportunity_title, 
-            location: rec.location, 
-            candidates: [] 
-          };
+          map[rec.uuid] = {
+            title: rec.opportunity_title,
+            location: rec.location,
+            candidates: [],
+          }
         }
-        
+
         // Push this candidate into the specific job's list
         map[rec.uuid].candidates.push({
           user_id: userId,
           score: rec.final_score,
           eligible: rec.is_eligible,
-          breakdown: rec.score_breakdown
-        });
-      });
-    });
-    return map;
-  }, [data]);
+          breakdown: rec.score_breakdown,
+        })
+      })
+    })
+    return map
+  }, [data])
 
-  const jobKeys = Object.keys(jobsMap);
-  
+  const jobKeys = Object.keys(jobsMap)
+
   // Default to the first job if nothing is selected
-  const currentJobUuid = selectedJob || jobKeys[0];
-  const currentJob = jobsMap[currentJobUuid];
+  const currentJobUuid = selectedJob || jobKeys[0]
+  const currentJob = jobsMap[currentJobUuid]
 
   // Loading State
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center p-20 space-y-4">
         <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-        <p className="font-black text-slate-400 uppercase tracking-widest">Running Global Match Engine...</p>
+        <p className="font-black text-slate-400 uppercase tracking-widest">
+          Running Global Match Engine...
+        </p>
       </div>
-    );
+    )
   }
 
   // Empty State
@@ -53,9 +55,11 @@ export const EmployerView = ({ data, isLoading }) => {
     return (
       <div className="p-10 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
         <p className="text-slate-500 font-bold">No candidate matches found.</p>
-        <p className="text-sm text-slate-400">Run a match from the Jobseeker view to populate this list.</p>
+        <p className="text-sm text-slate-400">
+          Run a match from the Jobseeker view to populate this list.
+        </p>
       </div>
-    );
+    )
   }
 
   return (
@@ -65,12 +69,12 @@ export const EmployerView = ({ data, isLoading }) => {
         <label className="block text-sm font-black text-slate-400 uppercase mb-2">
           Select Active Job Opening
         </label>
-        <select 
+        <select
           value={currentJobUuid}
           onChange={(e) => setSelectedJob(e.target.value)}
           className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500"
         >
-          {jobKeys.map(uuid => (
+          {jobKeys.map((uuid) => (
             <option key={uuid} value={uuid}>
               {jobsMap[uuid].title} ({jobsMap[uuid].location})
             </option>
@@ -88,29 +92,44 @@ export const EmployerView = ({ data, isLoading }) => {
         <table className="w-full text-left">
           <thead className="bg-slate-50 border-b border-slate-200">
             <tr>
-              <th className="p-4 text-xs font-black text-slate-400 uppercase">Candidate ID</th>
-              <th className="p-4 text-xs font-black text-slate-400 uppercase text-center">Eligibility</th>
-              <th className="p-4 text-xs font-black text-slate-400 uppercase text-right">Match Score</th>
+              <th className="p-4 text-xs font-black text-slate-400 uppercase">
+                Candidate ID
+              </th>
+              <th className="p-4 text-xs font-black text-slate-400 uppercase text-center">
+                Eligibility
+              </th>
+              <th className="p-4 text-xs font-black text-slate-400 uppercase text-right">
+                Match Score
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {currentJob.candidates
               .sort((a, b) => b.score - a.score)
-              .map(cand => (
-                <tr key={cand.user_id} className="hover:bg-slate-50 transition-colors">
+              .map((cand) => (
+                <tr
+                  key={cand.user_id}
+                  className="hover:bg-slate-50 transition-colors"
+                >
                   <td className="p-4">
-                    <div className="font-bold text-slate-700">{cand.user_id}</div>
+                    <div className="font-bold text-slate-700">
+                      {cand.user_id}
+                    </div>
                     <div className="text-[10px] text-slate-400 font-medium">
-                      Skills: {(cand.breakdown.total_skill_utility * 100).toFixed(0)}% | 
-                      Prefs: {(cand.breakdown.preference_score * 100).toFixed(0)}%
+                      Skills:{' '}
+                      {(cand.breakdown.total_skill_utility * 100).toFixed(0)}% |
+                      Prefs:{' '}
+                      {(cand.breakdown.preference_score * 100).toFixed(0)}%
                     </div>
                   </td>
                   <td className="p-4 text-center">
-                    <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${
-                      cand.eligible 
-                        ? 'bg-emerald-100 text-emerald-600' 
-                        : 'bg-rose-100 text-rose-600'
-                    }`}>
+                    <span
+                      className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${
+                        cand.eligible
+                          ? 'bg-emerald-100 text-emerald-600'
+                          : 'bg-rose-100 text-rose-600'
+                      }`}
+                    >
                       {cand.eligible ? 'Qualified' : 'Gap Identified'}
                     </span>
                   </td>
@@ -125,5 +144,5 @@ export const EmployerView = ({ data, isLoading }) => {
         </table>
       </div>
     </div>
-  );
-};
+  )
+}

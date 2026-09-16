@@ -1,4 +1,3 @@
-import os
 import pulumi
 from deploy_backend import deploy_backend
 from dotenv import load_dotenv
@@ -20,7 +19,9 @@ def main():
     region = pulumi.Config("gcp").require("region")
     pulumi.log.info(f"using region: {region}")
 
-    cloudrun_min_instance_count: int = int(pulumi.Config("cloudrun").require("min_instance_count"))
+    cloudrun_min_instance_count: int = int(
+        pulumi.Config("cloudrun").require("min_instance_count")
+    )
     cloudrun_max_instance_count: int = int(pulumi.Config("cloudrun").require_int("max_instance_count"))
 
     deploy_backend(
@@ -30,7 +31,7 @@ def main():
         environment_name=stack,
         cloudrun_min_instance_count=cloudrun_min_instance_count,
         cloudrun_max_instance_count=cloudrun_max_instance_count,
-        env_vars=EnvVars.construct_from_env()
+        env_vars=EnvVars.construct_from_env(),
     )
 
 

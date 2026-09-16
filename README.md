@@ -72,6 +72,19 @@ npm install
 npm run dev
 ```
 
+## Linting and Formatting
+
+```bash
+# frontend
+cd frontend
+npm run lint
+npm run format:check
+
+# iac python
+cd ../iac
+pylint backend
+```
+
 ## Languages
 
 Each deployment is configured for one language with `TARGET_LANGUAGE` (`en` | `es`, or a
@@ -165,4 +178,3 @@ Example:
 cd backend
 ./build-and-deploy.sh <project-id> <env-vars-yaml>
 ```
-

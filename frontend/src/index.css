@@ -1,9 +1,9 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 @theme {
-  --color-tabiya-green: #00FF85;
-  --color-tabiya-navy: #002B49;
-  --color-tabiya-mint: #F0FFF7;
+  --color-tabiya-green: #00ff85;
+  --color-tabiya-navy: #002b49;
+  --color-tabiya-mint: #f0fff7;
 }
 
 body {

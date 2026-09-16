@@ -1,15 +1,15 @@
 // src/components/MatchCard.jsx
-import React from 'react';
+import React from 'react'
 
 export const MatchCard = ({ job }) => {
   // Use optional chaining and default values to prevent "undefined" errors
-  const final_score = job?.final_score || 0;
-  const score_breakdown = job?.score_breakdown || {};
-  const opportunity_title = job?.opportunity_title || "Untitled Opportunity";
-  const location = job?.location || "Location not specified";
-  const is_eligible = job?.is_eligible ?? false;
-  const justification = job?.justification || "";
-  const contract_type = job?.contract_type || "";
+  const final_score = job?.final_score || 0
+  const score_breakdown = job?.score_breakdown || {}
+  const opportunity_title = job?.opportunity_title || 'Untitled Opportunity'
+  const location = job?.location || 'Location not specified'
+  const is_eligible = job?.is_eligible ?? false
+  const justification = job?.justification || ''
+  const contract_type = job?.contract_type || ''
 
   return (
     <div className="bg-white rounded-3xl shadow-xl shadow-indigo-500/5 border border-white p-6 flex gap-8 mb-6 hover:translate-y-[-4px] transition-all duration-300">
@@ -27,11 +27,13 @@ export const MatchCard = ({ job }) => {
         <div className="flex justify-between items-start mb-4">
           <div>
             <div className="flex items-center gap-3 mb-1">
-               <h3 className="text-2xl font-black text-slate-800 leading-none">
+              <h3 className="text-2xl font-black text-slate-800 leading-none">
                 {opportunity_title}
               </h3>
               {/* Added a dynamic eligibility tag */}
-              <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${is_eligible ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>
+              <span
+                className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${is_eligible ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}
+              >
                 {is_eligible ? 'Qualified' : 'Skill Gap'}
               </span>
               {contract_type && (
@@ -40,7 +42,9 @@ export const MatchCard = ({ job }) => {
                 </span>
               )}
             </div>
-            <span className="text-slate-400 font-bold text-sm">📍 {location}</span>
+            <span className="text-slate-400 font-bold text-sm">
+              📍 {location}
+            </span>
             {justification && (
               <p className="text-slate-600 text-sm mt-2 leading-relaxed">
                 {justification}
@@ -51,23 +55,23 @@ export const MatchCard = ({ job }) => {
 
         {/* Skill Indicators - Updated to match the new API schema */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
-          <SkillIndicator 
-            label="Skill Alignment" 
-            val={score_breakdown.total_skill_utility || 0} 
+          <SkillIndicator
+            label="Skill Alignment"
+            val={score_breakdown.total_skill_utility || 0}
           />
-          <SkillIndicator 
-            label="User Preference" 
-            val={score_breakdown.preference_score || 0} 
+          <SkillIndicator
+            label="User Preference"
+            val={score_breakdown.preference_score || 0}
           />
-          <SkillIndicator 
-            label="Market Demand" 
-            val={score_breakdown.demand_score || 0} 
+          <SkillIndicator
+            label="Market Demand"
+            val={score_breakdown.demand_score || 0}
           />
         </div>
       </div>
     </div>
-  );
-};
+  )
+}
 
 const SkillIndicator = ({ label, val }) => (
   <div>
@@ -76,10 +80,10 @@ const SkillIndicator = ({ label, val }) => (
       <span>{(val * 100).toFixed(0)}%</span>
     </div>
     <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
-      <div 
-        className="h-full bg-indigo-500 rounded-full transition-all duration-500" 
-        style={{ width: `${Math.min(val * 100, 100)}%` }} 
+      <div
+        className="h-full bg-indigo-500 rounded-full transition-all duration-500"
+        style={{ width: `${Math.min(val * 100, 100)}%` }}
       />
     </div>
   </div>
-);
+)

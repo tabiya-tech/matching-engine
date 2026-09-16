@@ -1,6 +1,5 @@
 import base64
 import os
-from dataclasses import dataclass
 
 import pulumi
 import pulumi_docker as docker
@@ -39,7 +38,7 @@ def _setup_api_gateway(
     )
 
     template_path = os.path.join(os.path.dirname(__file__), API_GATEWAY_CONFIG_TEMPLATE_FILE)
-    with open(template_path, "r") as f:
+    with open(template_path, "r", encoding="utf-8") as f:
         template = f.read()
 
     apigw_config_yaml = cloudrun.uri.apply(
@@ -103,15 +102,17 @@ def _setup_api_gateway(
     return api_gateway
 
 
-def deploy_backend(*,
-                   gcp_project_id: str,
-                   gcp_project_region: str,
-                   docker_repository_id: str,
-                   environment_name: str,
-                   cloudrun_min_instance_count: int,
-                   cloudrun_max_instance_count: int,
-                   env_vars: EnvVars):
-    image_id = f"matching-algorithm-api"
+def deploy_backend(
+    *,
+    gcp_project_id: str,
+    gcp_project_region: str,
+    docker_repository_id: str,
+    environment_name: str,
+    cloudrun_min_instance_count: int,
+    cloudrun_max_instance_count: int,
+    env_vars: EnvVars,
+):
+    image_id = "matching-algorithm-api"
     pulumi.log.info(f"Building image {image_id}")
 
     image_name = f"{gcp_project_region}-docker.pkg.dev/{gcp_project_id}/{docker_repository_id}/{image_id}:latest"
@@ -122,7 +123,8 @@ def deploy_backend(*,
         image_name=image_name,
         build=docker.DockerBuildArgs(
             context="../../backend",
-            platform="linux/amd64"),
+            platform="linux/amd64",
+        ),
         registry=None,  # use gcloud for authentication.
         opts=pulumi.ResourceOptions(depends_on=[]),
     )
