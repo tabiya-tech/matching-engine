@@ -4,3 +4,5 @@ config:
   docker-repository_name: docker-repository
   cloudrun:min_instance_count: 1
   cloudrun:max_instance_count: 3
+  cloudrun:cpu_limit: "2"
+  cloudrun:memory_limit: 2Gi

@@ -110,6 +110,8 @@ def deploy_backend(*,
                    environment_name: str,
                    cloudrun_min_instance_count: int,
                    cloudrun_max_instance_count: int,
+                   cloudrun_cpu_limit: str,
+                   cloudrun_memory_limit: str,
                    env_vars: EnvVars):
     image_id = f"matching-algorithm-api"
     pulumi.log.info(f"Building image {image_id}")
@@ -144,8 +146,8 @@ def deploy_backend(*,
                     image=image.repo_digest,
                     resources=gcp.cloudrunv2.ServiceTemplateContainerResourcesArgs(
                         limits={
-                            'memory': "2Gi",
-                            'cpu': "2",
+                            'memory': cloudrun_memory_limit,
+                            'cpu': cloudrun_cpu_limit,
                         },
                     ),
                     envs=env_vars.get_env_vars(),

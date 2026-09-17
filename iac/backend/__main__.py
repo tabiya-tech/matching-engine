@@ -22,6 +22,8 @@ def main():
 
     cloudrun_min_instance_count: int = int(pulumi.Config("cloudrun").require("min_instance_count"))
     cloudrun_max_instance_count: int = int(pulumi.Config("cloudrun").require_int("max_instance_count"))
+    cloudrun_cpu_limit: str = pulumi.Config("cloudrun").require("cpu_limit")
+    cloudrun_memory_limit: str = pulumi.Config("cloudrun").require("memory_limit")
 
     deploy_backend(
         gcp_project_id=project_id,
@@ -30,6 +32,8 @@ def main():
         environment_name=stack,
         cloudrun_min_instance_count=cloudrun_min_instance_count,
         cloudrun_max_instance_count=cloudrun_max_instance_count,
+        cloudrun_cpu_limit=cloudrun_cpu_limit,
+        cloudrun_memory_limit=cloudrun_memory_limit,
         env_vars=EnvVars.construct_from_env()
     )
 
