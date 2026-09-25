@@ -37,6 +37,7 @@ from app.database import (
     get_jobs_stats,
     InvalidCursor,
 )
+from app import observability
 from app.match_timing_log import log_match_step
 from app.services.matching_service import match_user_with_data
 from app.services.match_v2_full_service import run_match_v2_full
@@ -68,6 +69,21 @@ async def _load_v4_occupations():
         return [], {}
     occ, timing = await get_all_occupations_with_timing()
     return attach_occupation_embeddings(occ), timing
+
+
+def _retrieval_trace_meta(
+    jobs: List[Dict[str, Any]],
+    jobs_timing: Dict[str, Any],
+    occ: List[Dict[str, Any]],
+    occ_timing: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Counts + Mongo / occupation-cache timings for the ``retrieval`` trace span (no job content)."""
+    meta: Dict[str, Any] = {"n_jobs": len(jobs), "n_occupation_rows": len(occ)}
+    for timing in (jobs_timing or {}, occ_timing or {}):
+        for k, v in timing.items():
+            if isinstance(v, (int, float, bool)):
+                meta[k] = v
+    return meta
 
 
 def _jobs_by_uuid(job_list: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -361,13 +377,18 @@ async def match(
         t_req = time.perf_counter()
         users = [u.model_dump() for u in payload]
         n_users = len(users)
+        observability.set_request_users(users)
 
         # Mongo ping runs at app startup (warmup_on_startup), not here — avoids multi-second noise per request.
         t_fetch = time.perf_counter()
-        (jobs, _), (occ, _) = await asyncio.gather(
-            get_all_jobs_with_timing(users=users),
-            get_all_occupations_with_timing(),
-        )
+        with observability.stage("retrieval") as span:
+            (jobs, jobs_timing), (occ, occ_timing) = await asyncio.gather(
+                get_all_jobs_with_timing(users=users),
+                get_all_occupations_with_timing(),
+            )
+            observability.update_observation(
+                span, metadata=_retrieval_trace_meta(jobs, jobs_timing, occ, occ_timing)
+            )
         fetch_parallel_wall_ms = _ms(t_fetch)
         t_score = time.perf_counter()
         tasks = [asyncio.to_thread(match_user_with_data, u, jobs, occ) for u in users]
@@ -477,12 +498,24 @@ async def match_v2(
             else (env_alpha if env_alpha is not None else 0.5)
         )
 
+        observability.set_request_users(
+            users,
+            fusion_top_k=fk,
+            alpha_on_cosine=alpha,
+            skill_gap_top_k=skill_gap_top_k,
+        )
+
         t_fetch = time.perf_counter()
         # Full active catalog (no union location filter) + occupation corpus, in parallel.
-        (jobs, _mongo_timing), (occ, _occ_timing) = await asyncio.gather(
-            get_all_jobs_with_timing(users=None),
-            get_all_occupations_with_timing(),
-        )
+        with observability.stage("retrieval") as span:
+            (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
+                get_all_jobs_with_timing(users=None),
+                get_all_occupations_with_timing(),
+            )
+            observability.update_observation(
+                span,
+                metadata=_retrieval_trace_meta(jobs, mongo_timing, occ, occ_timing),
+            )
         fetch_wall_ms = _ms(t_fetch)
 
         t_score = time.perf_counter()
@@ -499,7 +532,8 @@ async def match_v2(
         )
         score_ms = _ms(t_score)
 
-        out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
+        with observability.stage("formatting", step="response_model"):
+            out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
 
         log_match_step(
             "http /experiments/v2/match",
@@ -609,13 +643,21 @@ async def match_v3(
             else COSINE_CROSS_ENCODER_RETRIEVE_TOP_K
         )
         ft = final_top_k if final_top_k is not None else 30
+        observability.set_request_users(
+            users, retrieve_top_k=rt, final_top_k=ft, skill_gap_top_k=skill_gap_top_k
+        )
 
         t_fetch = time.perf_counter()
-        (jobs, _mongo_timing), (occ, _occ_timing) = await asyncio.gather(
-            get_all_jobs_with_timing(users=users),
-            get_all_occupations_with_timing(),
-        )
-        occ = attach_occupation_embeddings(occ)
+        with observability.stage("retrieval") as span:
+            (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
+                get_all_jobs_with_timing(users=users),
+                get_all_occupations_with_timing(),
+            )
+            occ = attach_occupation_embeddings(occ)
+            observability.update_observation(
+                span,
+                metadata=_retrieval_trace_meta(jobs, mongo_timing, occ, occ_timing),
+            )
         fetch_wall_ms = _ms(t_fetch)
 
         t_score = time.perf_counter()
@@ -632,7 +674,8 @@ async def match_v3(
         )
         score_ms = _ms(t_score)
 
-        out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
+        with observability.stage("formatting", step="response_model"):
+            out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
 
         log_match_step(
             "http /experiments/v3/match",
@@ -744,11 +787,24 @@ async def match_v4(
                 detail="final_score_combiner must be 'product' or 'geometric_mean'",
             )
 
-        t_fetch = time.perf_counter()
-        (jobs, mongo_timing), (occ, _occ_timing) = await asyncio.gather(
-            get_all_jobs_with_timing(users=users),
-            _load_v4_occupations(),
+        observability.set_request_users(
+            users,
+            retrieve_top_k=rt,
+            final_top_k=ft,
+            final_score_combiner=combiner,
+            skill_gap_top_k=skill_gap_top_k,
         )
+
+        t_fetch = time.perf_counter()
+        with observability.stage("retrieval") as span:
+            (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
+                get_all_jobs_with_timing(users=users),
+                _load_v4_occupations(),
+            )
+            observability.update_observation(
+                span,
+                metadata=_retrieval_trace_meta(jobs, mongo_timing, occ, occ_timing),
+            )
         fetch_wall_ms = _ms(t_fetch)
 
         t_score = time.perf_counter()
@@ -767,7 +823,8 @@ async def match_v4(
         )
         score_ms = _ms(t_score)
 
-        out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
+        with observability.stage("formatting", step="response_model"):
+            out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
 
         log_match_step(
             "http /match_v4",
@@ -888,11 +945,24 @@ async def match_v5(
                 detail="final_score_combiner must be 'product' or 'geometric_mean'",
             )
 
-        t_fetch = time.perf_counter()
-        (jobs, mongo_timing), (occ, _occ_timing) = await asyncio.gather(
-            get_all_jobs_with_timing(users=users),
-            _load_v4_occupations(),
+        observability.set_request_users(
+            users,
+            retrieve_top_k=rt,
+            final_top_k=ft,
+            final_score_combiner=combiner,
+            skill_gap_top_k=skill_gap_top_k,
         )
+
+        t_fetch = time.perf_counter()
+        with observability.stage("retrieval") as span:
+            (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
+                get_all_jobs_with_timing(users=users),
+                _load_v4_occupations(),
+            )
+            observability.update_observation(
+                span,
+                metadata=_retrieval_trace_meta(jobs, mongo_timing, occ, occ_timing),
+            )
         fetch_wall_ms = _ms(t_fetch)
 
         job_uuid_index = _jobs_by_uuid(jobs)
@@ -913,18 +983,21 @@ async def match_v5(
         )
         score_ms = _ms(t_score)
 
-        for row, user in zip(raw, users):
-            user_zqf = user.get("zqf_level")
-            for opp in row.get("opportunity_recommendations") or []:
-                job = job_uuid_index.get(str(opp.get("uuid") or ""))
-                job_zqf_min = job.get("zqf_min") if job else None
-                eligible, gap = _zqf_annotation(user_zqf, job_zqf_min)
-                opp["zqf_eligible"] = eligible
-                opp["zqf_gap"] = gap
-                opp["zqf_min_label"] = job.get("zqf_min_label") if job else None
-                opp["zqf_max_label"] = job.get("zqf_max_label") if job else None
+        with observability.stage(
+            "formatting", step="zqf_annotation_and_response_model"
+        ):
+            for row, user in zip(raw, users):
+                user_zqf = user.get("zqf_level")
+                for opp in row.get("opportunity_recommendations") or []:
+                    job = job_uuid_index.get(str(opp.get("uuid") or ""))
+                    job_zqf_min = job.get("zqf_min") if job else None
+                    eligible, gap = _zqf_annotation(user_zqf, job_zqf_min)
+                    opp["zqf_eligible"] = eligible
+                    opp["zqf_gap"] = gap
+                    opp["zqf_min_label"] = job.get("zqf_min_label") if job else None
+                    opp["zqf_max_label"] = job.get("zqf_max_label") if job else None
 
-        out: List[MatchResponseV5] = [MatchResponseV5(**row) for row in raw]
+            out: List[MatchResponseV5] = [MatchResponseV5(**row) for row in raw]
 
         log_match_step(
             "http /experiments/v5/match",
