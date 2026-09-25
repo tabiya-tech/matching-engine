@@ -7,6 +7,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from app.match_timing_log import init_match_timing_log
+from app.observability import (
+    MatchTracingMiddleware,
+    init_tracing,
+    shutdown_tracing,
+    tracing_config_from_env,
+)
 from app.routes import router, router_public
 from app.services.match_concat_gemini_ce_service import _get_reranker
 
@@ -26,6 +32,8 @@ async def lifespan(app: FastAPI):
     """Mongo ping + occupation JSON + WA lookup once at startup so /match does not pay cold-connection cost each time."""
     from app.database import warmup_on_startup
 
+    init_tracing(tracing_config_from_env())
+
     async def _warmup_safe() -> None:
         try:
             await warmup_on_startup()
@@ -42,6 +50,8 @@ async def lifespan(app: FastAPI):
         await _warmup_safe()
     _get_reranker()
     yield
+    # Flush buffered traces before Cloud Run tears the instance down.
+    shutdown_tracing()
 
 
 def _openapi_servers() -> list[dict[str, str]]:
@@ -87,6 +97,10 @@ else:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+# One Langfuse trace per /match* request (a no-op unless MATCHING_ENABLE_TRACING is on).
+# Added last, so it is outermost and times the whole request.
+app.add_middleware(MatchTracingMiddleware)
 
 app.include_router(router)
 app.include_router(router_public)

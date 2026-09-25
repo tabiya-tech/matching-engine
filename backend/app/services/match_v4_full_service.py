@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from app import observability
 from app.config import (
     FINAL_SCORE_COMBINER,
     LOCATION_HUB_CHAINS_PATH,
@@ -252,22 +253,23 @@ def run_match_v4_full(
     occ_concat: Dict[str, tuple] = {}
     u_white_by_uid: Dict[str, np.ndarray] = {}
     if demote_active:
-        for j in jobs:
-            v = _job_stage1_embedding_vector(j)
-            if v is not None:
-                # (vector, is_already_whitened) — DB-whitened jobs are consumed directly in Phase-2;
-                # raw vectors are whitened in-process. Same artifact => identical result either way.
-                job_concat[str(j.get("uuid") or "")] = (v, _job_is_prewhitened(j))
-        for o in occupations:
-            v = _job_stage1_embedding_vector(o)
-            if v is not None:
-                # occupations are whitened once at cache-load (consumed directly) or raw (whitened
-                # in-process) — the flag set by attach_occupation_embeddings tells which.
-                occ_concat[str(o.get("uuid") or "")] = (v, _job_is_prewhitened(o))
-        u_white = whiten_concat_rows(u_norm)
-        u_white_by_uid = {
-            str(u.get("user_id") or ""): u_white[i] for i, u in enumerate(users)
-        }
+        with observability.stage("preference_scoring", step="phase2_inputs"):
+            for j in jobs:
+                v = _job_stage1_embedding_vector(j)
+                if v is not None:
+                    # (vector, is_already_whitened) — DB-whitened jobs are consumed directly in Phase-2;
+                    # raw vectors are whitened in-process. Same artifact => identical result either way.
+                    job_concat[str(j.get("uuid") or "")] = (v, _job_is_prewhitened(j))
+            for o in occupations:
+                v = _job_stage1_embedding_vector(o)
+                if v is not None:
+                    # occupations are whitened once at cache-load (consumed directly) or raw (whitened
+                    # in-process) — the flag set by attach_occupation_embeddings tells which.
+                    occ_concat[str(o.get("uuid") or "")] = (v, _job_is_prewhitened(o))
+            u_white = whiten_concat_rows(u_norm)
+            u_white_by_uid = {
+                str(u.get("user_id") or ""): u_white[i] for i, u in enumerate(users)
+            }
 
     job_v3 = run_match_concat_gemini_ce(
         users,
@@ -293,6 +295,7 @@ def run_match_v4_full(
             retrieve_top_k=occ_breadth,
             final_top_k=occ_breadth,
             user_unit_vectors=u_norm,
+            corpus="occupations",
         )
         if occupations_enabled
         else []
@@ -389,58 +392,60 @@ def run_match_v4_full(
     for user in users:
         uid = str(user.get("user_id") or "")
 
-        # Phase-2 ranking overrides (whitened+rescaled p_hat + coverage demotion); empty dicts when the
-        # toggle is off, in which case _enriched_recs falls back to the stage-1 concat cosine p_hat
-        # (itself whitened, just unrescaled) with no demotion (Phase 1).
-        job_p, job_cov, job_det = ({}, {}, {})
-        occ_p, occ_cov, occ_det = ({}, {}, {})
-        if demote_active:
-            uw = u_white_by_uid.get(uid)
-            job_p, job_cov, job_det = _rank_overrides(
-                user, job_v3_by_uid.get(uid), job_index, job_concat, uw
-            )
-            if occupations_enabled:
-                occ_p, occ_cov, occ_det = _rank_overrides(
-                    user, occ_v3_by_uid.get(uid), occ_index, occ_concat, uw
-                )
-
         # Opportunities. Jobs keep the existing /match_v4 location scoping (Mongo prefilter via
         # get_all_jobs_with_timing(users=...)). Instead of a hard python location filter, urban-pull
         # applies a per-user SOFT location tier (local=1.0 > regional hub > national hub; off-chain=0)
         # as a final_score multiplier — local jobs preferred, hub jobs surface when better/needed, and
         # off-chain jobs (e.g. another batch user's locations) are dropped. Always-on (independent of
         # the Phase-2 coverage demotion); {} no-op when LOCATION_TIER_ENABLED is off.
-        job_tiers = _location_tier_overrides(user, job_v3_by_uid.get(uid), job_index)
-        opportunities: List[Dict[str, Any]] = []
-        for rec in _enriched_recs(
-            user,
-            job_v3_by_uid.get(uid),
-            job_index,
-            pref_scorer,
-            combiner,
-            location_filter=False,
-            p_hat_by_uuid=job_p,
-            coverage_by_uuid=job_cov,
-            coverage_gamma=cov_gamma,
-            location_tier_by_uuid=job_tiers,
-        ):
-            item = job_index.get(str(rec.get("job_uuid") or ""))
-            if not item:
-                continue
-            per, ess_ids = job_det.get(str(rec.get("job_uuid") or "")) or _skill_detail(
-                user, item
-            )
-            opportunities.append(
-                fmt.build_opportunity_row(
-                    rec,
-                    item,
-                    per,
-                    ess_ids,
-                    rank=len(opportunities) + 1,
-                    sim_threshold=V4_FULL_SIM_THRESHOLD,
-                    min_ess_share=V4_FULL_MIN_ESS_SHARE,
+        with observability.stage("preference_scoring", corpus="jobs"):
+            # Phase-2 ranking overrides (whitened+rescaled p_hat + coverage demotion); empty dicts when
+            # the toggle is off, in which case _enriched_recs falls back to the stage-1 concat cosine
+            # p_hat (itself whitened, just unrescaled) with no demotion (Phase 1).
+            job_p, job_cov, job_det = ({}, {}, {})
+            if demote_active:
+                job_p, job_cov, job_det = _rank_overrides(
+                    user,
+                    job_v3_by_uid.get(uid),
+                    job_index,
+                    job_concat,
+                    u_white_by_uid.get(uid),
                 )
+            job_tiers = _location_tier_overrides(
+                user, job_v3_by_uid.get(uid), job_index
             )
+            job_recs = _enriched_recs(
+                user,
+                job_v3_by_uid.get(uid),
+                job_index,
+                pref_scorer,
+                combiner,
+                location_filter=False,
+                p_hat_by_uuid=job_p,
+                coverage_by_uuid=job_cov,
+                coverage_gamma=cov_gamma,
+                location_tier_by_uuid=job_tiers,
+            )
+        opportunities: List[Dict[str, Any]] = []
+        with observability.stage("formatting", corpus="jobs"):
+            for rec in job_recs:
+                item = job_index.get(str(rec.get("job_uuid") or ""))
+                if not item:
+                    continue
+                per, ess_ids = job_det.get(
+                    str(rec.get("job_uuid") or "")
+                ) or _skill_detail(user, item)
+                opportunities.append(
+                    fmt.build_opportunity_row(
+                        rec,
+                        item,
+                        per,
+                        ess_ids,
+                        rank=len(opportunities) + 1,
+                        sim_threshold=V4_FULL_SIM_THRESHOLD,
+                        min_ess_share=V4_FULL_MIN_ESS_SHARE,
+                    )
+                )
 
         # Occupations: filter to the user's county; if the user's province matches no occupation
         # county, fall back to a random available county (location filter only — the user's real
@@ -448,67 +453,80 @@ def run_match_v4_full(
         # Skipped entirely (empty list) when MATCH_V4_DISABLE_OCCUPATIONS is set.
         occupations_out: List[Dict[str, Any]] = []
         if occupations_enabled:
-            loc_user = None
-            if occ_counties and not _user_matches_any_county(user, occ_counties):
-                fallback = random.choice(occ_counties)
-                loc_user = {
-                    "city": fallback,
-                    "province": fallback,
-                    "location": fallback,
-                }
-                logger.warning(
-                    "User %r province=%r matches no occupation county %s; using random fallback county %r.",
-                    uid,
-                    user.get("province"),
-                    occ_counties,
-                    fallback,
-                )
-            seen_codes: set = set()
-            for rec in _enriched_recs(
-                user,
-                occ_v3_by_uid.get(uid),
-                occ_index,
-                pref_scorer,
-                combiner,
-                location_user=loc_user,
-                include_demand=True,
-                demand_gamma=MATCH_V4_OCC_DEMAND_GAMMA,
-                p_hat_by_uuid=occ_p,
-                coverage_by_uuid=occ_cov,
-                coverage_gamma=cov_gamma,
-            ):
-                item = occ_index.get(str(rec.get("job_uuid") or ""))
-                if not item:
-                    continue
-                code = str(item.get("originUuid") or item.get("uuid") or "")
-                if not code or code in seen_codes:
-                    continue
-                seen_codes.add(code)
-                per, ess_ids = occ_det.get(
-                    str(rec.get("job_uuid") or "")
-                ) or _skill_detail(user, item)
-                occupations_out.append(
-                    fmt.build_occupation_row(
-                        rec,
-                        item,
-                        per,
-                        ess_ids,
-                        rank=len(occupations_out) + 1,
-                        sim_threshold=V4_FULL_SIM_THRESHOLD,
-                        min_ess_share=V4_FULL_MIN_ESS_SHARE,
+            with observability.stage("preference_scoring", corpus="occupations"):
+                occ_p, occ_cov, occ_det = ({}, {}, {})
+                if demote_active:
+                    occ_p, occ_cov, occ_det = _rank_overrides(
+                        user,
+                        occ_v3_by_uid.get(uid),
+                        occ_index,
+                        occ_concat,
+                        u_white_by_uid.get(uid),
                     )
+                loc_user = None
+                if occ_counties and not _user_matches_any_county(user, occ_counties):
+                    fallback = random.choice(occ_counties)
+                    loc_user = {
+                        "city": fallback,
+                        "province": fallback,
+                        "location": fallback,
+                    }
+                    logger.warning(
+                        "User %r province=%r matches no occupation county %s; using random fallback county %r.",
+                        uid,
+                        user.get("province"),
+                        occ_counties,
+                        fallback,
+                    )
+                occ_recs = _enriched_recs(
+                    user,
+                    occ_v3_by_uid.get(uid),
+                    occ_index,
+                    pref_scorer,
+                    combiner,
+                    location_user=loc_user,
+                    include_demand=True,
+                    demand_gamma=MATCH_V4_OCC_DEMAND_GAMMA,
+                    p_hat_by_uuid=occ_p,
+                    coverage_by_uuid=occ_cov,
+                    coverage_gamma=cov_gamma,
                 )
-                if len(occupations_out) >= MATCH_V4_TOP_K_OCCUPATIONS:
-                    break
+            with observability.stage("formatting", corpus="occupations"):
+                seen_codes: set = set()
+                for rec in occ_recs:
+                    item = occ_index.get(str(rec.get("job_uuid") or ""))
+                    if not item:
+                        continue
+                    code = str(item.get("originUuid") or item.get("uuid") or "")
+                    if not code or code in seen_codes:
+                        continue
+                    seen_codes.add(code)
+                    per, ess_ids = occ_det.get(
+                        str(rec.get("job_uuid") or "")
+                    ) or _skill_detail(user, item)
+                    occupations_out.append(
+                        fmt.build_occupation_row(
+                            rec,
+                            item,
+                            per,
+                            ess_ids,
+                            rank=len(occupations_out) + 1,
+                            sim_threshold=V4_FULL_SIM_THRESHOLD,
+                            min_ess_share=V4_FULL_MIN_ESS_SHARE,
+                        )
+                    )
+                    if len(occupations_out) >= MATCH_V4_TOP_K_OCCUPATIONS:
+                        break
+
+        with observability.stage("skill_gaps"):
+            skill_gaps = _skill_gaps_for(user, jobs, skill_gap_top_k)
 
         out.append(
             {
                 "user_id": uid,
                 "occupation_recommendations": occupations_out,
                 "opportunity_recommendations": opportunities,
-                "skill_gap_recommendations": _skill_gaps_for(
-                    user, jobs, skill_gap_top_k
-                ),
+                "skill_gap_recommendations": skill_gaps,
             }
         )
 

@@ -1,4 +1,5 @@
 import os
+import pulumi
 import pulumi_gcp as gcp
 
 from dataclasses import dataclass
@@ -68,6 +69,12 @@ class EnvKeys:
     LOCATION_TIER_W_NATIONAL = "LOCATION_TIER_W_NATIONAL"
     MATCH_V4_RETRIEVE_TOP_K = "MATCH_V4_RETRIEVE_TOP_K"
     MATCH_V4_FINAL_TOP_K = "MATCH_V4_FINAL_TOP_K"
+    MATCHING_ENABLE_TRACING = "MATCHING_ENABLE_TRACING"
+    MATCHING_LANGFUSE_HOST = "MATCHING_LANGFUSE_HOST"
+    MATCHING_LANGFUSE_PUBLIC_KEY = "MATCHING_LANGFUSE_PUBLIC_KEY"
+    MATCHING_LANGFUSE_SECRET_KEY = "MATCHING_LANGFUSE_SECRET_KEY"
+    MATCHING_TRACING_ENVIRONMENT = "MATCHING_TRACING_ENVIRONMENT"
+    MATCHING_TRACING_CONFIG = "MATCHING_TRACING_CONFIG"
 
 
 @dataclass(frozen=True)
@@ -124,6 +131,13 @@ class EnvVars:
     location_tier_w_national: str
     match_v4_retrieve_top_k: str
     match_v4_final_top_k: str
+    # Langfuse tracing of /match* requests (backend app/observability). Off unless enabled.
+    matching_enable_tracing: str
+    matching_langfuse_host: str
+    matching_langfuse_public_key: str
+    matching_langfuse_secret_key: str
+    matching_tracing_environment: str
+    matching_tracing_config: str
 
     def get_env_vars(self) -> list[gcp.cloudrunv2.ServiceTemplateContainerEnvArgs]:
         return [
@@ -218,6 +232,18 @@ class EnvVars:
                                                            value=self.match_v4_retrieve_top_k),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCH_V4_FINAL_TOP_K,
                                                            value=self.match_v4_final_top_k),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCHING_ENABLE_TRACING,
+                                                           value=self.matching_enable_tracing),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCHING_LANGFUSE_HOST,
+                                                           value=self.matching_langfuse_host),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCHING_LANGFUSE_PUBLIC_KEY,
+                                                           value=self.matching_langfuse_public_key),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCHING_LANGFUSE_SECRET_KEY,
+                                                           value=self.matching_langfuse_secret_key),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCHING_TRACING_ENVIRONMENT,
+                                                           value=self.matching_tracing_environment),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCHING_TRACING_CONFIG,
+                                                           value=self.matching_tracing_config),
         ]
 
     @staticmethod
@@ -283,4 +309,16 @@ class EnvVars:
             location_tier_w_national=get_env_or_default(EnvKeys.LOCATION_TIER_W_NATIONAL, "0.50"),
             match_v4_retrieve_top_k=get_env_or_default(EnvKeys.MATCH_V4_RETRIEVE_TOP_K, "100"),
             match_v4_final_top_k=get_env_or_default(EnvKeys.MATCH_V4_FINAL_TOP_K, "50"),
+            # Tracing is optional per stack: unset keeps it off. The Langfuse environment defaults
+            # to the stack name, so per-deployment latency and spend filter on dev / shp / zmb / ….
+            matching_enable_tracing=get_env_or_default(EnvKeys.MATCHING_ENABLE_TRACING, "false"),
+            matching_langfuse_host=get_env_or_default(
+                EnvKeys.MATCHING_LANGFUSE_HOST, "https://cloud.langfuse.com"
+            ),
+            matching_langfuse_public_key=get_env_or_default(EnvKeys.MATCHING_LANGFUSE_PUBLIC_KEY, ""),
+            matching_langfuse_secret_key=get_env_or_default(EnvKeys.MATCHING_LANGFUSE_SECRET_KEY, ""),
+            matching_tracing_environment=get_env_or_default(
+                EnvKeys.MATCHING_TRACING_ENVIRONMENT, pulumi.get_stack()
+            ),
+            matching_tracing_config=get_env_or_default(EnvKeys.MATCHING_TRACING_CONFIG, ""),
         )

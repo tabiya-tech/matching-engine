@@ -4,6 +4,7 @@ import asyncio
 import time
 from typing import Any, Dict, List, Optional
 
+from app import observability
 from app.config import (
     DEMAND_SCORE_MAPPING,
     GLOBAL_WEIGHTS,
@@ -468,12 +469,15 @@ def _match_items(
     """
     uid = str(user.get("user_id", "?"))
     n_in = len(items)
+    corpus = "occupations" if item_type == "occupation" else "jobs"
 
     t0 = time.perf_counter()
-    if MATCH_APPLY_LOCATION_FILTER:
-        items = [item for item in items if _job_matches_user_location(item, user)]
-    # Post-secondary education gate (no-op for occupations, which lack the field).
-    items = filter_jobs_by_education(user, items)
+    with observability.stage("shortlist", corpus=corpus, n_candidates=n_in) as sl:
+        if MATCH_APPLY_LOCATION_FILTER:
+            items = [item for item in items if _job_matches_user_location(item, user)]
+        # Post-secondary education gate (no-op for occupations, which lack the field).
+        items = filter_jobs_by_education(user, items)
+        observability.update_observation(sl, metadata={"n_after_filter": len(items)})
     filter_ms = _ms(t0)
 
     empty_timing: dict = {
@@ -513,124 +517,132 @@ def _match_items(
 
         _demand_scorer = DemandScorer()
 
-    t_score = time.perf_counter()
-    sum_u = 0.0
-    sum_sk = 0.0
-    sum_p = 0.0
-    sum_leg_s = 0.0
-    sum_leg_d = 0.0
-    n_scored = 0
-    # Calculate scores for all items
-    recommendations: List[dict] = []
-    for item in items:
-        n_scored += 1
-        t_u = time.perf_counter()
-        pref = scorer_pref.calculate_score(user, item)
-        sum_u += _ms(t_u)
+    with observability.stage(
+        "preference_scoring", corpus=corpus, scoring_mode=scoring_mode
+    ):
+        t_score = time.perf_counter()
+        sum_u = 0.0
+        sum_sk = 0.0
+        sum_p = 0.0
+        sum_leg_s = 0.0
+        sum_leg_d = 0.0
+        n_scored = 0
+        # Calculate scores for all items
+        recommendations: List[dict] = []
+        for item in items:
+            n_scored += 1
+            t_u = time.perf_counter()
+            pref = scorer_pref.calculate_score(user, item)
+            sum_u += _ms(t_u)
 
+            if scoring_mode == "multiplicative":
+                # Single embedding / matmul pass for U + feasibility (p_hat)
+                t_sk = time.perf_counter()
+                skill, feasibility = scorer_skill.score_utility_and_feasibility(
+                    user, item
+                )
+                sum_sk += _ms(t_sk)
+                t_p = time.perf_counter()
+                p_hat_result = scorer_success.calculate_score(user, item, feasibility)
+                sum_p += _ms(t_p)
+
+                u_hat = pref.get("u_hat", 0.5)
+                p_hat = p_hat_result.get("p_hat", 0.0)
+                final_score = u_hat * p_hat
+
+                recommendations.append(
+                    {
+                        "item": item,
+                        "score": final_score,
+                        "scoring_mode": scoring_mode,
+                        "u_hat": u_hat,
+                        "p_hat_result": p_hat_result,
+                        "skill_details": skill,
+                        "match_details": feasibility.get(
+                            "match_details", skill.get("match_details", {})
+                        ),
+                        "pref_details": pref.get("details", []),
+                        "pref_details_score": pref.get("score", 0.0),
+                        "demand_label": p_hat_result.get("demand_label", "Unknown"),
+                    }
+                )
+            else:
+                # Legacy additive: skill utility only (no feasibility / p_hat)
+                t_s = time.perf_counter()
+                skill = scorer_skill.calculate_score(user, item)
+                sum_leg_s += _ms(t_s)
+                t_d = time.perf_counter()
+                demand = _demand_scorer.calculate_score(item)
+                sum_leg_d += _ms(t_d)
+
+                w1 = GLOBAL_WEIGHTS["w1_skills"]
+                w2 = GLOBAL_WEIGHTS["w2_preference"]
+                w3 = GLOBAL_WEIGHTS["w3_market"]
+
+                if not demand.get("present", False):
+                    # Demand absent — redistribute its weight to skills + prefs
+                    remaining = w1 + w2
+                    if remaining > 0:
+                        w1 = w1 / remaining
+                        w2 = w2 / remaining
+                    w3 = 0.0
+                    demand_score_val = 0.0
+                else:
+                    demand_score_val = demand.get("score", 0.5)
+
+                final_score = (
+                    w1 * skill.get("U_final", 0.0)
+                    + w2 * pref.get("score", 0.0)
+                    + w3 * demand_score_val
+                )
+                recommendations.append(
+                    {
+                        "item": item,
+                        "score": final_score,
+                        "scoring_mode": scoring_mode,
+                        "u_hat": pref.get("u_hat", 0.5),
+                        "p_hat_result": {
+                            "p_hat": 0.0,
+                            "components": {},
+                            "demand_label": demand.get("label", "Unknown"),
+                        },
+                        "skill_details": skill,
+                        "match_details": skill.get("match_details", {}),
+                        "pref_details": pref.get("details", []),
+                        "pref_details_score": pref.get("score", 0.0),
+                        "demand_score": demand_score_val,
+                        "demand_label": demand.get("label", "Unknown"),
+                    }
+                )
+
+        # Sort by final score; use demand as tie-breaker in multiplicative mode
         if scoring_mode == "multiplicative":
-            # Single embedding / matmul pass for U + feasibility (p_hat)
-            t_sk = time.perf_counter()
-            skill, feasibility = scorer_skill.score_utility_and_feasibility(user, item)
-            sum_sk += _ms(t_sk)
-            t_p = time.perf_counter()
-            p_hat_result = scorer_success.calculate_score(user, item, feasibility)
-            sum_p += _ms(t_p)
-
-            u_hat = pref.get("u_hat", 0.5)
-            p_hat = p_hat_result.get("p_hat", 0.0)
-            final_score = u_hat * p_hat
-
-            recommendations.append(
-                {
-                    "item": item,
-                    "score": final_score,
-                    "scoring_mode": scoring_mode,
-                    "u_hat": u_hat,
-                    "p_hat_result": p_hat_result,
-                    "skill_details": skill,
-                    "match_details": feasibility.get(
-                        "match_details", skill.get("match_details", {})
-                    ),
-                    "pref_details": pref.get("details", []),
-                    "pref_details_score": pref.get("score", 0.0),
-                    "demand_label": p_hat_result.get("demand_label", "Unknown"),
-                }
+            recommendations.sort(
+                key=lambda x: (
+                    x["score"],
+                    x["p_hat_result"]
+                    .get("components", {})
+                    .get("market_opportunity", 0.0),
+                ),
+                reverse=True,
             )
         else:
-            # Legacy additive: skill utility only (no feasibility / p_hat)
-            t_s = time.perf_counter()
-            skill = scorer_skill.calculate_score(user, item)
-            sum_leg_s += _ms(t_s)
-            t_d = time.perf_counter()
-            demand = _demand_scorer.calculate_score(item)
-            sum_leg_d += _ms(t_d)
+            recommendations.sort(key=lambda x: x["score"], reverse=True)
 
-            w1 = GLOBAL_WEIGHTS["w1_skills"]
-            w2 = GLOBAL_WEIGHTS["w2_preference"]
-            w3 = GLOBAL_WEIGHTS["w3_market"]
-
-            if not demand.get("present", False):
-                # Demand absent — redistribute its weight to skills + prefs
-                remaining = w1 + w2
-                if remaining > 0:
-                    w1 = w1 / remaining
-                    w2 = w2 / remaining
-                w3 = 0.0
-                demand_score_val = 0.0
-            else:
-                demand_score_val = demand.get("score", 0.5)
-
-            final_score = (
-                w1 * skill.get("U_final", 0.0)
-                + w2 * pref.get("score", 0.0)
-                + w3 * demand_score_val
-            )
-            recommendations.append(
-                {
-                    "item": item,
-                    "score": final_score,
-                    "scoring_mode": scoring_mode,
-                    "u_hat": pref.get("u_hat", 0.5),
-                    "p_hat_result": {
-                        "p_hat": 0.0,
-                        "components": {},
-                        "demand_label": demand.get("label", "Unknown"),
-                    },
-                    "skill_details": skill,
-                    "match_details": skill.get("match_details", {}),
-                    "pref_details": pref.get("details", []),
-                    "pref_details_score": pref.get("score", 0.0),
-                    "demand_score": demand_score_val,
-                    "demand_label": demand.get("label", "Unknown"),
-                }
-            )
-
-    # Sort by final score; use demand as tie-breaker in multiplicative mode
-    if scoring_mode == "multiplicative":
-        recommendations.sort(
-            key=lambda x: (
-                x["score"],
-                x["p_hat_result"].get("components", {}).get("market_opportunity", 0.0),
-            ),
-            reverse=True,
-        )
-    else:
-        recommendations.sort(key=lambda x: x["score"], reverse=True)
-
-    # Keep only top_k so we release large per-item dicts (skill_details, p_hat) for the rest
-    recommendations = recommendations[:top_k]
+        # Keep only top_k so we release large per-item dicts (skill_details, p_hat) for the rest
+        recommendations = recommendations[:top_k]
     total_scoring_ms = _ms(t_score)
 
-    t_fmt = time.perf_counter()
-    # Format based on item type
-    if item_type == "occupation":
-        formatter = _format_occupation
-    elif format_for_dashboard:
-        formatter = _format_opportunity_dashboard_row
-    else:
-        formatter = _format_opportunity
-    out = [formatter(r["item"], i, r) for i, r in enumerate(recommendations, 1)]
+    with observability.stage("formatting", corpus=corpus):
+        t_fmt = time.perf_counter()
+        # Format based on item type
+        if item_type == "occupation":
+            formatter = _format_occupation
+        elif format_for_dashboard:
+            formatter = _format_opportunity_dashboard_row
+        else:
+            formatter = _format_opportunity
+        out = [formatter(r["item"], i, r) for i, r in enumerate(recommendations, 1)]
     format_recommendations_ms = _ms(t_fmt)
 
     timing: dict = {
@@ -693,18 +705,19 @@ def match_user_with_data(
     t_occ = _ms(t0)
 
     t0 = time.perf_counter()
-    skill_gaps = analyze_skill_gaps(
-        user,
-        jobs,
-        scorer_skill.engine,
-        scorer_skill.skill_labels,
-        top_k=_skill_gap_candidate_pool_k(MATCH_TOP_K_SKILL_GAPS),
-        resolve_id=scorer_skill._resolve_label,
-        timing_out=None,
-    )
-    skill_gaps = _filter_skill_gap_recommendations(
-        skill_gaps, top_k=MATCH_TOP_K_SKILL_GAPS
-    )
+    with observability.stage("skill_gaps"):
+        skill_gaps = analyze_skill_gaps(
+            user,
+            jobs,
+            scorer_skill.engine,
+            scorer_skill.skill_labels,
+            top_k=_skill_gap_candidate_pool_k(MATCH_TOP_K_SKILL_GAPS),
+            resolve_id=scorer_skill._resolve_label,
+            timing_out=None,
+        )
+        skill_gaps = _filter_skill_gap_recommendations(
+            skill_gaps, top_k=MATCH_TOP_K_SKILL_GAPS
+        )
     t_gaps = _ms(t0)
 
     total_ms = _ms(t_total)

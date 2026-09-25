@@ -25,13 +25,24 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 from dotenv import load_dotenv
+
+from app.observability import (
+    get_tracing_config,
+    note_embedding_call,
+    report_usage,
+    traced_observation,
+    update_observation,
+)
+from app.observability.tracing import error_label
 
 MODEL_NAME = "gemini-embedding-001"
 EMBEDDING_DIM = 3072
@@ -41,6 +52,9 @@ GEMINI_EMBED_API_MAX_BATCH = 100
 DEFAULT_BATCH_SIZE = 100
 DEFAULT_SLEEP_S = 0.12
 MAX_RETRIES = 5
+# Traced calls only: how long to wait, once embed_content has returned, for the parallel
+# count_tokens call (see _start_token_count) before giving up on usage for that call.
+TOKEN_COUNT_WAIT_S = 0.2
 
 
 def _backend_root() -> Path:
@@ -87,6 +101,61 @@ def _npz_job_key_from_row(
     return jid
 
 
+_token_count_pool: Optional[ThreadPoolExecutor] = None
+_token_count_pool_lock = threading.Lock()
+
+
+def _start_token_count(
+    client: Any, model: str, texts: Sequence[str]
+) -> Optional[Future]:
+    """Count the input tokens alongside the embed call, for the trace's usage (and so its cost).
+
+    The Gemini Developer API's ``embed_content`` reports no token counts (only Vertex fills
+    ``statistics.token_count``), and Langfuse prices an embedding from its usage. Running
+    ``count_tokens`` concurrently keeps it off the request's critical path.
+    """
+    global _token_count_pool
+    try:
+        if _token_count_pool is None:
+            with _token_count_pool_lock:
+                if _token_count_pool is None:
+                    _token_count_pool = ThreadPoolExecutor(
+                        max_workers=4, thread_name_prefix="gemini-count-tokens"
+                    )
+        return _token_count_pool.submit(
+            client.models.count_tokens, model=model, contents=list(texts)
+        )
+    except Exception:
+        return None
+
+
+def _embedding_usage(
+    result: Any, token_count: Optional[Future]
+) -> Tuple[Optional[Dict[str, int]], str]:
+    """Input tokens for one call and where they came from; never an invented count.
+
+    Prefers the per-vector ``statistics.token_count`` (Vertex), else the parallel
+    ``count_tokens`` result if it is ready in time, else no usage.
+    """
+    total = 0
+    seen = False
+    for emb in getattr(result, "embeddings", None) or []:
+        count = getattr(getattr(emb, "statistics", None), "token_count", None)
+        if isinstance(count, (int, float)) and not isinstance(count, bool):
+            total += int(count)
+            seen = True
+    if seen:
+        return {"input": total, "total": total}, "embed_content"
+    if token_count is not None:
+        try:
+            counted = token_count.result(timeout=TOKEN_COUNT_WAIT_S).total_tokens
+            if isinstance(counted, int) and counted >= 0:
+                return {"input": counted, "total": counted}, "count_tokens"
+        except Exception:
+            token_count.cancel()
+    return None, "unavailable"
+
+
 def _embed_chunk(
     client: Any,
     texts: Sequence[str],
@@ -95,38 +164,116 @@ def _embed_chunk(
     embedding_dim: int,
     task_type: str,
 ) -> np.ndarray:
+    """One ``embed_content`` request (with retries), recorded as a Langfuse embedding when the
+    request is traced."""
     from google.genai import types as genai_types
 
     payload = list(texts)
     last_err: Optional[BaseException] = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            result = client.models.embed_content(
-                model=model,
-                contents=payload,
-                config=genai_types.EmbedContentConfig(
-                    task_type=task_type,
-                    output_dimensionality=embedding_dim,
-                ),
-            )
-            rows = []
-            for emb in result.embeddings:
-                rows.append(np.asarray(emb.values, dtype=np.float32))
-            return np.stack(rows, axis=0)
-        except Exception as e:
-            last_err = e
-            if attempt == MAX_RETRIES - 1:
-                break
-            wait = 2**attempt
-            detail = str(e).strip() or repr(e)
-            if len(detail) > 280:
-                detail = detail[:277] + "…"
-            print(
-                f"    batch embed attempt {attempt + 1}/{MAX_RETRIES} failed "
-                f"({type(e).__name__}): {detail}; sleep {wait}s",
-                file=sys.stderr,
-            )
-            time.sleep(wait)
+    attempt_ms: List[float] = []
+    errors: List[str] = []
+    with traced_observation(
+        name="embed_content",
+        as_type="embedding",
+        # The text is the jobseeker's skill profile: exported only when a deployment opts in.
+        input=payload if get_tracing_config().record_embedding_input else None,
+        model=model,
+        model_parameters={
+            "task_type": task_type,
+            "output_dimensionality": embedding_dim,
+        },
+        metadata={
+            "provider": "gemini",
+            "texts": len(payload),
+            "input_characters": sum(len(t) for t in payload),
+        },
+    ) as observation:
+        token_count = (
+            _start_token_count(client, model, payload)
+            if observation is not None
+            else None
+        )
+        for attempt in range(MAX_RETRIES):
+            t_attempt = time.perf_counter()
+            try:
+                result = client.models.embed_content(
+                    model=model,
+                    contents=payload,
+                    config=genai_types.EmbedContentConfig(
+                        task_type=task_type,
+                        output_dimensionality=embedding_dim,
+                    ),
+                )
+                rows = []
+                for emb in result.embeddings:
+                    rows.append(np.asarray(emb.values, dtype=np.float32))
+                mat = np.stack(rows, axis=0)
+                attempt_ms.append(round((time.perf_counter() - t_attempt) * 1000.0, 2))
+                usage, usage_source = (
+                    _embedding_usage(result, token_count)
+                    if observation is not None
+                    else (None, "unavailable")
+                )
+                # The vectors themselves are not exported: 3072 floats per text is ingest
+                # cost with nothing to read. Their count and shape are what a trace needs.
+                update_observation(
+                    observation,
+                    output={"vectors": int(mat.shape[0]), "dim": int(mat.shape[1])},
+                    metadata={
+                        "attempts": attempt + 1,
+                        "retries": attempt,
+                        "failed": False,
+                        "attempt_ms": attempt_ms,
+                        "errors": errors,
+                        "usage_source": usage_source,
+                    },
+                    **(
+                        {
+                            "level": "WARNING",
+                            "status_message": f"succeeded after {attempt} retries",
+                        }
+                        if attempt
+                        else {}
+                    ),
+                )
+                report_usage(usage)
+                note_embedding_call(
+                    retries=attempt,
+                    failed=False,
+                    tokens=usage["input"] if usage else None,
+                )
+                return mat
+            except Exception as e:
+                attempt_ms.append(round((time.perf_counter() - t_attempt) * 1000.0, 2))
+                errors.append(error_label(e))
+                last_err = e
+                if attempt == MAX_RETRIES - 1:
+                    break
+                wait = 2**attempt
+                detail = str(e).strip() or repr(e)
+                if len(detail) > 280:
+                    detail = detail[:277] + "…"
+                print(
+                    f"    batch embed attempt {attempt + 1}/{MAX_RETRIES} failed "
+                    f"({type(e).__name__}): {detail}; sleep {wait}s",
+                    file=sys.stderr,
+                )
+                time.sleep(wait)
+        if token_count is not None:
+            token_count.cancel()
+        update_observation(
+            observation,
+            level="ERROR",
+            status_message=error_label(last_err),
+            metadata={
+                "attempts": MAX_RETRIES,
+                "retries": MAX_RETRIES - 1,
+                "failed": True,
+                "attempt_ms": attempt_ms,
+                "errors": errors,
+            },
+        )
+        note_embedding_call(retries=MAX_RETRIES - 1, failed=True, tokens=None)
     raise RuntimeError(
         f"Gemini embed_content failed after {MAX_RETRIES} attempts: {last_err}"
     )
