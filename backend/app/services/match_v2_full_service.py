@@ -21,6 +21,7 @@ import logging
 import random
 from typing import Any, Dict, List
 
+from app import observability
 from app.config import (
     MATCH_TOP_K_SKILL_GAPS,
     MATCH_V4_TOP_K_OCCUPATIONS,
@@ -132,21 +133,33 @@ def run_match_v2_full(
     # Opportunities — v2 hybrid over the active job corpus (engine + education gate unchanged).
     opp_by_uid: Dict[str, List[Dict[str, Any]]] = {}
     if jobs:
-        opp_env = hybrid_match_users_with_jobs(
-            users, jobs, col_display_k=fusion_top_k, alpha_on_cosine=alpha_on_cosine
-        )
-        opp_by_uid = _fused_rows(opp_env)
+        with observability.stage(
+            "shortlist", corpus="jobs", engine="bm25_cosine_hybrid", n_users=len(users)
+        ):
+            opp_env = hybrid_match_users_with_jobs(
+                users, jobs, col_display_k=fusion_top_k, alpha_on_cosine=alpha_on_cosine
+            )
+            opp_by_uid = _fused_rows(opp_env)
 
     # Occupations — SAME hybrid engine over the occupation corpus. Score wide, then apply the v4
     # county filter / fallback / dedupe-by-code so ~top_k distinct occupation codes survive.
     occ_by_uid: Dict[str, List[Dict[str, Any]]] = {}
     if occupations:
         occ_breadth = max(fusion_top_k, MATCH_V4_TOP_K_OCCUPATIONS * 8)
-        occ_items = [_occ_to_hybrid_item(o) for o in occupations]
-        occ_env = hybrid_match_users_with_jobs(
-            users, occ_items, col_display_k=occ_breadth, alpha_on_cosine=alpha_on_cosine
-        )
-        occ_by_uid = _fused_rows(occ_env)
+        with observability.stage(
+            "shortlist",
+            corpus="occupations",
+            engine="bm25_cosine_hybrid",
+            n_users=len(users),
+        ):
+            occ_items = [_occ_to_hybrid_item(o) for o in occupations]
+            occ_env = hybrid_match_users_with_jobs(
+                users,
+                occ_items,
+                col_display_k=occ_breadth,
+                alpha_on_cosine=alpha_on_cosine,
+            )
+            occ_by_uid = _fused_rows(occ_env)
 
     occ_counties = sorted(
         {str(o.get("province")) for o in occupations if o.get("province")}
@@ -157,76 +170,83 @@ def run_match_v2_full(
         uid = str(user.get("user_id") or "")
 
         opportunities: List[Dict[str, Any]] = []
-        for row in opp_by_uid.get(uid, []):
-            item = job_index.get(str(row.get("job_uuid") or ""))
-            if not item:
-                continue
-            if not _job_matches_user_location(item, user):
-                continue  # strict same-location: urban-pull pool broadening is v4-only
-            per, ess_ids = _skill_detail(matcher, user, item)
-            opportunities.append(
-                fmt.build_opportunity_row(
-                    _v2_rec(row),
-                    item,
-                    per,
-                    ess_ids,
-                    rank=len(opportunities) + 1,
-                    sim_threshold=V4_FULL_SIM_THRESHOLD,
-                    min_ess_share=V4_FULL_MIN_ESS_SHARE,
+        with observability.stage("formatting", corpus="jobs"):
+            for row in opp_by_uid.get(uid, []):
+                item = job_index.get(str(row.get("job_uuid") or ""))
+                if not item:
+                    continue
+                if not _job_matches_user_location(item, user):
+                    continue  # strict same-location: urban-pull pool broadening is v4-only
+                per, ess_ids = _skill_detail(matcher, user, item)
+                opportunities.append(
+                    fmt.build_opportunity_row(
+                        _v2_rec(row),
+                        item,
+                        per,
+                        ess_ids,
+                        rank=len(opportunities) + 1,
+                        sim_threshold=V4_FULL_SIM_THRESHOLD,
+                        min_ess_share=V4_FULL_MIN_ESS_SHARE,
+                    )
                 )
-            )
 
         # Occupation county scoping (mirrors /match_v4): keep the user's own county row per code;
         # if the user's province matches no occupation county, fall back to a random available one
         # (location only — the user still drives skill matching).
-        loc_user = None
-        if occ_counties and not _user_matches_any_county(user, occ_counties):
-            fallback = random.choice(occ_counties)
-            loc_user = {"city": fallback, "province": fallback, "location": fallback}
-            logger.warning(
-                "User %r province=%r matches no occupation county %s; using random fallback county %r.",
-                uid,
-                user.get("province"),
-                occ_counties,
-                fallback,
-            )
-        loc = loc_user or user
-
         occupations_out: List[Dict[str, Any]] = []
-        seen_codes: set = set()
-        for row in occ_by_uid.get(uid, []):
-            item = occ_index.get(str(row.get("job_uuid") or ""))
-            if not item:
-                continue
-            if not _job_matches_user_location(item, loc):
-                continue
-            code = str(item.get("originUuid") or item.get("uuid") or "")
-            if not code or code in seen_codes:
-                continue
-            seen_codes.add(code)
-            per, ess_ids = _skill_detail(matcher, user, item)
-            occupations_out.append(
-                fmt.build_occupation_row(
-                    _v2_rec(row),
-                    item,
-                    per,
-                    ess_ids,
-                    rank=len(occupations_out) + 1,
-                    sim_threshold=V4_FULL_SIM_THRESHOLD,
-                    min_ess_share=V4_FULL_MIN_ESS_SHARE,
+        with observability.stage("formatting", corpus="occupations"):
+            loc_user = None
+            if occ_counties and not _user_matches_any_county(user, occ_counties):
+                fallback = random.choice(occ_counties)
+                loc_user = {
+                    "city": fallback,
+                    "province": fallback,
+                    "location": fallback,
+                }
+                logger.warning(
+                    "User %r province=%r matches no occupation county %s; using random fallback county %r.",
+                    uid,
+                    user.get("province"),
+                    occ_counties,
+                    fallback,
                 )
-            )
-            if len(occupations_out) >= MATCH_V4_TOP_K_OCCUPATIONS:
-                break
+            loc = loc_user or user
+
+            seen_codes: set = set()
+            for row in occ_by_uid.get(uid, []):
+                item = occ_index.get(str(row.get("job_uuid") or ""))
+                if not item:
+                    continue
+                if not _job_matches_user_location(item, loc):
+                    continue
+                code = str(item.get("originUuid") or item.get("uuid") or "")
+                if not code or code in seen_codes:
+                    continue
+                seen_codes.add(code)
+                per, ess_ids = _skill_detail(matcher, user, item)
+                occupations_out.append(
+                    fmt.build_occupation_row(
+                        _v2_rec(row),
+                        item,
+                        per,
+                        ess_ids,
+                        rank=len(occupations_out) + 1,
+                        sim_threshold=V4_FULL_SIM_THRESHOLD,
+                        min_ess_share=V4_FULL_MIN_ESS_SHARE,
+                    )
+                )
+                if len(occupations_out) >= MATCH_V4_TOP_K_OCCUPATIONS:
+                    break
+
+        with observability.stage("skill_gaps"):
+            skill_gaps = _skill_gaps_for(user, jobs, skill_gap_top_k)
 
         out.append(
             {
                 "user_id": uid,
                 "occupation_recommendations": occupations_out,
                 "opportunity_recommendations": opportunities,
-                "skill_gap_recommendations": _skill_gaps_for(
-                    user, jobs, skill_gap_top_k
-                ),
+                "skill_gap_recommendations": skill_gaps,
             }
         )
 

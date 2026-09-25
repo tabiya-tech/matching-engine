@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from app import observability
 from app.config import (
     CROSS_ENCODER_BATCH_SIZE,
     V4_FULL_CONCAT_WHITENING_PATH,
@@ -198,7 +199,9 @@ def preload_match_v3_models() -> Dict[str, float]:
         try:
             import hashlib
 
-            _sha = hashlib.sha256(open(V4_FULL_CONCAT_WHITENING_PATH, "rb").read()).hexdigest()
+            _sha = hashlib.sha256(
+                open(V4_FULL_CONCAT_WHITENING_PATH, "rb").read()
+            ).hexdigest()
             logger.info(
                 "concat whitening artifact: path=%s sha256=%s target=%.6f (must match DB job whitening)",
                 V4_FULL_CONCAT_WHITENING_PATH,
@@ -278,14 +281,17 @@ def embed_user_unit_vectors(users: List[Dict[str, Any]]) -> np.ndarray:
         raise ValueError(
             "GEMINI_API_KEY is not set (required for user concat embeddings)"
         )
-    texts = []
-    for u in users:
-        t = user_concat_embedding_text(u).strip()
-        texts.append(t if t else " ")
-    u_emb = embed_text_list(texts, api_key=api_key, batch_size=100, sleep_s=0.12)
-    if u_emb.shape[0] != len(users):
-        raise RuntimeError("Gemini embed returned unexpected row count")
-    return l2_normalize_rows(u_emb.astype(np.float32)).astype(np.float64)
+    with observability.stage(
+        "embedding", n_users=len(users), model=GEMINI_EMBEDDING_MODEL_NAME
+    ):
+        texts = []
+        for u in users:
+            t = user_concat_embedding_text(u).strip()
+            texts.append(t if t else " ")
+        u_emb = embed_text_list(texts, api_key=api_key, batch_size=100, sleep_s=0.12)
+        if u_emb.shape[0] != len(users):
+            raise RuntimeError("Gemini embed returned unexpected row count")
+        return l2_normalize_rows(u_emb.astype(np.float32)).astype(np.float64)
 
 
 def run_match_concat_gemini_ce(
@@ -297,11 +303,13 @@ def run_match_concat_gemini_ce(
     mongo_timing: Optional[Dict[str, Any]] = None,
     user_unit_vectors: Optional[np.ndarray] = None,
     apply_location_tier: bool = False,
+    corpus: str = "jobs",
 ) -> List[Dict[str, Any]]:
     """Return one result dict per user (keys align with ``MatchConcatGeminiCeResponse``).
 
     ``user_unit_vectors`` (optional) supplies precomputed, L2-normalised user embeddings so the
     caller can embed users once and reuse them across corpora; if omitted they are embedded here.
+    ``corpus`` only labels the ``shortlist`` / ``rerank`` trace spans (``jobs`` / ``occupations``).
 
     The language is the deployment's (``TARGET_LANGUAGE``); it selects the cross-encoder
     checkpoint for the stage-2 rerank, whose passages are skill-label text. Stage-1 retrieval is
@@ -314,222 +322,239 @@ def run_match_concat_gemini_ce(
     rt = max(1, int(retrieve_top_k))
     fk = max(1, int(final_top_k))
 
-    job_rows: List[Dict[str, Any]] = []
-    vectors: List[np.ndarray] = []
-    for j in jobs:
-        v = _job_stage1_embedding_vector(j)
-        if v is None:
-            continue
-        job_rows.append(j)
-        vectors.append(v)
+    with observability.stage("shortlist", corpus=corpus, n_users=len(users)) as sl:
+        job_rows: List[Dict[str, Any]] = []
+        vectors: List[np.ndarray] = []
+        for j in jobs:
+            v = _job_stage1_embedding_vector(j)
+            if v is None:
+                continue
+            job_rows.append(j)
+            vectors.append(v)
 
-    n_with_emb = len(job_rows)
-    n_active = len(jobs)
+        n_with_emb = len(job_rows)
+        n_active = len(jobs)
 
-    for j in job_rows:
-        j.pop("concat_skill_embedding_gemini", None)
-        j.pop("job_embedding", None)
+        for j in job_rows:
+            j.pop("concat_skill_embedding_gemini", None)
+            j.pop("job_embedding", None)
 
-    # Post-secondary education gate: aligned with job_rows, used to skip candidates per user.
-    job_requires_ps = [job_requires_post_secondary(j) for j in job_rows]
+        # Post-secondary education gate: aligned with job_rows, used to skip candidates per user.
+        job_requires_ps = [job_requires_post_secondary(j) for j in job_rows]
 
-    # Tiered urban-pull (v4 opportunities only): weight each job's stage-1 cosine by the user's
-    # location tier (local=1.0 > regional hub > national hub; off-chain=0) BEFORE the retrieve_top_k
-    # cutoff, so relevant local jobs survive the funnel instead of being drowned by the (much larger)
-    # national-hub supply. Off-chain jobs (tier 0) are skipped at retrieval entirely. Soft: an
-    # irrelevant local job still loses to a much-better hub job.
-    _hub_chains = None
-    _loc_w_reg = _loc_w_nat = 1.0
-    if apply_location_tier:
-        from app.config import (
-            LOCATION_HUB_CHAINS_PATH,
-            LOCATION_TIER_W_NATIONAL,
-            LOCATION_TIER_W_REGIONAL,
-        )
-        from app.services.location_tiers import load_hub_chains
-
-        _hub_chains = load_hub_chains(LOCATION_HUB_CHAINS_PATH)
-        _loc_w_reg, _loc_w_nat = LOCATION_TIER_W_REGIONAL, LOCATION_TIER_W_NATIONAL
-
-    if not job_rows:
-        empty_summary = {
-            "stage1": "concat_gemini_cosine_mongo_job_vectors",
-            "stage2": "cross_encoder_rerank",
-            "gemini_user_embed_model": GEMINI_EMBEDDING_MODEL_NAME,
-            "embedding_dim": EMBEDDING_DIM,
-            "n_jobs_with_stage1_embedding": 0,
-            "n_jobs_with_concat_gemini_embedding": 0,
-            "n_jobs_active_loaded": n_active,
-        }
-        if mongo_timing:
-            empty_summary["mongo_ranked_find_ms"] = mongo_timing.get(
-                "mongo_ranked_find_ms"
+        # Tiered urban-pull (v4 opportunities only): weight each job's stage-1 cosine by the user's
+        # location tier (local=1.0 > regional hub > national hub; off-chain=0) BEFORE the retrieve_top_k
+        # cutoff, so relevant local jobs survive the funnel instead of being drowned by the (much larger)
+        # national-hub supply. Off-chain jobs (tier 0) are skipped at retrieval entirely. Soft: an
+        # irrelevant local job still loses to a much-better hub job.
+        _hub_chains = None
+        _loc_w_reg = _loc_w_nat = 1.0
+        if apply_location_tier:
+            from app.config import (
+                LOCATION_HUB_CHAINS_PATH,
+                LOCATION_TIER_W_NATIONAL,
+                LOCATION_TIER_W_REGIONAL,
             )
-            empty_summary["jobs_retrieval_filter_applied"] = mongo_timing.get(
-                "jobs_retrieval_filter_applied"
-            )
-        return [
-            {
-                "user_id": str(u.get("user_id") or ""),
-                "n_jobs_scored": 0,
+            from app.services.location_tiers import load_hub_chains
+
+            _hub_chains = load_hub_chains(LOCATION_HUB_CHAINS_PATH)
+            _loc_w_reg, _loc_w_nat = LOCATION_TIER_W_REGIONAL, LOCATION_TIER_W_NATIONAL
+
+        if not job_rows:
+            empty_summary = {
+                "stage1": "concat_gemini_cosine_mongo_job_vectors",
+                "stage2": "cross_encoder_rerank",
+                "gemini_user_embed_model": GEMINI_EMBEDDING_MODEL_NAME,
+                "embedding_dim": EMBEDDING_DIM,
+                "n_jobs_with_stage1_embedding": 0,
+                "n_jobs_with_concat_gemini_embedding": 0,
                 "n_jobs_active_loaded": n_active,
-                "concat_gemini_ce_recommendations": [],
-                "config_summary": empty_summary,
             }
-            for u in users
-        ]
+            if mongo_timing:
+                empty_summary["mongo_ranked_find_ms"] = mongo_timing.get(
+                    "mongo_ranked_find_ms"
+                )
+                empty_summary["jobs_retrieval_filter_applied"] = mongo_timing.get(
+                    "jobs_retrieval_filter_applied"
+                )
+            return [
+                {
+                    "user_id": str(u.get("user_id") or ""),
+                    "n_jobs_scored": 0,
+                    "n_jobs_active_loaded": n_active,
+                    "concat_gemini_ce_recommendations": [],
+                    "config_summary": empty_summary,
+                }
+                for u in users
+            ]
 
-    j_mat = np.stack(vectors, axis=0).astype(np.float64)
-    j_norm = l2_normalize_rows(j_mat.astype(np.float32)).astype(np.float64)
-    jid_list = [str(j.get("uuid") or "") for j in job_rows]
+        j_mat = np.stack(vectors, axis=0).astype(np.float64)
+        j_norm = l2_normalize_rows(j_mat.astype(np.float32)).astype(np.float64)
+        jid_list = [str(j.get("uuid") or "") for j in job_rows]
 
-    if user_unit_vectors is not None:
-        u_norm = np.asarray(user_unit_vectors, dtype=np.float64)
-        if (
-            u_norm.ndim != 2
-            or u_norm.shape[0] != len(users)
-            or u_norm.shape[1] != EMBEDDING_DIM
-        ):
-            raise RuntimeError(
-                f"user_unit_vectors shape {u_norm.shape} != ({len(users)}, {EMBEDDING_DIM})"
-            )
-    else:
-        u_norm = embed_user_unit_vectors(users)
+        if user_unit_vectors is not None:
+            u_norm = np.asarray(user_unit_vectors, dtype=np.float64)
+            if (
+                u_norm.ndim != 2
+                or u_norm.shape[0] != len(users)
+                or u_norm.shape[1] != EMBEDDING_DIM
+            ):
+                raise RuntimeError(
+                    f"user_unit_vectors shape {u_norm.shape} != ({len(users)}, {EMBEDDING_DIM})"
+                )
+        else:
+            u_norm = embed_user_unit_vectors(users)
 
-    lang = default_language()
-    matcher = _get_matcher()
-    reranker = _get_reranker()
+        lang = default_language()
+        matcher = _get_matcher()
+        reranker = _get_reranker()
 
-    # Whitened-space stage-1 retrieval. The concat artifact (same one the DB used to whiten
-    # job_embedding) is present in practice, so we rank in the de-anisotropised whitened space (the
-    # meaningful signal; raw concat cosine sd ~0.02). Jobs already whitened on the DB side are used
-    # as-is; RAW vectors (occupations, offline, not-yet-whitened jobs) are whitened in-process once
-    # (numerically identical to the DB result — same artifact). When the artifact is unavailable
-    # (target==0) we fall back to the legacy raw cosine and log loudly (DB-whitened jobs degrade).
-    _whiten_target = concat_rescale_target()
-    if _whiten_target > 0:
-        j_used = j_norm.copy()
-        raw_idx = [k for k, jr in enumerate(job_rows) if not _job_is_prewhitened(jr)]
-        if raw_idx:
-            j_used[raw_idx] = whiten_concat_rows(j_mat[raw_idx])
-        u_used = whiten_concat_rows(u_norm)
-    else:
-        if any(_job_is_prewhitened(jr) for jr in job_rows):
-            logger.error(
-                "concat whitening artifact unavailable but DB job_embedding is whitened; stage-1 "
-                "cosine will be raw-user vs whitened-job (degraded). Ship concat_whitening_gemini.npz."
-            )
-        j_used, u_used = j_norm, u_norm
+        # Whitened-space stage-1 retrieval. The concat artifact (same one the DB used to whiten
+        # job_embedding) is present in practice, so we rank in the de-anisotropised whitened space (the
+        # meaningful signal; raw concat cosine sd ~0.02). Jobs already whitened on the DB side are used
+        # as-is; RAW vectors (occupations, offline, not-yet-whitened jobs) are whitened in-process once
+        # (numerically identical to the DB result — same artifact). When the artifact is unavailable
+        # (target==0) we fall back to the legacy raw cosine and log loudly (DB-whitened jobs degrade).
+        _whiten_target = concat_rescale_target()
+        if _whiten_target > 0:
+            j_used = j_norm.copy()
+            raw_idx = [
+                k for k, jr in enumerate(job_rows) if not _job_is_prewhitened(jr)
+            ]
+            if raw_idx:
+                j_used[raw_idx] = whiten_concat_rows(j_mat[raw_idx])
+            u_used = whiten_concat_rows(u_norm)
+        else:
+            if any(_job_is_prewhitened(jr) for jr in job_rows):
+                logger.error(
+                    "concat whitening artifact unavailable but DB job_embedding is whitened; stage-1 "
+                    "cosine will be raw-user vs whitened-job (degraded). Ship concat_whitening_gemini.npz."
+                )
+            j_used, u_used = j_norm, u_norm
+
+        observability.update_observation(
+            sl,
+            metadata={
+                "n_candidates_with_embedding": n_with_emb,
+                "n_candidates_loaded": n_active,
+            },
+        )
+        shortlists: List[List[Dict[str, Any]]] = []
+        for i, user in enumerate(users):
+            sim_row = (u_used[i : i + 1] @ j_used.T).reshape(-1)
+            # Location-tier weighting of the stage-1 ranking (urban-pull). Rank by cosine * tier so local
+            # jobs are favoured for the shortlist; keep the RAW cosine for the stored similarity downstream.
+            loc_tier_vec = None
+            if _hub_chains is not None:
+                county = user.get("province") or user.get("city") or ""
+                loc_tier_vec = np.array(
+                    [
+                        _hub_chains.tier_factor_for_job(
+                            jr, county, w_regional=_loc_w_reg, w_national=_loc_w_nat
+                        )
+                        for jr in job_rows
+                    ],
+                    dtype=float,
+                )
+                rank_row = sim_row * loc_tier_vec
+            else:
+                rank_row = sim_row
+            order = _sorted_indices_desc(rank_row)
+            user_no_ps = user_lacks_post_secondary(user)
+
+            cosine_recs: List[Dict[str, Any]] = []
+            for ji in order:
+                if user_no_ps and job_requires_ps[int(ji)]:
+                    continue  # job requires post-secondary education the user does not have
+                if loc_tier_vec is not None and loc_tier_vec[int(ji)] <= 0.0:
+                    continue  # off-chain location for this user: excluded at retrieval
+                jid = jid_list[int(ji)]
+                job_obj = job_rows[int(ji)]
+                job_plain = _strip_job_vectors(job_obj)
+                concat_sim = float(sim_row[int(ji)])
+                detail = matcher.score_pair(user, job_plain)
+                detail = dict(detail)
+                detail["concat_cosine_similarity"] = round(concat_sim, 6)
+                detail["mean_best_cosine"] = round(concat_sim, 4)
+                detail["min_best_cosine"] = round(concat_sim, 4)
+
+                cosine_recs.append(
+                    {
+                        "rank": len(cosine_recs) + 1,
+                        "job_uuid": jid,
+                        "job_title": job_plain.get("opportunity_title"),
+                        "employer": job_plain.get("employer"),
+                        "location": job_plain.get("location"),
+                        **detail,
+                    }
+                )
+                if len(cosine_recs) >= rt:
+                    break
+
+            for r_i, row in enumerate(cosine_recs, start=1):
+                row["rank"] = r_i
+
+            shortlists.append(cosine_recs)
 
     out_results: List[Dict[str, Any]] = []
-    for i, user in enumerate(users):
-        sim_row = (u_used[i : i + 1] @ j_used.T).reshape(-1)
-        # Location-tier weighting of the stage-1 ranking (urban-pull). Rank by cosine * tier so local
-        # jobs are favoured for the shortlist; keep the RAW cosine for the stored similarity downstream.
-        loc_tier_vec = None
-        if _hub_chains is not None:
-            county = user.get("province") or user.get("city") or ""
-            loc_tier_vec = np.array(
-                [
-                    _hub_chains.tier_factor_for_job(
-                        jr, county, w_regional=_loc_w_reg, w_national=_loc_w_nat
-                    )
-                    for jr in job_rows
-                ],
-                dtype=float,
-            )
-            rank_row = sim_row * loc_tier_vec
-        else:
-            rank_row = sim_row
-        order = _sorted_indices_desc(rank_row)
-        user_no_ps = user_lacks_post_secondary(user)
-
-        cosine_recs: List[Dict[str, Any]] = []
-        for ji in order:
-            if user_no_ps and job_requires_ps[int(ji)]:
-                continue  # job requires post-secondary education the user does not have
-            if loc_tier_vec is not None and loc_tier_vec[int(ji)] <= 0.0:
-                continue  # off-chain location for this user: excluded at retrieval
-            jid = jid_list[int(ji)]
-            job_obj = job_rows[int(ji)]
-            job_plain = _strip_job_vectors(job_obj)
-            concat_sim = float(sim_row[int(ji)])
-            detail = matcher.score_pair(user, job_plain)
-            detail = dict(detail)
-            detail["concat_cosine_similarity"] = round(concat_sim, 6)
-            detail["mean_best_cosine"] = round(concat_sim, 4)
-            detail["min_best_cosine"] = round(concat_sim, 4)
-
-            cosine_recs.append(
-                {
-                    "rank": len(cosine_recs) + 1,
-                    "job_uuid": jid,
-                    "job_title": job_plain.get("opportunity_title"),
-                    "employer": job_plain.get("employer"),
-                    "location": job_plain.get("location"),
-                    **detail,
-                }
-            )
-            if len(cosine_recs) >= rt:
-                break
-
-        for r_i, row in enumerate(cosine_recs, start=1):
-            row["rank"] = r_i
-
-        labels = user_skill_labels_for_concat(user)
-        reranked = rerank_cosine_recommendations(
-            labels,
-            cosine_recs,
-            reranker=reranker,
-            final_top_k=fk,
-        )
-
-        recs: List[Dict[str, Any]] = []
-        for row in reranked:
-            recs.append(
-                {
-                    "rank": int(row.get("rank") or 0),
-                    "rank_cosine": row.get("rank_cosine"),
-                    "job_uuid": str(row.get("job_uuid") or ""),
-                    "opportunity_title": str(row.get("job_title") or "") or "",
-                    "employer": row.get("employer"),
-                    "location": row.get("location"),
-                    "URL": row.get("url") or row.get("URL"),
-                    "concat_cosine_similarity": row.get("concat_cosine_similarity"),
-                    "cross_encoder_logit": row.get("cross_encoder_logit"),
-                    "cross_encoder_score": row.get("cross_encoder_score"),
-                }
+    with observability.stage(
+        "rerank", corpus=corpus, n_users=len(users), model=reranker.model_name
+    ):
+        for user, cosine_recs in zip(users, shortlists):
+            labels = user_skill_labels_for_concat(user)
+            reranked = rerank_cosine_recommendations(
+                labels,
+                cosine_recs,
+                reranker=reranker,
+                final_top_k=fk,
             )
 
-        uid = str(user.get("user_id") or "")
-        cfg = {
-            "stage1": "concat_gemini_cosine_mongo_job_vectors",
-            "stage2": "cross_encoder_rerank",
-            "gemini_user_embed_model": GEMINI_EMBEDDING_MODEL_NAME,
-            "cross_encoder_model": reranker.model_name,
-            "language": lang,
-            "embedding_dim": EMBEDDING_DIM,
-            "retrieve_top_k": rt,
-            "final_top_k": fk,
-            "n_jobs_with_stage1_embedding": n_with_emb,
-            # Legacy key — counts jobs with BSON ``vector_bin`` or ``job_embedding`` array (same dim).
-            "n_jobs_with_concat_gemini_embedding": n_with_emb,
-            "n_jobs_active_loaded": n_active,
-        }
-        if mongo_timing:
-            cfg["mongo_ranked_find_ms"] = mongo_timing.get("mongo_ranked_find_ms")
-            cfg["jobs_retrieval_filter_applied"] = mongo_timing.get(
-                "jobs_retrieval_filter_applied"
-            )
+            recs: List[Dict[str, Any]] = []
+            for row in reranked:
+                recs.append(
+                    {
+                        "rank": int(row.get("rank") or 0),
+                        "rank_cosine": row.get("rank_cosine"),
+                        "job_uuid": str(row.get("job_uuid") or ""),
+                        "opportunity_title": str(row.get("job_title") or "") or "",
+                        "employer": row.get("employer"),
+                        "location": row.get("location"),
+                        "URL": row.get("url") or row.get("URL"),
+                        "concat_cosine_similarity": row.get("concat_cosine_similarity"),
+                        "cross_encoder_logit": row.get("cross_encoder_logit"),
+                        "cross_encoder_score": row.get("cross_encoder_score"),
+                    }
+                )
 
-        out_results.append(
-            {
-                "user_id": uid,
-                "n_jobs_scored": n_with_emb,
+            uid = str(user.get("user_id") or "")
+            cfg = {
+                "stage1": "concat_gemini_cosine_mongo_job_vectors",
+                "stage2": "cross_encoder_rerank",
+                "gemini_user_embed_model": GEMINI_EMBEDDING_MODEL_NAME,
+                "cross_encoder_model": reranker.model_name,
+                "language": lang,
+                "embedding_dim": EMBEDDING_DIM,
+                "retrieve_top_k": rt,
+                "final_top_k": fk,
+                "n_jobs_with_stage1_embedding": n_with_emb,
+                # Legacy key — counts jobs with BSON ``vector_bin`` or ``job_embedding`` array (same dim).
+                "n_jobs_with_concat_gemini_embedding": n_with_emb,
                 "n_jobs_active_loaded": n_active,
-                "concat_gemini_ce_recommendations": recs,
-                "config_summary": cfg,
             }
-        )
+            if mongo_timing:
+                cfg["mongo_ranked_find_ms"] = mongo_timing.get("mongo_ranked_find_ms")
+                cfg["jobs_retrieval_filter_applied"] = mongo_timing.get(
+                    "jobs_retrieval_filter_applied"
+                )
+
+            out_results.append(
+                {
+                    "user_id": uid,
+                    "n_jobs_scored": n_with_emb,
+                    "n_jobs_active_loaded": n_active,
+                    "concat_gemini_ce_recommendations": recs,
+                    "config_summary": cfg,
+                }
+            )
 
     return out_results

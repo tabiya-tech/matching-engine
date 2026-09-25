@@ -116,6 +116,13 @@ jobs:
           LOCATION_TIER_W_NATIONAL: ${{ vars.LOCATION_TIER_W_NATIONAL }}
           MATCH_V4_RETRIEVE_TOP_K: ${{ vars.MATCH_V4_RETRIEVE_TOP_K }}
           MATCH_V4_FINAL_TOP_K: ${{ vars.MATCH_V4_FINAL_TOP_K }}
+          # Langfuse tracing of /match* requests. Off unless MATCHING_ENABLE_TRACING=true for the
+          # environment; the Langfuse environment defaults to the stack name.
+          MATCHING_ENABLE_TRACING: ${{ vars.MATCHING_ENABLE_TRACING }}
+          MATCHING_LANGFUSE_HOST: ${{ vars.MATCHING_LANGFUSE_HOST }}
+          MATCHING_TRACING_CONFIG: ${{ vars.MATCHING_TRACING_CONFIG }}
+          MATCHING_LANGFUSE_PUBLIC_KEY: ${{ secrets.MATCHING_LANGFUSE_PUBLIC_KEY }}
+          MATCHING_LANGFUSE_SECRET_KEY: ${{ secrets.MATCHING_LANGFUSE_SECRET_KEY }}
         run: |
           # Use the Poetry-managed virtualenv that holds the Pulumi SDK packages.
           source "$(poetry env info --path)/bin/activate"

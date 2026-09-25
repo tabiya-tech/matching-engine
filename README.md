@@ -153,6 +153,55 @@ Key settings include:
 
 If `MATCH_RESPONSE_SKILL_MIN_SCORE` is not set, it falls back to `GATE_SIMILARITY_THRESHOLD`.
 
+## Request tracing (Langfuse)
+
+Every matching request — `/match`, `/experiments/v2/match`, `/experiments/v3/match`, `/match_v4`,
+`/experiments/v5/match` (and any future `/match_*`) — can be traced to [Langfuse](https://langfuse.com),
+with the same layer the llm-reranker and compass-connect use (`backend/app/observability/`). It is
+**off by default**; a deployment with no Langfuse keys behaves exactly as before.
+
+What one trace holds:
+
+| Observation | What it shows |
+|---|---|
+| root, named after the route | request id, pseudonymous `user_id` (single-user requests; batches list `user_ids`), query params, HTTP status, embedding totals |
+| `retrieval` | Mongo find / build and occupation-cache timings, job and occupation counts |
+| `embedding` → `embed_content` | one Langfuse **embedding** per Gemini call: model, dimensionality, token usage, attempts, retries, per-attempt latency, failure |
+| `shortlist`, `rerank` | stage-1 cosine (or BM25 × cosine for v2) and the cross-encoder, per `corpus` (`jobs` / `occupations`) |
+| `preference_scoring`, `formatting`, `skill_gaps` | u_hat × p_hat scoring, row building, skill-gap analysis |
+
+Stage names are the same on every route, so a Langfuse dashboard of observation latency
+(p50 / p95 / p99) grouped by name gives per-stage percentiles; filter by the `route:<path>` tag for a
+single route and by **environment** for a deployment (IaC sets it to the Pulumi stack).
+
+- **Find a request:** traced responses carry `X-Request-ID` (a client-sent one is echoed) and
+  `X-Trace-ID` — paste the trace id into Langfuse. Or search by the user's id.
+- **Failures and retries:** traces are tagged `error` (5xx / exception), `client_error` (4xx),
+  `embedding_retried` and `embedding_failed`.
+- **Embedding spend:** Langfuse prices each `embed_content` from its token usage and the model's price.
+  Gemini's `embed_content` reports no tokens, so a traced call runs `count_tokens` in parallel with it
+  and waits at most `TOKEN_COUNT_WAIT_S` (0.2 s) after the embedding returns; if the count is not in
+  by then, that call records no usage rather than a guess. If the Langfuse project has no price for `gemini-embedding-001`, add it once under
+  *Settings → Models* (match `gemini-embedding-001`, input price per token); cost then shows per trace
+  and aggregates per environment.
+- **Privacy:** no request or response body is recorded — only counts, timings, error class names,
+  the request id and the pseudonymous user id. The text sent to Gemini (the jobseeker's skills) is
+  exported only with `"recordEmbeddingInput": true`, masked first. Vectors are never exported.
+
+```bash
+MATCHING_ENABLE_TRACING=1
+MATCHING_LANGFUSE_HOST=https://cloud.langfuse.com
+MATCHING_LANGFUSE_PUBLIC_KEY=pk-lf-...
+MATCHING_LANGFUSE_SECRET_KEY=sk-lf-...
+MATCHING_TRACING_ENVIRONMENT=dev          # IaC: defaults to the stack name
+MATCHING_TRACING_CONFIG={"sampleRate": 1.0, "recordEmbeddingInput": false}
+```
+
+In GitHub, set `MATCHING_ENABLE_TRACING` (and optionally `MATCHING_LANGFUSE_HOST`,
+`MATCHING_TRACING_CONFIG`) as environment variables and `MATCHING_LANGFUSE_PUBLIC_KEY` /
+`MATCHING_LANGFUSE_SECRET_KEY` as environment secrets. The stderr timing blocks
+(`app/match_timing_log.py`) are unchanged.
+
 ## Deployment
 
 Cloud Run deployment is supported through:

@@ -21,6 +21,7 @@ import logging
 import random
 from typing import Any, Dict, List
 
+from app import observability
 from app.config import (
     MATCH_TOP_K_SKILL_GAPS,
     MATCH_V4_TOP_K_OCCUPATIONS,
@@ -140,6 +141,7 @@ def run_match_v3_full(
             retrieve_top_k=occ_breadth,
             final_top_k=occ_breadth,
             user_unit_vectors=u_norm,
+            corpus="occupations",
         )
         if occupations
         else []
@@ -157,78 +159,85 @@ def run_match_v3_full(
 
         # Opportunities ranked by concat cosine (whitened space when the artifact is present; the
         # chosen v3 score). _cosine reads concat_cosine_similarity from the stage-1 retrieval.
-        opp_sorted = sorted(job_by_uid.get(uid, []), key=_cosine, reverse=True)
-        opportunities: List[Dict[str, Any]] = []
-        for ce_row in opp_sorted:
-            item = job_index.get(str(ce_row.get("job_uuid") or ""))
-            if not item:
-                continue
-            if not _job_matches_user_location(item, user):
-                continue  # strict same-location: urban-pull pool broadening is v4-only
-            per, ess_ids = _skill_detail(matcher, user, item)
-            opportunities.append(
-                fmt.build_opportunity_row(
-                    _v3_rec(ce_row),
-                    item,
-                    per,
-                    ess_ids,
-                    rank=len(opportunities) + 1,
-                    sim_threshold=V4_FULL_SIM_THRESHOLD,
-                    min_ess_share=V4_FULL_MIN_ESS_SHARE,
+        with observability.stage("formatting", corpus="jobs"):
+            opp_sorted = sorted(job_by_uid.get(uid, []), key=_cosine, reverse=True)
+            opportunities: List[Dict[str, Any]] = []
+            for ce_row in opp_sorted:
+                item = job_index.get(str(ce_row.get("job_uuid") or ""))
+                if not item:
+                    continue
+                if not _job_matches_user_location(item, user):
+                    continue  # strict same-location: urban-pull pool broadening is v4-only
+                per, ess_ids = _skill_detail(matcher, user, item)
+                opportunities.append(
+                    fmt.build_opportunity_row(
+                        _v3_rec(ce_row),
+                        item,
+                        per,
+                        ess_ids,
+                        rank=len(opportunities) + 1,
+                        sim_threshold=V4_FULL_SIM_THRESHOLD,
+                        min_ess_share=V4_FULL_MIN_ESS_SHARE,
+                    )
                 )
-            )
 
         # Occupation county scoping (mirrors /match_v4): keep the user's own county row per code;
         # random fallback county if the user's province matches none.
-        loc_user = None
-        if occ_counties and not _user_matches_any_county(user, occ_counties):
-            fallback = random.choice(occ_counties)
-            loc_user = {"city": fallback, "province": fallback, "location": fallback}
-            logger.warning(
-                "User %r province=%r matches no occupation county %s; using random fallback county %r.",
-                uid,
-                user.get("province"),
-                occ_counties,
-                fallback,
-            )
-        loc = loc_user or user
-
-        occ_sorted = sorted(occ_by_uid.get(uid, []), key=_cosine, reverse=True)
-        occupations_out: List[Dict[str, Any]] = []
-        seen_codes: set = set()
-        for ce_row in occ_sorted:
-            item = occ_index.get(str(ce_row.get("job_uuid") or ""))
-            if not item:
-                continue
-            if not _job_matches_user_location(item, loc):
-                continue
-            code = str(item.get("originUuid") or item.get("uuid") or "")
-            if not code or code in seen_codes:
-                continue
-            seen_codes.add(code)
-            per, ess_ids = _skill_detail(matcher, user, item)
-            occupations_out.append(
-                fmt.build_occupation_row(
-                    _v3_rec(ce_row),
-                    item,
-                    per,
-                    ess_ids,
-                    rank=len(occupations_out) + 1,
-                    sim_threshold=V4_FULL_SIM_THRESHOLD,
-                    min_ess_share=V4_FULL_MIN_ESS_SHARE,
+        with observability.stage("formatting", corpus="occupations"):
+            loc_user = None
+            if occ_counties and not _user_matches_any_county(user, occ_counties):
+                fallback = random.choice(occ_counties)
+                loc_user = {
+                    "city": fallback,
+                    "province": fallback,
+                    "location": fallback,
+                }
+                logger.warning(
+                    "User %r province=%r matches no occupation county %s; using random fallback county %r.",
+                    uid,
+                    user.get("province"),
+                    occ_counties,
+                    fallback,
                 )
-            )
-            if len(occupations_out) >= MATCH_V4_TOP_K_OCCUPATIONS:
-                break
+            loc = loc_user or user
+
+            occ_sorted = sorted(occ_by_uid.get(uid, []), key=_cosine, reverse=True)
+            occupations_out: List[Dict[str, Any]] = []
+            seen_codes: set = set()
+            for ce_row in occ_sorted:
+                item = occ_index.get(str(ce_row.get("job_uuid") or ""))
+                if not item:
+                    continue
+                if not _job_matches_user_location(item, loc):
+                    continue
+                code = str(item.get("originUuid") or item.get("uuid") or "")
+                if not code or code in seen_codes:
+                    continue
+                seen_codes.add(code)
+                per, ess_ids = _skill_detail(matcher, user, item)
+                occupations_out.append(
+                    fmt.build_occupation_row(
+                        _v3_rec(ce_row),
+                        item,
+                        per,
+                        ess_ids,
+                        rank=len(occupations_out) + 1,
+                        sim_threshold=V4_FULL_SIM_THRESHOLD,
+                        min_ess_share=V4_FULL_MIN_ESS_SHARE,
+                    )
+                )
+                if len(occupations_out) >= MATCH_V4_TOP_K_OCCUPATIONS:
+                    break
+
+        with observability.stage("skill_gaps"):
+            skill_gaps = _skill_gaps_for(user, jobs, skill_gap_top_k)
 
         out.append(
             {
                 "user_id": uid,
                 "occupation_recommendations": occupations_out,
                 "opportunity_recommendations": opportunities,
-                "skill_gap_recommendations": _skill_gaps_for(
-                    user, jobs, skill_gap_top_k
-                ),
+                "skill_gap_recommendations": skill_gaps,
             }
         )
 
