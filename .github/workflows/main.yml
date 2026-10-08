@@ -1,0 +1,14 @@
+name: Main CI
+on:
+  push:
+    branches:
+      - '**'  # Runs on push to any branch
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-ci:
+    uses: ./.github/workflows/backend-ci.yml
+    secrets: inherit
