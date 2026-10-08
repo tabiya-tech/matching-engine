@@ -339,10 +339,10 @@ class TestCrossEncoderPerLanguage:
         assert config.cross_encoder_model_name("es") == "some-org/custom-es-reranker"
 
     def test_reranker_reports_its_language_without_loading_weights(self):
-        from app.services.cross_encoder.reranker import CrossEncoderReranker
+        from app.clients.cross_encoder_client import CrossEncoderClient
 
         # Construction must not download a checkpoint — the model is lazy.
-        rr = CrossEncoderReranker(language="AR-es")
+        rr = CrossEncoderClient(language="AR-es")
         assert rr.language == "es"
         assert rr.model_name == config.cross_encoder_model_name("es")
         assert rr._model is None
@@ -356,9 +356,9 @@ class TestCrossEncoderPerLanguage:
     )
     def test_vendored_lookup_matches_the_setup_sh_layout(self, language, checkpoint):
         # setup.sh writes resources/models/cross-encoder/<repo-name>/ per language.
-        from app.services.cross_encoder.reranker import CrossEncoderReranker
+        from app.clients.cross_encoder_client import CrossEncoderClient
 
-        dirs = CrossEncoderReranker(language=language)._vendored_model_dirs()
+        dirs = CrossEncoderClient(language=language)._vendored_model_dirs()
         assert any(
             d.name == checkpoint and d.parent.name == "cross-encoder" for d in dirs
         ), dirs
@@ -366,30 +366,30 @@ class TestCrossEncoderPerLanguage:
     def test_a_non_canonical_language_never_falls_back_to_the_flat_dir(self):
         # The flat resources/models/cross-encoder/ held the English checkpoint before the
         # language split; Spanish must not pick it up (nor its parent).
-        from app.services.cross_encoder.reranker import CrossEncoderReranker
+        from app.clients.cross_encoder_client import CrossEncoderClient
 
-        dirs = CrossEncoderReranker(language="es")._vendored_model_dirs()
+        dirs = CrossEncoderClient(language="es")._vendored_model_dirs()
         assert all(d.name != "cross-encoder" for d in dirs), dirs
 
     def test_the_shared_parent_directory_is_not_treated_as_a_checkpoint(self, tmp_path):
-        from app.services.cross_encoder.reranker import CrossEncoderReranker
+        from app.clients.cross_encoder_client import CrossEncoderClient
 
         parent = tmp_path / "cross-encoder"
         (parent / "ms-marco-MiniLM-L-6-v2").mkdir(parents=True)
         (parent / "ms-marco-MiniLM-L-6-v2" / "config.json").write_text("{}")
 
-        assert not CrossEncoderReranker._is_checkpoint_dir(parent)
-        assert CrossEncoderReranker._is_checkpoint_dir(
+        assert not CrossEncoderClient._is_checkpoint_dir(parent)
+        assert CrossEncoderClient._is_checkpoint_dir(
             parent / "ms-marco-MiniLM-L-6-v2"
         )
 
     def test_a_custom_org_checkpoint_is_looked_up_by_repo_name(self, monkeypatch):
         from app import languages
-        from app.services.cross_encoder.reranker import CrossEncoderReranker
+        from app.clients.cross_encoder_client import CrossEncoderClient
 
         monkeypatch.setenv("CROSS_ENCODER_MODEL_NAME_ES", "some-org/custom-es-reranker")
         languages.get_language_config.cache_clear()
-        dirs = CrossEncoderReranker(language="es")._vendored_model_dirs()
+        dirs = CrossEncoderClient(language="es")._vendored_model_dirs()
         assert any(
             d.name == "custom-es-reranker" and d.parent.name == "cross-encoder"
             for d in dirs
