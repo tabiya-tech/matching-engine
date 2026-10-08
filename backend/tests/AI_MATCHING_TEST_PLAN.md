@@ -90,10 +90,10 @@ backend/tests/
 ├── integration/                       # NEW — mocked embeddings (deterministic AI pipeline)
 │   ├── test_match_v4_mocked_embeddings.py
 │   └── test_match_legacy_fixtures.py
-├── sanity_checks/
-│   └── ml_logic_check.py              # runs ml_logic/ + components/ + integration/
 └── AI_MATCHING_TEST_PLAN.md           # this file
 ```
+
+Run via `python -m pytest tests/ml_logic/ tests/components/ tests/integration/`.
 
 ---
 
@@ -203,7 +203,7 @@ Powerful but adds dependency and complexity. Revisit if hand-written invariants 
 
 **Total:** ~3–4 days for Phases 1–4.
 
-After Phase 1–3, wire into `run_all_checks.py` as a 7th check: **Behavior Check**.
+After Phase 1–3, wire into the standard pytest run as a 7th check: **Behavior Check**.
 
 ---
 
@@ -258,6 +258,6 @@ Before implementation, confirm:
 - [ ] Approve Phase 4 corpus audit (Mongo script)  
 - [ ] **Skills-only rule (§4c):** should `final_score = p_hat` when no preferences sent? (likely needs small code change)  
 - [ ] Defer Phase 5 (MRR) until labeled relevance JSON exists  
-- [ ] Add 7th check to `run_all_checks.py` after Phase 1–3  
+- [ ] Add Behavior Check to the standard pytest run after Phase 1–3  
 
 **Reply “go ahead” (and §4c decision) to start implementation in `backend/tests/`.**
