@@ -49,8 +49,6 @@ api_key_auth = APIKeyHeader(
 )
 
 router = APIRouter(dependencies=[Depends(api_key_auth)])
-# Public: /experiments/v2/match (BM25×cosine), /experiments/v3/match (Gemini+CE), /match_v4 (Gemini+CE+preference final).
-router_public = APIRouter()
 logger = logging.getLogger(__name__)
 
 
@@ -152,7 +150,7 @@ class Health(BaseModel):
     status: str
 
 
-# Swagger default for Kenya / post-secondary endpoints (/match, /match_v2, /match_v3, /match_v4).
+# Swagger default request body for POST /match (Kenya, post-secondary user).
 _MATCH_BODY_EXAMPLE: List[Dict[str, Any]] = [
     {
         "user_id": "u1",
@@ -170,10 +168,10 @@ _MATCH_BODY_EXAMPLE: List[Dict[str, Any]] = [
         },
         "skill_groups_origin_uuids": [],
         "preference_vector": {
-            "earnings_per_month": 0,
-            "physical_demand": 0,
-            "social_interaction": 0,
-            "career_growth": 0,
+            "earnings_per_month": 0.7,
+            "physical_demand": 0.4,
+            "social_interaction": 0.6,
+            "career_growth": 0.8,
         },
     }
 ]
@@ -343,27 +341,8 @@ async def jobs_stats() -> JobsStats:
         )
 
 
-@router.post(
-    "/match",
-    tags=["matching"],
-    operation_id="match",
-    response_model=List[MatchResponse],
-    responses={
-        400: {
-            "description": "Bad Request - invalid payload content",
-            "content": {
-                "application/json": {"example": {"detail": "user must include user_id"}}
-            },
-        },
-        500: {
-            "description": "Internal Server Error",
-            "content": {
-                "application/json": {"example": {"detail": "Internal server error"}}
-            },
-        },
-    },
-)
-async def match(
+# Retired: not registered on any router; v4 (``match`` below) serves POST /match.
+async def match_legacy(
     payload: Annotated[
         List[MatchRequest],
         Body(..., description=_MATCH_BODY_DESCRIPTION, example=_MATCH_BODY_EXAMPLE),
@@ -419,16 +398,7 @@ async def match(
         )
 
 
-@router_public.post(
-    "/experiments/v2/match",
-    tags=["experiments"],
-    operation_id="match_v2",
-    response_model=List[MatchResponse],
-    responses={
-        400: {"description": "Bad Request"},
-        500: {"description": "Internal Server Error"},
-    },
-)
+# Retired: not registered on any router; v4 (``match`` below) serves POST /match.
 async def match_v2(
     payload: Annotated[
         List[MatchRequest],
@@ -565,16 +535,7 @@ async def match_v2(
         )
 
 
-@router_public.post(
-    "/experiments/v3/match",
-    tags=["experiments"],
-    operation_id="match_v3",
-    response_model=List[MatchResponse],
-    responses={
-        400: {"description": "Bad Request"},
-        500: {"description": "Internal Server Error"},
-    },
-)
+# Retired: not registered on any router; v4 (``match`` below) serves POST /match.
 async def match_v3(
     payload: Annotated[
         List[MatchRequest],
@@ -701,25 +662,37 @@ async def match_v3(
         ) from e
 
 
-@router_public.post(
-    "/match_v4",
+def _error(description: str, detail: str) -> Dict[str, Any]:
+    return {
+        "description": description,
+        "content": {"application/json": {"example": {"detail": detail}}},
+    }
+
+
+@router.post(
+    "/match",
     tags=["matching"],
-    operation_id="match_v4",
+    operation_id="match",
+    summary="Match users to occupations, job opportunities and skill gaps",
     response_model=List[MatchResponse],
     responses={
-        400: {"description": "Bad Request"},
-        500: {"description": "Internal Server Error"},
+        400: _error(
+            "Bad Request: empty body, too many users, invalid "
+            "``final_score_combiner``, or an input the engine rejects.",
+            "Request body must be a non-empty JSON array.",
+        ),
+        403: _error("Forbidden: missing ``x-api-key`` header.", "Not authenticated"),
+        500: _error("Internal Server Error.", "Internal server error: RuntimeError"),
     },
 )
-async def match_v4(
+async def match(
     payload: Annotated[
         List[MatchRequest],
         Body(
             ...,
             description=(
                 _MATCH_BODY_DESCRIPTION
-                + " Preference scoring uses ``PREFERENCE_SCORER_MODE`` "
-                "(default ``unified``: DCE attributes + BWS)."
+                + f" At most {MATCH_V2_MAX_USERS_PER_REQUEST} users per request."
             ),
             example=_MATCH_BODY_EXAMPLE,
         ),
@@ -729,40 +702,45 @@ async def match_v4(
         ge=1,
         le=500,
         description=(
-            "Stage-1 concat cosine shortlist size. "
-            f"Default: COSINE_CROSS_ENCODER_RETRIEVE_TOP_K ({COSINE_CROSS_ENCODER_RETRIEVE_TOP_K})."
+            "Stage-1 embedding-cosine shortlist size per user, before cross-encoder rerank. "
+            f"Default: {MATCH_V4_RETRIEVE_TOP_K}."
         ),
     ),
     final_top_k: Optional[int] = Query(
         None,
         ge=1,
         le=200,
-        description="CE pool size and max preference-ranked rows returned. Default: 30.",
+        description=(
+            "Cross-encoder pool size and maximum number of opportunities returned per user. "
+            f"Default: {MATCH_V4_FINAL_TOP_K}."
+        ),
     ),
     final_score_combiner: Optional[str] = Query(
         None,
         description=(
-            "How to combine u_hat and p_hat: ``product`` (u_hat × p_hat) or "
-            "``geometric_mean`` (√(u_hat × p_hat)). Defaults to env FINAL_SCORE_COMBINER."
+            "How ``final_score`` combines ``u_hat`` and ``p_hat``: ``product`` (u_hat × p_hat) or "
+            "``geometric_mean`` (√(u_hat × p_hat)). Defaults to the server's FINAL_SCORE_COMBINER "
+            "(``product`` unless overridden)."
         ),
     ),
     skill_gap_top_k: Optional[int] = Query(
         None,
         ge=1,
         le=50,
-        description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
+        description=f"Number of skill-gap recommendations per user. Default: {MATCH_TOP_K_SKILL_GAPS}.",
     ),
 ):
-    """Full `MatchResponse` (occupations + opportunities + skill-gaps) via the Gemini engine.
+    """Match one or more users to occupations, job opportunities and skill gaps.
 
-    Same JSON body as ``POST /match_v3``. Opportunities **and** occupations are matched with the v4
-    Gemini concat-cosine → cross-encoder → ``u_hat × p_hat`` engine (occupations use precomputed
-    concat embeddings); skill gaps reuse the existing analysis. Returns ``List[MatchResponse]``.
+    Body is a JSON array of ``MatchRequest`` (use length 1 for a single user); the response is a
+    list of ``MatchResponse`` in the same order. Candidates are shortlisted by skill similarity,
+    re-scored by a cross-encoder, and ranked by ``final_score`` (preference utility × success
+    propensity, adjusted for skill coverage and location); each factor is in ``score_breakdown``.
 
-    Does **not** require ``x-api-key``. Uses ``GEMINI_API_KEY`` for user embeddings.
+    Requires the ``x-api-key`` header.
     """
     if DEBUG_MODE:
-        print("matching.v4.request=")
+        print("matching.request=")
         for item in payload:
             print(item.model_dump_json())
     try:
@@ -827,7 +805,7 @@ async def match_v4(
             out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
 
         log_match_step(
-            "http /match_v4",
+            "http /match",
             "request (summary)",
             n_users=len(users),
             n_jobs=len(jobs),
@@ -838,7 +816,7 @@ async def match_v4(
         )
 
         if DEBUG_MODE:
-            print("matching.v4.response=")
+            print("matching.response=")
             for _item in out:
                 print(_item.model_dump_json())
 
@@ -870,16 +848,7 @@ def _zqf_annotation(user_zqf, job_zqf_min):
     return (None, None)
 
 
-@router_public.post(
-    "/experiments/v5/match",
-    tags=["experiments"],
-    operation_id="match_v5_experiment",
-    response_model=List[MatchResponseV5],
-    responses={
-        400: {"description": "Bad Request"},
-        500: {"description": "Internal Server Error"},
-    },
-)
+# Retired: not registered on any router; v4 (``match`` below) serves POST /match.
 async def match_v5(
     payload: Annotated[
         List[MatchRequestV5],

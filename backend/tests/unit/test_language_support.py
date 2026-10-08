@@ -309,10 +309,10 @@ class TestLanguageIsNotPerRequest:
         # A consumer that still sends one is not rejected — the field is simply ignored.
         assert not hasattr(MatchRequest(language="es"), "language")
 
-    def test_match_v4_takes_no_language_query_param(self):
-        from app.routes import match_v4
+    def test_match_takes_no_language_query_param(self):
+        from app.routes import match
 
-        assert "language" not in inspect.signature(match_v4).parameters
+        assert "language" not in inspect.signature(match).parameters
 
     def test_the_engine_takes_no_language_argument(self):
         from app.services.match_concat_gemini_ce_service import (
