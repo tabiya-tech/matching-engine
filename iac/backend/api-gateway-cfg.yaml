@@ -130,7 +130,7 @@ paths:
       security:
         - gcp_api_key: []
     options:
-      description: CORS preflight for /jobs
+      description: CORS preflight for /jobs/stats
       operationId: jobs_stats_options
       responses:
         '200':
@@ -142,26 +142,63 @@ paths:
           request-metric: 1
   '/match':
     post:
-      description: Match one or many users against jobs and occupations.
+      description: >-
+        Match one or many users against job opportunities and occupations, and suggest skill gaps.
+        Body is a JSON array of MatchRequest (one object per user); the response is an array of
+        MatchResponse in the same order. Full field reference in the service's /docs.
       operationId: match
       parameters:
         - name: body
           in: body
           required: true
-          description: User(s) to match. Single object or array of MatchRequest.
+          description: JSON array of MatchRequest (one object per user).
           schema:
-            type: object
-            description: MatchRequest or array of MatchRequest
+            type: array
+            items:
+              type: object
+        - name: retrieve_top_k
+          in: query
+          required: false
+          type: integer
+          minimum: 1
+          maximum: 500
+          description: Stage-1 shortlist size per user before cross-encoder rerank.
+        - name: final_top_k
+          in: query
+          required: false
+          type: integer
+          minimum: 1
+          maximum: 200
+          description: Maximum number of opportunities returned per user.
+        - name: final_score_combiner
+          in: query
+          required: false
+          type: string
+          enum: [product, geometric_mean]
+          description: How final_score combines u_hat and p_hat.
+        - name: skill_gap_top_k
+          in: query
+          required: false
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: Number of skill-gap recommendations per user.
       responses:
         '200':
-          description: Match recommendations
+          description: Array of MatchResponse, one per user
         '400':
-          description: Bad Request - invalid payload
+          description: Bad Request - empty body, too many users, or invalid final_score_combiner
+        '401':
+          description: Unauthorized - missing or invalid API key
+        '403':
+          description: Forbidden - missing x-api-key header
+        '422':
+          description: Unprocessable Entity - request body failed validation
         '429':
           description: Too Many Requests - rate limit exceeded
         '500':
           description: Internal Server Error
-      summary: Match users to opportunities
+      summary: Match users to opportunities, occupations and skill gaps
       tags:
         - Matching
       x-google-quota:
@@ -169,158 +206,9 @@ paths:
           request-metric: 1
       security:
         - gcp_api_key: []
-  '/experiments/v2/match':
-    post:
-      description: Match one or many users against jobs and occupations. 2.0 version.
-      operationId: match_v2
-      parameters:
-        - name: body
-          in: body
-          required: true
-          description: User(s) to match. Single object or array of MatchRequest.
-          schema:
-            type: object
-            description: MatchRequest or array of MatchRequest
-      responses:
-        '200':
-          description: Match recommendations
-        '400':
-          description: Bad Request - invalid payload
-        '429':
-          description: Too Many Requests - rate limit exceeded
-        '500':
-          description: Internal Server Error
-      summary: Match users to opportunities
-      tags:
-        - Matching
-      x-google-quota:
-        metricCosts:
-          request-metric: 1
-      security:
-        - gcp_api_key: [ ]
     options:
       description: CORS preflight for /match
-      operationId: match_options_v2
-      responses:
-        '200':
-          description: Success
-      tags:
-        - Matching
-      x-google-quota:
-        metricCosts:
-          request-metric: 1
-  '/experiments/v3/match':
-    post:
-      description: Match one or many users against jobs and occupations. 3.0 version.
-      operationId: match_v3
-      parameters:
-        - name: body
-          in: body
-          required: true
-          description: User(s) to match. Single object or array of MatchRequest.
-          schema:
-            type: object
-            description: MatchRequest or array of MatchRequest
-      responses:
-        '200':
-          description: Match recommendations
-        '400':
-          description: Bad Request - invalid payload
-        '429':
-          description: Too Many Requests - rate limit exceeded
-        '500':
-          description: Internal Server Error
-      summary: Match users to opportunities
-      tags:
-        - Matching
-      x-google-quota:
-        metricCosts:
-          request-metric: 1
-      security:
-        - gcp_api_key: [ ]
-    options:
-      description: CORS preflight for /match
-      operationId: match_options_v3
-      responses:
-        '200':
-          description: Success
-      tags:
-        - Matching
-      x-google-quota:
-        metricCosts:
-          request-metric: 1
-  '/match_v4':
-    post:
-      description: Match one or many users against jobs and occupations. 4.0 version.
-      operationId: match_v4
-      parameters:
-        - name: body
-          in: body
-          required: true
-          description: User(s) to match. Single object or array of MatchRequest.
-          schema:
-            type: object
-            description: MatchRequest or array of MatchRequest
-      responses:
-        '200':
-          description: Match recommendations
-        '400':
-          description: Bad Request - invalid payload
-        '429':
-          description: Too Many Requests - rate limit exceeded
-        '500':
-          description: Internal Server Error
-      summary: Match users to opportunities
-      tags:
-        - Matching
-      x-google-quota:
-        metricCosts:
-          request-metric: 1
-      security:
-        - gcp_api_key: [ ]
-    options:
-      description: CORS preflight for /match
-      operationId: match_options_v4
-      responses:
-        '200':
-          description: Success
-      tags:
-        - Matching
-      x-google-quota:
-        metricCosts:
-          request-metric: 1
-  '/experiments/v5/match':
-    post:
-      description: Match one or many users against jobs and occupations, with ZQF education annotation on opportunities. 5.0 experiment.
-      operationId: match_v5_experiment
-      parameters:
-        - name: body
-          in: body
-          required: true
-          description: User(s) to match. Single object or array of MatchRequestV5 (adds zqf_level).
-          schema:
-            type: object
-            description: MatchRequestV5 or array of MatchRequestV5
-      responses:
-        '200':
-          description: Match recommendations
-        '400':
-          description: Bad Request - invalid payload
-        '429':
-          description: Too Many Requests - rate limit exceeded
-        '500':
-          description: Internal Server Error
-      summary: Match users to opportunities
-      tags:
-        - Matching
-      x-google-quota:
-        metricCosts:
-          request-metric: 1
-      security:
-        - gcp_api_key: [ ]
-    options:
-      description: CORS preflight for /match
-      operationId: match_options_v5
+      operationId: match_options
       responses:
         '200':
           description: Success

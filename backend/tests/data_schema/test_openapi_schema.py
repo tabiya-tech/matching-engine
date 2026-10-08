@@ -1,49 +1,40 @@
-"""Verify the OpenAPI schema has the correct endpoints and auth boundaries.
+"""Verify the OpenAPI schema exposes exactly the served API.
 
-This branch renamed routes (/match_v2 -> /experiments/v2/match, etc.).
-If a router registration breaks, the endpoint silently vanishes.
+POST /match (the v4 engine) is the only matching endpoint; the retired v2/v3/v5/legacy
+handlers are not registered. If a retired route is re-registered, or a registration breaks,
+these tests fail.
 """
 
 EXPECTED_ENDPOINTS = {
     "/health": "get",
     "/jobs": "get",
+    "/jobs/stats": "get",
     "/match": "post",
-    "/experiments/v2/match": "post",
-    "/experiments/v3/match": "post",
-    "/match_v4": "post",
-    "/experiments/v5/match": "post",
 }
 
-AUTH_REQUIRED_PATHS = {"/health", "/jobs", "/match"}
+
+def _openapi(test_client):
+    resp = test_client.get("/openapi.json")
+    assert resp.status_code == 200
+    return resp.json()
 
 
 class TestOpenAPIEndpoints:
-    """All registered endpoints must be present with correct HTTP methods."""
-
-    def test_all_endpoints_registered(self, test_client):
-        resp = test_client.get("/openapi.json")
-        assert resp.status_code == 200
-        paths = resp.json()["paths"]
-
+    def test_exactly_expected_endpoints_registered(self, test_client):
+        paths = _openapi(test_client)["paths"]
+        assert set(paths) == set(EXPECTED_ENDPOINTS), (
+            f"unexpected OpenAPI paths: {sorted(set(paths) ^ set(EXPECTED_ENDPOINTS))}"
+        )
         for path, method in EXPECTED_ENDPOINTS.items():
-            assert path in paths, f"{path} missing from OpenAPI schema"
             assert method in paths[path], f"{method.upper()} not registered on {path}"
 
 
 class TestAuthBoundaries:
-    """/health and /match require x-api-key; experiment endpoints do not."""
+    """Every endpoint requires x-api-key."""
 
-    def test_auth_split(self, test_client):
-        resp = test_client.get("/openapi.json")
-        paths = resp.json()["paths"]
-
+    def test_all_endpoints_require_api_key(self, test_client):
+        paths = _openapi(test_client)["paths"]
         for path, method in EXPECTED_ENDPOINTS.items():
-            operation = paths[path][method]
-            has_security = bool(operation.get("security"))
-
-            if path in AUTH_REQUIRED_PATHS:
-                assert has_security, (
-                    f"{path} should require x-api-key but has no security"
-                )
-            else:
-                assert not has_security, f"{path} should be public but has security"
+            assert paths[path][method].get("security"), (
+                f"{path} should require x-api-key but has no security"
+            )
