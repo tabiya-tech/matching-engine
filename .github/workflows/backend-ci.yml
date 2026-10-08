@@ -24,15 +24,15 @@ jobs:
 
       - name: Lint (ruff)
         shell: bash
-        run: python tests/sanity_checks/lint_check.py
+        run: ruff check
         working-directory: backend
 
       - name: Check formatting (ruff format)
         shell: bash
-        run: python tests/sanity_checks/formatter_check.py
+        run: ruff format --check
         working-directory: backend
 
       - name: Type check (pyright, strict)
         shell: bash
-        run: python tests/sanity_checks/type_check.py
+        run: pyright
         working-directory: backend

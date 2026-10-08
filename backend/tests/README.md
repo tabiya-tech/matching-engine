@@ -174,11 +174,11 @@ tests/
 │   ├── test_request_validation.py       # Input model tests (6 tests)
 │   └── test_response_contracts.py       # Output model tests (22 tests)
 ├── data_schema/
-│   ├── test_openapi_schema.py           # Endpoint + auth + docs tests
+│   ├── test_openapi_schema.py           # Endpoint + auth + docs tests (3 tests)
 │   └── test_config_validation.py        # Config rejection tests (2 tests)
 ├── smoke/
 │   ├── test_startup_smoke.py            # Health endpoint tests (2 tests)
-│   └── test_endpoint_smoke.py           # Endpoint behavior tests (7 tests)
+│   └── test_endpoint_smoke.py           # Endpoint behavior tests (8 tests)
 ├── unit/
 │   └── test_build_job_dict_from_ranked.py  # Mongo job doc → flat dict mapping
 ├── ml_logic/                            # Matching invariants (education, location, skill gaps, ZQF)
