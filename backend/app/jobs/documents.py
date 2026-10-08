@@ -150,7 +150,7 @@ def _location_or_clauses_for_one_user(user: dict) -> list[dict[str, Any]]:
         return ors
     needles = {uc, up}
     if LOCATION_TIER_ENABLED:
-        from app.ranking.location import load_hub_chains
+        from app.artifacts.repository import load_hub_chains
 
         hc = load_hub_chains(LOCATION_HUB_CHAINS_PATH)
         if hc is not None:
