@@ -31,16 +31,14 @@ from app.services.cross_encoder.concat_embedding_text import (
     user_concat_embedding_text,
     user_skill_labels_for_concat,
 )
-from app.services.cross_encoder.gemini_embeddings import (
+from app.clients.cross_encoder_client import CrossEncoderClient, ICrossEncoderClient
+from app.clients.gemini_embedding_client import (
     EMBEDDING_DIM,
     MODEL_NAME as GEMINI_EMBEDDING_MODEL_NAME,
-    embed_text_list,
-    l2_normalize_rows,
+    GeminiEmbeddingClient,
 )
-from app.services.cross_encoder.reranker import (
-    CrossEncoderReranker,
-    rerank_cosine_recommendations,
-)
+from app.services.cross_encoder.gemini_embeddings import l2_normalize_rows
+from app.services.cross_encoder.reranker import rerank_cosine_recommendations
 from app.languages import default_language
 from app.services.cosine_similarity.skill_score import CosineSkillMatcher
 from app.services.education_eligibility import (
@@ -60,7 +58,7 @@ _matcher_instance: Optional[CosineSkillMatcher] = None
 
 _reranker_lock = threading.Lock()
 # One cross-encoder per language: the checkpoint has to understand the label text it scores.
-_reranker_instances: Dict[str, CrossEncoderReranker] = {}
+_reranker_instances: Dict[str, ICrossEncoderClient] = {}
 
 
 def _get_matcher() -> CosineSkillMatcher:
@@ -158,7 +156,7 @@ def concat_rescale_target() -> float:
     return cw["target"] if cw else 0.0
 
 
-def _get_reranker() -> CrossEncoderReranker:
+def _get_reranker() -> ICrossEncoderClient:
     """Cross-encoder for the deployment's language, loaded on first use and then reused.
 
     Keyed by language rather than a single global so that a process whose
@@ -172,7 +170,7 @@ def _get_reranker() -> CrossEncoderReranker:
         existing = _reranker_instances.get(lang)
         if existing is not None:
             return existing
-        inst = CrossEncoderReranker(
+        inst = CrossEncoderClient(
             batch_size=CROSS_ENCODER_BATCH_SIZE,
             language=lang,
         )
@@ -221,10 +219,6 @@ def preload_match_v3_models() -> Dict[str, float]:
         "v4_whitened_matcher_ms": (t1b - t1) * 1000.0,
         "cross_encoder_ms": (t2 - t1b) * 1000.0,
     }
-
-
-def _gemini_api_key() -> str:
-    return (os.environ.get("GEMINI_API_KEY") or "").strip()
 
 
 def _job_stage1_embedding_vector(job: Dict[str, Any]) -> Optional[np.ndarray]:
@@ -276,11 +270,8 @@ def embed_user_unit_vectors(users: List[Dict[str, Any]]) -> np.ndarray:
     Lets a caller embed users ONCE and reuse the matrix across multiple corpora (jobs +
     occupations) via ``run_match_concat_gemini_ce(..., user_unit_vectors=...)``.
     """
-    api_key = _gemini_api_key()
-    if not api_key:
-        raise ValueError(
-            "GEMINI_API_KEY is not set (required for user concat embeddings)"
-        )
+    client = GeminiEmbeddingClient()
+    client.ensure_configured()
     with observability.stage(
         "embedding", n_users=len(users), model=GEMINI_EMBEDDING_MODEL_NAME
     ):
@@ -288,7 +279,7 @@ def embed_user_unit_vectors(users: List[Dict[str, Any]]) -> np.ndarray:
         for u in users:
             t = user_concat_embedding_text(u).strip()
             texts.append(t if t else " ")
-        u_emb = embed_text_list(texts, api_key=api_key, batch_size=100, sleep_s=0.12)
+        u_emb = client.embed_texts(texts, batch_size=100, sleep_s=0.12)
         if u_emb.shape[0] != len(users):
             raise RuntimeError("Gemini embed returned unexpected row count")
         return l2_normalize_rows(u_emb.astype(np.float32)).astype(np.float64)
