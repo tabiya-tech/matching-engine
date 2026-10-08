@@ -59,13 +59,15 @@ def test_client():
     Uses a context-manager so the FastAPI lifespan actually executes.
     """
     # Import target modules first so patch() can resolve the attribute paths.
-    import app.database  # noqa: F401
+    import app.server_dependencies.warmup  # noqa: F401
     import app.routes  # noqa: F401
     import app.services.match_concat_gemini_ce_service  # noqa: F401
     import app.services.matching_service  # noqa: F401
 
     patches = [
-        patch("app.database.warmup_on_startup", new_callable=AsyncMock),
+        patch(
+            "app.server_dependencies.warmup.warmup_on_startup", new_callable=AsyncMock
+        ),
         patch(
             "app.services.match_concat_gemini_ce_service._get_reranker",
             return_value=MagicMock(),

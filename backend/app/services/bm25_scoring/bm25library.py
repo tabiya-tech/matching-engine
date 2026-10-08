@@ -223,9 +223,10 @@ async def _async_fetch_jobs_mongo(
 ) -> Tuple[List[dict], Dict[str, Any]]:
     _load_backend_dotenv()
     _ensure_backend_on_syspath()
-    from app.database import get_all_jobs_with_timing  # pylint: disable=import-outside-toplevel
+    from app.jobs.repository import JobsRepository  # pylint: disable=import-outside-toplevel
+    from app.server_dependencies.db_dependencies import get_jobs_db  # pylint: disable=import-outside-toplevel
 
-    return await get_all_jobs_with_timing(users_for_filter)
+    return await JobsRepository(db=get_jobs_db()).find_active(users_for_filter)
 
 
 def fetch_jobs_from_mongo(

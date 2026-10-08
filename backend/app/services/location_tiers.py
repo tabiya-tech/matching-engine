@@ -5,7 +5,7 @@ scores each job by which tier it falls in, so non-hub users (whose own county ha
 full list while local jobs stay preferred. Hub counties do not pull outward.
 
 Two consumers:
-  * the Mongo prefilter (database._location_or_clauses_for_one_user) uses ``hub_chain_for`` to widen a
+  * the Mongo prefilter (app.jobs.documents._location_or_clauses_for_one_user) uses ``hub_chain_for`` to widen a
     user's candidate pool to include their hub regions;
   * the v4 opportunity ranker (match_v4_full_service) uses ``tier_factor_for_job`` as a per-uuid [0,1]
     multiplier on final_score (local=1.0, regional=W_REGIONAL, national=W_NATIONAL, off-chain=0.0).
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 def _cf(s: Any) -> str:
-    """Casefold + strip, aligned with matching_service._norm / database._norm_loc_value."""
+    """Casefold + strip, aligned with matching_service._norm / app.jobs.documents._norm_loc_value."""
     if s is None:
         return ""
     t = str(s).strip()

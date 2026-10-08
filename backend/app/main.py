@@ -30,7 +30,7 @@ def _warmup_non_blocking() -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Mongo ping + occupation JSON + WA lookup once at startup so /match does not pay cold-connection cost each time."""
-    from app.database import warmup_on_startup
+    from app.server_dependencies.warmup import warmup_on_startup
 
     init_tracing(tracing_config_from_env())
 

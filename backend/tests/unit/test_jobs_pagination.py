@@ -10,11 +10,8 @@ from unittest.mock import patch
 import pytest
 from bson import ObjectId
 
-from app.database import (
-    InvalidCursor,
-    _decode_jobs_cursor,
-    _encode_jobs_cursor,
-)
+from app.jobs.documents import _decode_jobs_cursor, _encode_jobs_cursor
+from app.jobs.errors import InvalidCursor
 
 
 class TestCursorCodec:

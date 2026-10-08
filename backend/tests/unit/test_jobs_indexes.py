@@ -1,10 +1,10 @@
 """Tests for the jobs collection index definitions and the idempotent ensure step."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from app import database
-from app.database import JOBS_INDEX_MODELS, ensure_jobs_indexes
+from app.jobs.documents import JOBS_INDEX_MODELS
+from app.jobs.repository import JobsRepository
 
 
 class TestJobsIndexModels:
@@ -42,9 +42,8 @@ class TestEnsureJobsIndexes:
         mock_db = MagicMock()
         mock_db.__getitem__.return_value = mock_collection
 
-        with patch.object(database, "db", mock_db):
-            # WHEN ensuring indexes
-            actual = asyncio.run(ensure_jobs_indexes())
+        # WHEN ensuring indexes
+        actual = asyncio.run(JobsRepository(db=mock_db).ensure_indexes())
 
         # THEN create_indexes is called once with the module's index models, and names returned
         mock_collection.create_indexes.assert_awaited_once_with(JOBS_INDEX_MODELS)

@@ -29,14 +29,10 @@ from app.config import (
     JOBS_PAGE_MAX_LIMIT,
     DEBUG_MODE,
 )
-from app.database import (
-    attach_occupation_embeddings,
-    get_all_jobs_with_timing,
-    get_all_occupations_with_timing,
-    get_jobs_page_with_timing,
-    get_jobs_stats,
-    InvalidCursor,
-)
+from app.jobs.errors import InvalidCursor
+from app.jobs.repository import JobsRepository
+from app.occupations.get_occupations_repository import get_occupations_repository
+from app.server_dependencies.db_dependencies import get_jobs_db
 from app import observability
 from app.match_timing_log import log_match_step
 from app.services.matching_service import match_user_with_data
@@ -54,6 +50,26 @@ logger = logging.getLogger(__name__)
 
 def _ms(t0: float) -> float:
     return (time.perf_counter() - t0) * 1000.0
+
+
+async def get_all_jobs_with_timing(users=None):
+    return await JobsRepository(db=get_jobs_db()).find_active(users)
+
+
+async def get_all_occupations_with_timing():
+    return await get_occupations_repository().load_with_timing()
+
+
+def attach_occupation_embeddings(occupations):
+    return get_occupations_repository().attach_embeddings(occupations)
+
+
+async def get_jobs_page_with_timing(cursor=None, limit=20, **filters):
+    return await JobsRepository(db=get_jobs_db()).browse_page(cursor, limit, **filters)
+
+
+async def get_jobs_stats():
+    return await JobsRepository(db=get_jobs_db()).stats()
 
 
 async def _load_v4_occupations():

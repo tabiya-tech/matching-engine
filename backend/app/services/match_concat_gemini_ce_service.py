@@ -235,7 +235,7 @@ def _job_stage1_embedding_vector(job: Dict[str, Any]) -> Optional[np.ndarray]:
 
     je = job.get("job_embedding")
     # Accept a float list (Mongo job docs) or a numpy array (occupation embeddings attached
-    # in-process by app.database.attach_occupation_embeddings).
+    # in-process by OccupationsRepository.attach_embeddings).
     if isinstance(je, np.ndarray):
         if je.ndim == 1 and je.size == EMBEDDING_DIM:
             return je.astype(np.float32, copy=False)

@@ -3,7 +3,7 @@
 One embedding per occupation CODE (skills are identical across counties), built from the
 ``essential ∪ optional`` skill labels in the occupations JSON, via ``gemini-embedding-001`` —
 the SAME model/space as the job embeddings used by ``/match_v4``. Output is loaded at runtime by
-``app.database`` to feed the occupation arm of the ``/match_v4`` retrieval.
+``app.occupations.repository`` to feed the occupation arm of the ``/match_v4`` retrieval.
 
 Writes:
   * ``occupation_concat_embeddings.npz`` — ``codes`` (str), ``vectors`` (float32 [N, 3072], L2-normed)

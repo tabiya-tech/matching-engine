@@ -15,7 +15,9 @@ from app.config import (
     MATCH_TOP_K_SKILL_GAPS,
     SCORING_MODE,
 )
-from app.database import get_all_jobs, get_all_occupations
+from app.jobs.repository import JobsRepository
+from app.occupations.get_occupations_repository import get_occupations_repository
+from app.server_dependencies.db_dependencies import get_jobs_db
 from app.match_timing_log import log_match_step
 from app.services.education_eligibility import filter_jobs_by_education
 from app.services.preference_score_v1 import get_preference_scorer
@@ -764,9 +766,9 @@ async def match_single_user(
     occupations: Optional[List[dict]] = None,
 ) -> dict:
     if jobs is None:
-        jobs = await get_all_jobs()
+        jobs, _ = await JobsRepository(db=get_jobs_db()).find_active()
     if occupations is None:
-        occupations = await get_all_occupations()
+        occupations, _ = await get_occupations_repository().load_with_timing()
 
     out = await asyncio.to_thread(match_user_with_data, user, jobs, occupations)
     return out

@@ -264,7 +264,7 @@ def run_match_v4_full(
                 v = _job_stage1_embedding_vector(o)
                 if v is not None:
                     # occupations are whitened once at cache-load (consumed directly) or raw (whitened
-                    # in-process) — the flag set by attach_occupation_embeddings tells which.
+                    # in-process) — the flag set by OccupationsRepository.attach_embeddings tells which.
                     occ_concat[str(o.get("uuid") or "")] = (v, _job_is_prewhitened(o))
             u_white = whiten_concat_rows(u_norm)
             u_white_by_uid = {
