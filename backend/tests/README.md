@@ -9,58 +9,73 @@ The test suite validates three layers of the matching service:
 | Layer | Directory | What it verifies | Needs server? |
 |---|---|---|---|
 | **Data Validation** | `tests/data_validation/` | Pydantic model shapes — required fields, defaults, validators | No |
-| **Data Schema** | `tests/data_schema/` | API wiring — endpoint registration, auth boundaries, config rejection | No (uses mocked `TestClient`) |
+| **Data Schema** | `tests/data_schema/` | API wiring — endpoint registration, auth boundaries, config rejection, docs served | No (uses mocked `TestClient`) |
 | **Smoke** | `tests/smoke/` | Runtime behavior — health endpoint, payload guards, response contracts | No (uses mocked `TestClient`) |
 | **ML logic** | `tests/ml_logic/`, `tests/components/`, `tests/integration/` | Matching invariants, metamorphic rules, mocked-embedding ranking | No |
 
-In addition, static analysis checks enforce code quality:
+In addition, these checks inspect the code itself (no running server or tests needed):
 
 | Check | What it verifies |
 |---|---|
-| **Lint** | No unused imports, variables, or code issues (`ruff check`) |
+| **Lint** | No unused imports, variables, or code issues; `Any` banned in function parameters/return types (`ruff check`, rule `ANN401`) |
 | **Formatter** | Consistent code style across all files (`ruff format --check`) |
-| **Startup** | FastAPI boots and serves `/docs` + `/openapi.json` |
+| **Type Check** | Strict static typing (`pyright`, `typeCheckingMode: strict`) |
+
+These checks run automatically on every push via `.github/workflows/main.yml` (which calls `backend-ci.yml`).
 
 ---
 
 ## Pre-Push / Pre-Merge Checklist
 
-Run all commands from `backend/`:
+Run all commands from `backend/`. One-time setup, if you haven't already:
 
 ```bash
-cd shp-matching-algorithm/backend
+python -m venv venv            # use Python 3.11 specifically — see note below
+source venv/bin/activate
+pip install -r requirements-dev.txt
 ```
 
-### 1. Static Analysis
+> **Note:** this project targets Python 3.11 (see `backend/Dockerfile` and `backend/pyproject.toml`). If your system's default `python3`/`python` is a different version, create the venv with the 3.11 binary explicitly, e.g. `python3.11 -m venv venv`, otherwise installing dependencies may fail trying to compile packages that only ship pre-built wheels for 3.11.
+
+### 1. Lint, Format, and Type Checks
+
+These checks read the code without running it — no server, no database, no test data needed. The `.` at the end of each command just means "check the current directory" (run these from `backend/`).
+
+**Check only — none of these commands change any files:**
 
 ```bash
-python tests/sanity_checks/lint_check.py
-python tests/sanity_checks/formatter_check.py
+ruff check .                                       # lint: reports issues only
+ruff format --check .                              # format: reports which files are misformatted only
+pyright .                                          # strict type check: reports type errors only
 ```
 
-- **Lint check**: reports unused imports, unused variables, and code issues. Must show `PASS`.
-- **Formatter check**: verifies all files match `ruff format` style. Must show `PASS`.
-- Both support `--fix` to auto-correct (use only locally, never in CI):
-  ```bash
-  python tests/sanity_checks/lint_check.py --fix
-  python tests/sanity_checks/formatter_check.py --fix
-  ```
+- **Lint** (`ruff check .`): reports unused imports, unused variables, code issues, and `Any` used as a function parameter or return type.
+- **Formatter** (`ruff format --check .`): reports which files don't match `ruff format` style. The `--check` flag is what makes it report-only — without it, `ruff format .` would rewrite the files instead.
+- **Type check** (`pyright .`): runs `pyright` in strict mode (config in `backend/pyproject.toml` under `[tool.pyright]`). There is no auto-fix for type errors — a human has to resolve them.
 
-### 2. Startup Check
+**Auto-fix — these commands do change files. Use only locally, never in CI:**
 
 ```bash
-python tests/sanity_checks/startup_check.py
+ruff check . --fix   # rewrites files: auto-fixes safe lint issues (e.g. removes unused imports)
+ruff format .         # rewrites files: reformats everything to match the style
 ```
 
-Boots the FastAPI app via `TestClient` and verifies `/docs` and `/openapi.json` return HTTP 200. Requires `MONGO_URL` and `MONGO_DB_NAME` in `.env` or environment.
+#### Strictness Policy: `Any` usage
 
-### 3. Data Validation Tests
+`Any` is banned in function parameter and return type annotations via ruff's `ANN401` rule (enabled in `backend/pyproject.toml` under `[tool.ruff.lint]`). An existing, unavoidable use is suppressed inline:
+
+```python
+def legacy_adapter(payload: Any) -> None:  # noqa: ANN401 - third-party callback signature we don't control
+    ...
+```
+
+This keeps the exception visible in the diff and reviewable, rather than silencing the rule project-wide or tracking it in a separate file.
+
+### 2. Data Validation Tests
 
 ```bash
-python tests/sanity_checks/data_validation_check.py
+python -m pytest tests/data_validation/ -v
 ```
-
-Runs `pytest tests/data_validation/` which includes:
 
 - **`test_request_validation.py`** — Input model validation
   - County suffix stripping (`"Nairobi County"` → `"Nairobi"`)
@@ -78,30 +93,27 @@ Runs `pytest tests/data_validation/` which includes:
   - `MatchedPreference` — required fields (`attribute`, `user_weight`, `beta`, `encoded_value`, `contribution`, `matched`)
   - `MatchResponseV5` — mirrors V1 structure + `zqf_eligible`/`zqf_gap` on opportunities
 
-### 4. Data Schema Tests
+### 3. Data Schema Tests
 
 ```bash
-python tests/sanity_checks/data_schema_check.py
+python -m pytest tests/data_schema/ -v
 ```
-
-Runs `pytest tests/data_schema/` which includes:
 
 - **`test_openapi_schema.py`** — API wiring
   - Exactly the served endpoints are registered (`/health`, `/jobs`, `/jobs/stats`, `/match`); retired v2/v3/v5/`/match_v4` routes are absent
   - Correct HTTP methods (GET for health, POST for all match endpoints)
   - Auth boundaries: every endpoint requires `x-api-key`
+  - FastAPI boots and serves `/docs` (Swagger UI) with HTTP 200
 
 - **`test_config_validation.py`** — Configuration safety
   - Invalid `FINAL_SCORE_COMBINER` values are rejected at import time
   - Invalid `SCORING_MODE` values are rejected at import time
 
-### 5. Smoke Tests
+### 4. Smoke Tests
 
 ```bash
-python tests/sanity_checks/smoke_check.py
+python -m pytest tests/smoke/ -v
 ```
-
-Runs `pytest tests/smoke/` which includes:
 
 - **`test_startup_smoke.py`** — Health endpoint
   - `GET /health` with `x-api-key` returns `200 {"status": "ok"}`
@@ -114,21 +126,11 @@ Runs `pytest tests/smoke/` which includes:
   - `_zqf_annotation` logic (retired v5 code, still unit-tested): eligible, ineligible, missing user ZQF, missing job ZQF
   - Response contract: `POST /match` returns `user_id` + three recommendation lists
 
-### Run Everything at Once
+### 5. ML Logic Tests
 
 ```bash
-python tests/sanity_checks/run_all_checks.py
+python -m pytest tests/ml_logic/ tests/components/ tests/integration/ -v
 ```
-
-Runs all 7 checks (lint, format, data validation, data schema, smoke, job dict mapping, ML logic) and prints a one-line PASS/FAIL per check with a final summary. Paste this output into PR descriptions.
-
-### 6. ML Logic Tests
-
-```bash
-python tests/sanity_checks/ml_logic_check.py
-```
-
-Runs `pytest tests/ml_logic/ tests/components/ tests/integration/`:
 
 - **`ml_logic/`** — education gate, remote/location, skill-gap invariants, ZQF, adversarial inputs, cross-endpoint rules
 - **`components/`** — `CosineSkillMatcher` + **metamorphic** tests (reorder/duplicate skills, monotonicity)
@@ -136,24 +138,30 @@ Runs `pytest tests/ml_logic/ tests/components/ tests/integration/`:
 
 See `tests/AI_MATCHING_TEST_PLAN.md` for full scope.
 
-### 7. Job Dict Mapping Tests
+### 6. Job Dict Mapping Tests
 
 ```bash
-python tests/sanity_checks/job_dict_mapping_check.py
+python -m pytest tests/unit/ -v
 ```
 
-Runs `pytest tests/unit/` which validates `build_job_dict_from_ranked()` — the Mongo ranked-job → flat job dict mapper used by every match endpoint.
+Validates `build_job_dict_from_ranked()` — the Mongo ranked-job → flat job dict mapper used by every match endpoint.
 
 **Coverage strategy** (not every field gets its own test):
 
 - **Mapping logic** — full coverage: ZQF naming conventions (`min_zqf_level` vs `zqf_min`), province/county fallback, `originUuid` precedence, posted-date chain, embedding dim gate, skill ID filtering, etc.
 - **Simple passthrough** — one happy-path test asserts core `classifier_metadata` fields (`title`, `employer`, `salary`, ISCO, URL, …) map correctly together.
 
-To run pytest directly with verbose output:
+### All Checks and All Tests, in One Go
+
+The commands below are the same ones from sections 1–6 above, just copy-pasted together: the three checks from [section 1](#1-lint-format-and-type-checks), then one `pytest` run covering every test directory from sections 2–6.
 
 ```bash
-python -m pytest tests/data_validation/ tests/data_schema/ tests/smoke/ tests/unit/ -v
+ruff check .
+ruff format --check .
+pyright .
+python -m pytest tests/data_validation/ tests/data_schema/ tests/smoke/ tests/unit/ tests/ml_logic/ tests/components/ tests/integration/ -v
 ```
+
 ---
 
 ## File Structure
@@ -166,28 +174,20 @@ tests/
 │   ├── test_request_validation.py       # Input model tests (6 tests)
 │   └── test_response_contracts.py       # Output model tests (22 tests)
 ├── data_schema/
-│   ├── test_openapi_schema.py           # Endpoint + auth tests (2 tests)
+│   ├── test_openapi_schema.py           # Endpoint + auth + docs tests (3 tests)
 │   └── test_config_validation.py        # Config rejection tests (2 tests)
 ├── smoke/
 │   ├── test_startup_smoke.py            # Health endpoint tests (2 tests)
-│   └── test_endpoint_smoke.py           # Endpoint behavior tests (7 tests)
+│   └── test_endpoint_smoke.py           # Endpoint behavior tests (8 tests)
 ├── unit/
 │   └── test_build_job_dict_from_ranked.py  # Mongo job doc → flat dict mapping
 ├── ml_logic/                            # Matching invariants (education, location, skill gaps, ZQF)
 ├── components/                          # Skill scorer + metamorphic tests
 ├── integration/                         # Mocked-embedding v3 pipeline tests
-├── AI_MATCHING_TEST_PLAN.md             # ML logic test plan and scope
-└── sanity_checks/
-    ├── run_all_checks.py                # Runner: all 7 checks
-    ├── ml_logic_check.py                # Runner: ml_logic + components + integration
-    ├── data_validation_check.py         # Runner: pytest tests/data_validation/
-    ├── data_schema_check.py             # Runner: pytest tests/data_schema/
-    ├── smoke_check.py                   # Runner: pytest tests/smoke/
-    ├── job_dict_mapping_check.py        # Runner: pytest tests/unit/
-    ├── lint_check.py                    # Runner: ruff check
-    ├── formatter_check.py               # Runner: ruff format --check
-    └── startup_check.py                 # Runner: FastAPI boot check
+└── AI_MATCHING_TEST_PLAN.md             # ML logic test plan and scope
 ```
+
+Lint, format, and type-check configuration lives in `backend/pyproject.toml` (`[tool.ruff]`, `[tool.pyright]`) and is run directly via `ruff check .`, `ruff format --check .`, and `pyright .`.
 
 ---
 

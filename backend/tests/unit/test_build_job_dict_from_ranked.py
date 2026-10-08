@@ -236,7 +236,9 @@ class TestEmbeddingPassthrough:
 
     def test_job_embedding_whitened_flag_defaults_false(self):
         # No metadata (offline corpus / not-yet-whitened jobs) -> raw -> whitened in-process.
-        assert build_job_dict_from_ranked(_base_doc())["job_embedding_whitened"] is False
+        assert (
+            build_job_dict_from_ranked(_base_doc())["job_embedding_whitened"] is False
+        )
         doc = _base_doc()
         doc["llm_reranker_meta"] = {"embedding": {"whitening": {"enabled": False}}}
         assert build_job_dict_from_ranked(doc)["job_embedding_whitened"] is False

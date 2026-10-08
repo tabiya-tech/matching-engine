@@ -20,13 +20,19 @@ class TestJobsIndexModels:
 
     def test_browse_index_sorts_by_id_descending(self):
         # The keyset browse (sort _id desc) needs an {is_active: 1, _id: -1} index to avoid a scan.
-        keys = {m.document["name"]: list(m.document["key"].items()) for m in JOBS_INDEX_MODELS}
+        keys = {
+            m.document["name"]: list(m.document["key"].items())
+            for m in JOBS_INDEX_MODELS
+        }
         assert keys["is_active_-_id"] == [("is_active", 1), ("_id", -1)]
 
     def test_employment_type_index_ends_with_id_so_sort_is_index_served(self):
         # A type-filtered browse still sorts by _id desc; the index must end with _id to serve both
         # the equality and the sort (otherwise the planner falls back to the plain {is_active,_id} index).
-        keys = {m.document["name"]: list(m.document["key"].items()) for m in JOBS_INDEX_MODELS}
+        keys = {
+            m.document["name"]: list(m.document["key"].items())
+            for m in JOBS_INDEX_MODELS
+        }
         assert keys["is_active_employment_type_-_id"] == [
             ("is_active", 1),
             ("classifier_metadata.employment_type", 1),
@@ -38,7 +44,9 @@ class TestEnsureJobsIndexes:
     def test_calls_create_indexes_with_the_models_and_returns_names(self):
         # GIVEN a collection that reports the created index names
         mock_collection = MagicMock()
-        mock_collection.create_indexes = AsyncMock(return_value=["is_active_-_id", "is_active_category"])
+        mock_collection.create_indexes = AsyncMock(
+            return_value=["is_active_-_id", "is_active_category"]
+        )
         mock_db = MagicMock()
         mock_db.__getitem__.return_value = mock_collection
 

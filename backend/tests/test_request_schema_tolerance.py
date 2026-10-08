@@ -36,10 +36,15 @@ def test_full_payload_still_validates_unchanged():
         user_id="u1",
         city="Nairobi",
         province="Nairobi",
-        skills_vector={"top_skills": [{"originUUID": "x", "preferredLabel": "welding"}]},
+        skills_vector={
+            "top_skills": [{"originUUID": "x", "preferredLabel": "welding"}]
+        },
         preference_vector={
-            "earnings_per_month": 0.8, "physical_demand": 0.2, "social_interaction": 0.6,
-            "career_growth": 0.75, "bws_scores": {"4.A.1": 2.0},
+            "earnings_per_month": 0.8,
+            "physical_demand": 0.2,
+            "social_interaction": 0.6,
+            "career_growth": 0.75,
+            "bws_scores": {"4.A.1": 2.0},
         },
         any_post_secondary_educ=1,
     )
@@ -65,11 +70,14 @@ def test_county_suffix_stripped_from_location():
     "raw,expected",
     [
         ("Nairobi County", "Nairobi"),
-        ("nairobi county", "nairobi"),   # case-insensitive suffix, casing otherwise preserved
+        (
+            "nairobi county",
+            "nairobi",
+        ),  # case-insensitive suffix, casing otherwise preserved
         ("Trans Nzoia County", "Trans Nzoia"),
-        ("Nairobi", "Nairobi"),          # no suffix -> unchanged
-        ("", ""),                         # empty stays empty (relaxes prefilter)
-        ("Countyside", "Countyside"),    # only a trailing " county" token is stripped
+        ("Nairobi", "Nairobi"),  # no suffix -> unchanged
+        ("", ""),  # empty stays empty (relaxes prefilter)
+        ("Countyside", "Countyside"),  # only a trailing " county" token is stripped
     ],
 )
 def test_county_normalization_cases(raw, expected):

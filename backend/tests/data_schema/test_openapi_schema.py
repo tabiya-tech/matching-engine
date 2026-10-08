@@ -28,6 +28,10 @@ class TestOpenAPIEndpoints:
         for path, method in EXPECTED_ENDPOINTS.items():
             assert method in paths[path], f"{method.upper()} not registered on {path}"
 
+    def test_docs_served(self, test_client):
+        resp = test_client.get("/docs")
+        assert resp.status_code == 200
+
 
 class TestAuthBoundaries:
     """Every endpoint requires x-api-key."""
