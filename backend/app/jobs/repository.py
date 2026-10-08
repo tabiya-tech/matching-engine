@@ -3,7 +3,8 @@
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -38,8 +39,8 @@ class IJobsRepository(ABC):
 
     @abstractmethod
     async def find_active(
-        self, users: Optional[Sequence[dict]] = None
-    ) -> Tuple[List[dict], Dict[str, Any]]:
+        self, users: Sequence[dict] | None = None
+    ) -> tuple[list[dict], dict[str, Any]]:
         """
         Loads active jobs as flat job dicts (see ``build_job_dict_from_ranked``).
 
@@ -57,17 +58,17 @@ class IJobsRepository(ABC):
     @abstractmethod
     async def browse_page(
         self,
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
         limit: int = 20,
         *,
-        search: Optional[str] = None,
-        category: Optional[str] = None,
-        employment_type: Optional[str] = None,
-        location: Optional[str] = None,
-        skills: Optional[str] = None,
-        days: Optional[int] = None,
+        search: str | None = None,
+        category: str | None = None,
+        employment_type: str | None = None,
+        location: str | None = None,
+        skills: str | None = None,
+        days: int | None = None,
         include_total: bool = False,
-    ) -> Tuple[List[JobListItem], Optional[str], Optional[int], Dict[str, Any]]:
+    ) -> tuple[list[JobListItem], str | None, int | None, dict[str, Any]]:
         """
         Cursor-paginated, filterable browse over active jobs, newest first.
 
@@ -92,7 +93,7 @@ class IJobsRepository(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    async def ensure_indexes(self) -> List[str]:
+    async def ensure_indexes(self) -> list[str]:
         """
         Creates (idempotently) the indexes the jobs queries need.
 
@@ -117,11 +118,11 @@ class JobsRepository(IJobsRepository):
         self._logger = logging.getLogger(self.__class__.__name__)
 
     async def find_active(
-        self, users: Optional[Sequence[dict]] = None
-    ) -> Tuple[List[dict], Dict[str, Any]]:
+        self, users: Sequence[dict] | None = None
+    ) -> tuple[list[dict], dict[str, Any]]:
         t_total = time.perf_counter()
         t0 = time.perf_counter()
-        filt: Dict[str, Any] = RANKED_JOBS_ACTIVE_FILTER
+        filt: dict[str, Any] = RANKED_JOBS_ACTIVE_FILTER
         retrieval_applied = False
         if JOBS_RETRIEVAL_FILTER and users:
             built = build_mongo_filter_active_and_location(users)
@@ -141,7 +142,7 @@ class JobsRepository(IJobsRepository):
         mongo_ranked_find_ms = _ms(t0)
 
         t0 = time.perf_counter()
-        jobs: List[dict] = []
+        jobs: list[dict] = []
         skipped = 0
         for rd in ranked_docs:
             built = build_job_dict_from_ranked(rd)
@@ -172,17 +173,17 @@ class JobsRepository(IJobsRepository):
 
     async def browse_page(
         self,
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
         limit: int = 20,
         *,
-        search: Optional[str] = None,
-        category: Optional[str] = None,
-        employment_type: Optional[str] = None,
-        location: Optional[str] = None,
-        skills: Optional[str] = None,
-        days: Optional[int] = None,
+        search: str | None = None,
+        category: str | None = None,
+        employment_type: str | None = None,
+        location: str | None = None,
+        skills: str | None = None,
+        days: int | None = None,
         include_total: bool = False,
-    ) -> Tuple[List[JobListItem], Optional[str], Optional[int], Dict[str, Any]]:
+    ) -> tuple[list[JobListItem], str | None, int | None, dict[str, Any]]:
         t_total = time.perf_counter()
         limit = max(1, int(limit))
 
@@ -194,7 +195,7 @@ class JobsRepository(IJobsRepository):
             skills=skills,
             days=days,
         )
-        filt: Dict[str, Any] = dict(base_filt)
+        filt: dict[str, Any] = dict(base_filt)
         if cursor:
             # Compose the keyset seek with the (possibly compound) filter without clobbering it.
             filt = {"$and": [base_filt, {"_id": {"$lt": _decode_jobs_cursor(cursor)}}]}
@@ -208,7 +209,7 @@ class JobsRepository(IJobsRepository):
         raw_docs = [d async for d in query]
         mongo_find_ms = _ms(t0)
 
-        total: Optional[int] = None
+        total: int | None = None
         if include_total:
             total = await col.count_documents(base_filt)
 
@@ -216,41 +217,49 @@ class JobsRepository(IJobsRepository):
         page_docs = raw_docs[:limit]
 
         t0 = time.perf_counter()
-        jobs: List[JobListItem] = []
+        jobs: list[JobListItem] = []
         skipped = 0
         for rd in page_docs:
             built = build_job_dict_from_ranked(rd)
             if built is None:
                 skipped += 1
                 continue
-            jobs.append(JobListItem(
-                uuid=built.get("uuid"),
-                originUuid=built.get("originUuid"),
-                url=built.get("url"),
-                opportunity_title=built.get("opportunity_title", "No title"),
-                opportunity_isco_occupation_group=built.get("opportunity_isco_occupation_group"),
-                opportunity_isco_occupation_group_id=built.get("opportunity_isco_occupation_group_id"),
-                related_occupation_id=built.get("related_occupation_id"),
-                location=built.get("location"),
-                city=built.get("city"),
-                province=built.get("province"),
-                employer=built.get("employer"),
-                employment_type=built.get("employment_type"),
-                contract_type=built.get("contract_type"),
-                salary_text=built.get("salary_text"),
-                closing_date=built.get("closing_date"),
-                posted_date=built.get("posted_date"),
-                opportunity_description=built.get("opportunity_description"),
-                # Consumer-contract fields (Compass jobs board)=built.get("# Consumer-contract fields (Compass jobs board),
-                # posting was scraped from, and the flat list of skill labels for this opportunity.
-                category=built.get("category"),
-                source_platform=built.get("source_platform"),
-                skills=built.get("skills", [])
-            ))
+            jobs.append(
+                JobListItem(
+                    uuid=built.get("uuid"),
+                    originUuid=built.get("originUuid"),
+                    url=built.get("url"),
+                    opportunity_title=built.get("opportunity_title", "No title"),
+                    opportunity_isco_occupation_group=built.get(
+                        "opportunity_isco_occupation_group"
+                    ),
+                    opportunity_isco_occupation_group_id=built.get(
+                        "opportunity_isco_occupation_group_id"
+                    ),
+                    related_occupation_id=built.get("related_occupation_id"),
+                    location=built.get("location"),
+                    city=built.get("city"),
+                    province=built.get("province"),
+                    employer=built.get("employer"),
+                    employment_type=built.get("employment_type"),
+                    contract_type=built.get("contract_type"),
+                    salary_text=built.get("salary_text"),
+                    closing_date=built.get("closing_date"),
+                    posted_date=built.get("posted_date"),
+                    opportunity_description=built.get("opportunity_description"),
+                    # Consumer-contract fields (Compass jobs board)=built.get("# Consumer-contract fields (Compass jobs board),
+                    # posting was scraped from, and the flat list of skill labels for this opportunity.
+                    category=built.get("category"),
+                    source_platform=built.get("source_platform"),
+                    skills=built.get("skills", []),
+                )
+            )
         python_build_ms = _ms(t0)
 
         next_cursor = (
-            _encode_jobs_cursor(page_docs[-1]["_id"]) if has_more and page_docs else None
+            _encode_jobs_cursor(page_docs[-1]["_id"])
+            if has_more and page_docs
+            else None
         )
 
         return (
@@ -274,12 +283,16 @@ class JobsRepository(IJobsRepository):
         col = self._db[MONGO_JOBS_COLLECTION]
         total = await col.count_documents(RANKED_JOBS_ACTIVE_FILTER)
 
-        raw_categories = await col.distinct("classifier_metadata.category", RANKED_JOBS_ACTIVE_FILTER)
+        raw_categories = await col.distinct(
+            "classifier_metadata.category", RANKED_JOBS_ACTIVE_FILTER
+        )
         if not raw_categories:
             raw_categories = await col.distinct(
                 "classifier_metadata.isco_occupation_group", RANKED_JOBS_ACTIVE_FILTER
             )
-        sectors = len({str(c).strip().lower() for c in raw_categories if str(c).strip()})
+        sectors = len(
+            {str(c).strip().lower() for c in raw_categories if str(c).strip()}
+        )
 
         platforms_set: set = set()
         for field in (
@@ -293,7 +306,7 @@ class JobsRepository(IJobsRepository):
 
         return JobsStats(total=total, sectors=sectors, platforms=len(platforms_set))
 
-    async def ensure_indexes(self) -> List[str]:
+    async def ensure_indexes(self) -> list[str]:
         t0 = time.perf_counter()
         col = self._db[MONGO_JOBS_COLLECTION]
         created = await col.create_indexes(JOBS_INDEX_MODELS)

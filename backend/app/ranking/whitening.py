@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 import numpy as np
 
@@ -17,7 +17,7 @@ class ConcatWhitener:
     target is 0.0.
     """
 
-    def __init__(self, artifact: Optional[Dict[str, Any]]):
+    def __init__(self, artifact: dict[str, Any] | None):
         self._artifact = artifact or None
 
     def whiten_rows(self, vecs: np.ndarray) -> np.ndarray:

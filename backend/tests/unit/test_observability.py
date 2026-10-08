@@ -459,7 +459,9 @@ def test_v4_engine_records_shortlist_and_rerank_per_corpus():
     rerank.build_pairs.return_value = []
     rerank.apply.side_effect = lambda recs, _scores, **_kw: list(recs)
     engine = ConcatCrossEncoderEngine(
-        embedding_client=MagicMock(model_name="gemini-test", embedding_dim=EMBEDDING_DIM),
+        embedding_client=MagicMock(
+            model_name="gemini-test", embedding_dim=EMBEDDING_DIM
+        ),
         cross_encoder_provider=lambda: MagicMock(model_name="ce-test"),
         matcher_provider=lambda: matcher,
         whitener_provider=get_concat_whitener,

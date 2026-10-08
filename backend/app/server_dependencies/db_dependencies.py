@@ -6,7 +6,7 @@ the ``MONGO_*`` pool / TLS settings. Repositories receive the database through `
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Any
 
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -25,7 +25,7 @@ _mongo_sel_ms = int(
 )
 _mongo_max_pool = int((os.getenv("MONGO_MAX_POOL_SIZE") or "50").strip() or "50")
 _mongo_min_pool = int((os.getenv("MONGO_MIN_POOL_SIZE") or "0").strip() or "0")
-_mongo_client_kwargs: Dict[str, Any] = {
+_mongo_client_kwargs: dict[str, Any] = {
     "serverSelectionTimeoutMS": _mongo_sel_ms,
     "maxPoolSize": max(1, _mongo_max_pool),
 }
@@ -44,7 +44,7 @@ def _looks_like_tls_mongodb(uri: str) -> bool:
     )
 
 
-def _configure_mongodb_tls(kwargs: Dict[str, Any]) -> None:
+def _configure_mongodb_tls(kwargs: dict[str, Any]) -> None:
     """Atlas and other TLS backends need a CA bundle. macOS/Python.org installs often lack one.
 
     * ``MONGO_TLS_ALLOW_INVALID_CERTIFICATES=1`` — dev-only; skips verification (unsafe).
@@ -85,7 +85,7 @@ def _configure_mongodb_tls(kwargs: Dict[str, Any]) -> None:
 _configure_mongodb_tls(_mongo_client_kwargs)
 
 
-def _mongo_tls_client_options() -> Dict[str, Any]:
+def _mongo_tls_client_options() -> dict[str, Any]:
     """Extra Motor/PyMongo TLS options from env.
 
     Atlas (mongodb+srv) uses TLS. On some macOS/Python installs the default CA
@@ -94,7 +94,7 @@ def _mongo_tls_client_options() -> Dict[str, Any]:
         SSL: CERTIFICATE_VERIFY_FAILED / unable to get local issuer certificate
 
     """
-    extra: Dict[str, Any] = {}
+    extra: dict[str, Any] = {}
     insecure = (os.getenv("MONGO_TLS_INSECURE") or "").strip().lower()
     if insecure in ("1", "true", "yes", "on"):
         extra["tlsAllowInvalidCertificates"] = True

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 
@@ -13,7 +13,7 @@ def l2_normalize_rows(mat: np.ndarray) -> np.ndarray:
     return (mat / norms).astype(np.float32)
 
 
-def stage1_vector(job: Dict[str, Any], *, dim: int) -> Optional[np.ndarray]:
+def stage1_vector(job: dict[str, Any], *, dim: int) -> np.ndarray | None:
     """Prefer NPZ-sync BSON; fall back to ``job_embedding`` float list on the job doc."""
 
     sub = job.get("concat_skill_embedding_gemini")
@@ -38,22 +38,22 @@ def stage1_vector(job: Dict[str, Any], *, dim: int) -> Optional[np.ndarray]:
     return None
 
 
-def is_prewhitened(job: Dict[str, Any]) -> bool:
+def is_prewhitened(job: dict[str, Any]) -> bool:
     """True iff this job's stage-1 embedding is ALREADY whitened on the DB side (set by
     build_job_dict_from_ranked from llm_reranker_meta.embedding.whitening.enabled). Occupations and
     offline jobs lack the flag -> raw (whitened in-process)."""
     return bool(job.get("job_embedding_whitened"))
 
 
-def strip_vectors(job: Dict[str, Any]) -> Dict[str, Any]:
+def strip_vectors(job: dict[str, Any]) -> dict[str, Any]:
     out = dict(job)
     out.pop("concat_skill_embedding_gemini", None)
     out.pop("job_embedding", None)
     return out
 
 
-def index_by_uuid(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    out: Dict[str, Dict[str, Any]] = {}
+def index_by_uuid(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
     for it in items:
         uid = str(it.get("uuid") or it.get("_id") or "")
         if uid:

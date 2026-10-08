@@ -28,6 +28,7 @@ from app.ranking.skill_label_packs import SkillLabelPacks, oldest_uuid
 def _read_rows(path):
     return read_csv_rows(path, newline="")
 
+
 csv.field_size_limit(10_000_000)
 
 
@@ -323,7 +324,9 @@ class TestLanguageIsNotPerRequest:
     def test_match_takes_no_language_query_param(self):
         from app.main import app
 
-        (match,) = [r.endpoint for r in app.routes if getattr(r, "path", None) == "/match"]
+        (match,) = [
+            r.endpoint for r in app.routes if getattr(r, "path", None) == "/match"
+        ]
         assert "language" not in inspect.signature(match).parameters
 
     def test_the_engine_takes_no_language_argument(self):
@@ -331,7 +334,11 @@ class TestLanguageIsNotPerRequest:
         from app.matching.service import MatchingService
         from app.services.match_v3_full_service import run_match_v3_full
 
-        for fn in (ConcatCrossEncoderEngine.run, run_match_v3_full, MatchingService.rank):
+        for fn in (
+            ConcatCrossEncoderEngine.run,
+            run_match_v3_full,
+            MatchingService.rank,
+        ):
             assert "language" not in inspect.signature(fn).parameters, fn.__name__
 
 
@@ -389,9 +396,7 @@ class TestCrossEncoderPerLanguage:
         (parent / "ms-marco-MiniLM-L-6-v2" / "config.json").write_text("{}")
 
         assert not CrossEncoderClient._is_checkpoint_dir(parent)
-        assert CrossEncoderClient._is_checkpoint_dir(
-            parent / "ms-marco-MiniLM-L-6-v2"
-        )
+        assert CrossEncoderClient._is_checkpoint_dir(parent / "ms-marco-MiniLM-L-6-v2")
 
     def test_a_custom_org_checkpoint_is_looked_up_by_repo_name(self, monkeypatch):
         from app import languages

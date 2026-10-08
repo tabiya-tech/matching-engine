@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any
 
 from app.ranking.text_pairs import (
     build_job_passage_from_cosine_rec,
@@ -23,10 +24,10 @@ class ICrossEncoderRerank(ABC):
     def build_pairs(
         self,
         resolved_skill_labels: Sequence[str],
-        cosine_recs: Sequence[Dict[str, Any]],
+        cosine_recs: Sequence[dict[str, Any]],
         *,
         final_top_k: int,
-    ) -> List[Tuple[str, str]]:
+    ) -> list[tuple[str, str]]:
         """
         The [query, passage] pairs to score, one per shortlisted row (empty when nothing to rerank).
 
@@ -39,11 +40,11 @@ class ICrossEncoderRerank(ABC):
     @abstractmethod
     def apply(
         self,
-        cosine_recs: Sequence[Dict[str, Any]],
-        scores: List[float],
+        cosine_recs: Sequence[dict[str, Any]],
+        scores: list[float],
         *,
         final_top_k: int,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Orders the shortlist by the scores of ``build_pairs`` and keeps ``final_top_k`` rows.
 
@@ -75,10 +76,10 @@ class CrossEncoderRerank(ICrossEncoderRerank):
     def build_pairs(
         self,
         resolved_skill_labels: Sequence[str],
-        cosine_recs: Sequence[Dict[str, Any]],
+        cosine_recs: Sequence[dict[str, Any]],
         *,
         final_top_k: int,
-    ) -> List[Tuple[str, str]]:
+    ) -> list[tuple[str, str]]:
         k = max(0, int(final_top_k))
         rows = list(cosine_recs)
         if k == 0 or not rows:
@@ -96,11 +97,11 @@ class CrossEncoderRerank(ICrossEncoderRerank):
 
     def apply(
         self,
-        cosine_recs: Sequence[Dict[str, Any]],
-        scores: List[float],
+        cosine_recs: Sequence[dict[str, Any]],
+        scores: list[float],
         *,
         final_top_k: int,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         k = max(0, int(final_top_k))
         rows = list(cosine_recs)
         if k == 0 or not rows:
@@ -112,7 +113,7 @@ class CrossEncoderRerank(ICrossEncoderRerank):
         else:
             scores = scores[:n]
 
-        decorated: List[Tuple[float, int, Dict[str, Any]]] = []
+        decorated: list[tuple[float, int, dict[str, Any]]] = []
         for i, r in enumerate(rows):
             ce = scores[i] if i < len(scores) else 0.0
             decorated.append((ce, i, dict(r)))
@@ -124,7 +125,7 @@ class CrossEncoderRerank(ICrossEncoderRerank):
         hi = max(logits) if logits else 0.0
         span = hi - lo
 
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for new_rank, (logit_raw, _i, row) in enumerate(chosen, start=1):
             row["rank_cosine"] = row.get("rank")
             row["cross_encoder_logit"] = round(float(logit_raw), 6)

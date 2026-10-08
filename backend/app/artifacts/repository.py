@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import torch
@@ -37,10 +37,10 @@ class SkillEmbeddingArtifact:
     weights: np.ndarray
     """``embedding.weight`` in its stored dtype (fp16 or fp32), one row per skill."""
 
-    whitening_target: Optional[float]
+    whitening_target: float | None
     """``whitening.target_max_p999`` for whitened artifacts, else None."""
 
-    model_name: Optional[str]
+    model_name: str | None
     """``model_name`` recorded in the checkpoint, if any."""
 
 
@@ -60,18 +60,18 @@ def load_skill_embedding(path: str | Path) -> SkillEmbeddingArtifact:
 
 
 def load_skill_to_row(
-    path: str | Path, *, encoding: Optional[str] = "utf-8"
-) -> Dict[str, int]:
+    path: str | Path, *, encoding: str | None = "utf-8"
+) -> dict[str, int]:
     with open(path, "r", encoding=encoding) as f:
         return json.load(f)
 
 
-def read_csv_rows(path: str | Path, *, newline: Optional[str] = None) -> List[dict]:
+def read_csv_rows(path: str | Path, *, newline: str | None = None) -> list[dict]:
     with open(path, "r", encoding="utf-8", newline=newline) as f:
         return list(csv.DictReader(f))
 
 
-def load_concat_whitening(path: str, *, expected_dim: int) -> Dict[str, Any]:
+def load_concat_whitening(path: str, *, expected_dim: int) -> dict[str, Any]:
     """The concat-whitening artifact as ``{mu, W, target}``, or ``{}`` if absent or incompatible."""
     if path and os.path.exists(path):
         z = np.load(path)
@@ -108,15 +108,15 @@ def file_sha256(path: str) -> str:
     return hashlib.sha256(open(path, "rb").read()).hexdigest()
 
 
-_HUB_CHAINS_CACHE: Dict[str, Optional[HubChains]] = {}
+_HUB_CHAINS_CACHE: dict[str, HubChains | None] = {}
 
 
-def load_hub_chains(path: str) -> Optional[HubChains]:
+def load_hub_chains(path: str) -> HubChains | None:
     """Load + cache the hub-chain map from ``path``. Returns None (and logs) on any failure, so the
     caller can disable tiering and keep today's strict behaviour."""
     if path in _HUB_CHAINS_CACHE:
         return _HUB_CHAINS_CACHE[path]
-    hc: Optional[HubChains] = None
+    hc: HubChains | None = None
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
@@ -141,7 +141,7 @@ def load_hub_chains(path: str) -> Optional[HubChains]:
 
 
 @lru_cache(maxsize=1)
-def load_attribute_schema(path: Optional[str] = None) -> dict:
+def load_attribute_schema(path: str | None = None) -> dict:
     p = Path(path) if path else ATTRIBUTE_SCHEMA_PATH
     with open(p, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -163,8 +163,8 @@ class IArtifactsRepository(ABC):
 
     @abstractmethod
     def load_skill_to_row(
-        self, path: str | Path, *, encoding: Optional[str] = "utf-8"
-    ) -> Dict[str, int]:
+        self, path: str | Path, *, encoding: str | None = "utf-8"
+    ) -> dict[str, int]:
         """
         Loads the skill-id → embedding-row map.
 
@@ -174,8 +174,8 @@ class IArtifactsRepository(ABC):
 
     @abstractmethod
     def read_csv_rows(
-        self, path: str | Path, *, newline: Optional[str] = None
-    ) -> List[dict]:
+        self, path: str | Path, *, newline: str | None = None
+    ) -> list[dict]:
         """
         Reads a taxonomy CSV into dict rows.
 
@@ -184,7 +184,7 @@ class IArtifactsRepository(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def load_concat_whitening(self, path: str, *, expected_dim: int) -> Dict[str, Any]:
+    def load_concat_whitening(self, path: str, *, expected_dim: int) -> dict[str, Any]:
         """
         Loads the concat-whitening artifact.
 
@@ -204,7 +204,7 @@ class IArtifactsRepository(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def load_hub_chains(self, path: str) -> Optional[HubChains]:
+    def load_hub_chains(self, path: str) -> HubChains | None:
         """
         Loads (and caches) the location hub-chain map.
 
@@ -213,7 +213,7 @@ class IArtifactsRepository(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def load_attribute_schema(self, path: Optional[str] = None) -> dict:
+    def load_attribute_schema(self, path: str | None = None) -> dict:
         """
         Loads (and caches) the job-attribute schema used by preference scoring.
 
@@ -232,23 +232,23 @@ class ArtifactsRepository(IArtifactsRepository):
         return load_skill_embedding(path)
 
     def load_skill_to_row(
-        self, path: str | Path, *, encoding: Optional[str] = "utf-8"
-    ) -> Dict[str, int]:
+        self, path: str | Path, *, encoding: str | None = "utf-8"
+    ) -> dict[str, int]:
         return load_skill_to_row(path, encoding=encoding)
 
     def read_csv_rows(
-        self, path: str | Path, *, newline: Optional[str] = None
-    ) -> List[dict]:
+        self, path: str | Path, *, newline: str | None = None
+    ) -> list[dict]:
         return read_csv_rows(path, newline=newline)
 
-    def load_concat_whitening(self, path: str, *, expected_dim: int) -> Dict[str, Any]:
+    def load_concat_whitening(self, path: str, *, expected_dim: int) -> dict[str, Any]:
         return load_concat_whitening(path, expected_dim=expected_dim)
 
     def file_sha256(self, path: str) -> str:
         return file_sha256(path)
 
-    def load_hub_chains(self, path: str) -> Optional[HubChains]:
+    def load_hub_chains(self, path: str) -> HubChains | None:
         return load_hub_chains(path)
 
-    def load_attribute_schema(self, path: Optional[str] = None) -> dict:
+    def load_attribute_schema(self, path: str | None = None) -> dict:
         return load_attribute_schema(path)

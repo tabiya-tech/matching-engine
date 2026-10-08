@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 class Stage1Corpus:
     """The items of one corpus that carry a stage-1 vector, aligned row-for-row."""
 
-    rows: List[Dict[str, Any]]
+    rows: list[dict[str, Any]]
     """Items with a stage-1 vector (their vector fields are stripped in place)."""
 
     n_loaded: int
@@ -40,8 +40,8 @@ class Stage1Corpus:
     normalized: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
     """L2-normalised ``matrix`` (float64)."""
 
-    ids: List[str] = field(default_factory=list)
-    requires_post_secondary: List[bool] = field(default_factory=list)
+    ids: list[str] = field(default_factory=list)
+    requires_post_secondary: list[bool] = field(default_factory=list)
 
 
 def _sorted_indices_desc(sim_row: np.ndarray) -> np.ndarray:
@@ -52,7 +52,7 @@ class IStage1Retriever(ABC):
     """Interface for the stage-1 shortlist."""
 
     @abstractmethod
-    def prepare(self, items: List[Dict[str, Any]]) -> Stage1Corpus:
+    def prepare(self, items: list[dict[str, Any]]) -> Stage1Corpus:
         """
         Collects the items that carry a stage-1 vector and strips the vectors off those dicts.
 
@@ -64,17 +64,17 @@ class IStage1Retriever(ABC):
     @abstractmethod
     def shortlist(
         self,
-        users: List[Dict[str, Any]],
+        users: list[dict[str, Any]],
         corpus: Stage1Corpus,
         user_unit_vectors: np.ndarray,
         *,
         matcher: CosineSkillMatcher,
         whitener: ConcatWhitener,
         retrieve_top_k: int,
-        hub_chains: Optional[HubChains] = None,
+        hub_chains: HubChains | None = None,
         w_regional: float = 1.0,
         w_national: float = 1.0,
-    ) -> List[List[Dict[str, Any]]]:
+    ) -> list[list[dict[str, Any]]]:
         """
         Ranks the corpus per user and keeps the top ``retrieve_top_k`` eligible rows.
 
@@ -94,9 +94,9 @@ class Stage1Retriever(IStage1Retriever):
     def __init__(self, *, embedding_dim: int):
         self._embedding_dim = embedding_dim
 
-    def prepare(self, items: List[Dict[str, Any]]) -> Stage1Corpus:
-        job_rows: List[Dict[str, Any]] = []
-        vectors: List[np.ndarray] = []
+    def prepare(self, items: list[dict[str, Any]]) -> Stage1Corpus:
+        job_rows: list[dict[str, Any]] = []
+        vectors: list[np.ndarray] = []
         for j in items:
             v = stage1_vector(j, dim=self._embedding_dim)
             if v is None:
@@ -128,17 +128,17 @@ class Stage1Retriever(IStage1Retriever):
 
     def shortlist(
         self,
-        users: List[Dict[str, Any]],
+        users: list[dict[str, Any]],
         corpus: Stage1Corpus,
         user_unit_vectors: np.ndarray,
         *,
         matcher: CosineSkillMatcher,
         whitener: ConcatWhitener,
         retrieve_top_k: int,
-        hub_chains: Optional[HubChains] = None,
+        hub_chains: HubChains | None = None,
         w_regional: float = 1.0,
         w_national: float = 1.0,
-    ) -> List[List[Dict[str, Any]]]:
+    ) -> list[list[dict[str, Any]]]:
         rt = max(1, int(retrieve_top_k))
         job_rows = corpus.rows
         j_mat = corpus.matrix
@@ -168,7 +168,7 @@ class Stage1Retriever(IStage1Retriever):
                 )
             j_used, u_used = j_norm, u_norm
 
-        shortlists: List[List[Dict[str, Any]]] = []
+        shortlists: list[list[dict[str, Any]]] = []
         for i, user in enumerate(users):
             sim_row = (u_used[i : i + 1] @ j_used.T).reshape(-1)
             # Location-tier weighting of the stage-1 ranking (urban-pull). Rank by cosine * tier so local
@@ -191,7 +191,7 @@ class Stage1Retriever(IStage1Retriever):
             order = _sorted_indices_desc(rank_row)
             user_no_ps = user_lacks_post_secondary(user)
 
-            cosine_recs: List[Dict[str, Any]] = []
+            cosine_recs: list[dict[str, Any]] = []
             for ji in order:
                 if user_no_ps and job_requires_ps[int(ji)]:
                     continue  # job requires post-secondary education the user does not have

@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 
@@ -45,7 +46,7 @@ class IConcatCrossEncoderEngine(ABC):
     """Interface for the two-stage (concat cosine → cross-encoder) candidate engine."""
 
     @abstractmethod
-    def embed_users(self, users: List[Dict[str, Any]]) -> np.ndarray:
+    def embed_users(self, users: list[dict[str, Any]]) -> np.ndarray:
         """
         Gemini concat embeddings for users, L2-normalised (float64 ``[n_users, dim]``).
 
@@ -59,16 +60,16 @@ class IConcatCrossEncoderEngine(ABC):
     @abstractmethod
     def run(
         self,
-        users: List[Dict[str, Any]],
-        items: List[Dict[str, Any]],
+        users: list[dict[str, Any]],
+        items: list[dict[str, Any]],
         *,
         retrieve_top_k: int,
         final_top_k: int,
-        mongo_timing: Optional[Dict[str, Any]] = None,
-        user_unit_vectors: Optional[np.ndarray] = None,
+        mongo_timing: dict[str, Any] | None = None,
+        user_unit_vectors: np.ndarray | None = None,
         apply_location_tier: bool = False,
         corpus: str = "jobs",
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Shortlists and reranks ``items`` for every user.
 
@@ -117,7 +118,7 @@ class ConcatCrossEncoderEngine(IConcatCrossEncoderEngine):
         self._rerank = rerank
         self._logger = logging.getLogger(self.__class__.__name__)
 
-    def embed_users(self, users: List[Dict[str, Any]]) -> np.ndarray:
+    def embed_users(self, users: list[dict[str, Any]]) -> np.ndarray:
         client = self._embedding_client
         client.ensure_configured()
         with observability.stage(
@@ -134,16 +135,16 @@ class ConcatCrossEncoderEngine(IConcatCrossEncoderEngine):
 
     def run(
         self,
-        users: List[Dict[str, Any]],
-        items: List[Dict[str, Any]],
+        users: list[dict[str, Any]],
+        items: list[dict[str, Any]],
         *,
         retrieve_top_k: int,
         final_top_k: int,
-        mongo_timing: Optional[Dict[str, Any]] = None,
-        user_unit_vectors: Optional[np.ndarray] = None,
+        mongo_timing: dict[str, Any] | None = None,
+        user_unit_vectors: np.ndarray | None = None,
         apply_location_tier: bool = False,
         corpus: str = "jobs",
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         if not users:
             return []
         rt = max(1, int(retrieve_top_k))
@@ -236,7 +237,7 @@ class ConcatCrossEncoderEngine(IConcatCrossEncoderEngine):
                 },
             )
 
-        out_results: List[Dict[str, Any]] = []
+        out_results: list[dict[str, Any]] = []
         with observability.stage(
             "rerank", corpus=corpus, n_users=len(users), model=reranker.model_name
         ):
@@ -246,7 +247,7 @@ class ConcatCrossEncoderEngine(IConcatCrossEncoderEngine):
                 scores = reranker.predict_scores(pairs) if pairs else []
                 reranked = self._rerank.apply(cosine_recs, scores, final_top_k=fk)
 
-                recs: List[Dict[str, Any]] = []
+                recs: list[dict[str, Any]] = []
                 for row in reranked:
                     recs.append(
                         {

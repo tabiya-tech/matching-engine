@@ -13,7 +13,6 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Optional
 
 from app.artifacts.get_artifacts_repository import get_artifacts_repository
 from app.clients.cross_encoder_client import CrossEncoderClient, ICrossEncoderClient
@@ -53,7 +52,7 @@ def _label_packs(embedding_ids: set) -> SkillLabelPacks:
     )
 
 
-def build_skill_matcher(model_path: Optional[str] = None) -> CosineSkillMatcher:
+def build_skill_matcher(model_path: str | None = None) -> CosineSkillMatcher:
     """A new CosineSkillMatcher over ``model_path`` (default ``EMBEDDING_MODEL_PATH``)."""
     repo = get_artifacts_repository()
     path = Path(model_path or EMBEDDING_MODEL_PATH)
@@ -69,7 +68,7 @@ def build_skill_matcher(model_path: Optional[str] = None) -> CosineSkillMatcher:
     )
 
 
-def _optional_csv_rows(path: str) -> Optional[list]:
+def _optional_csv_rows(path: str) -> list | None:
     try:
         return get_artifacts_repository().read_csv_rows(path)
     except FileNotFoundError:
@@ -111,7 +110,7 @@ def build_skill_scorer() -> SkillScorer:
 
 
 _matcher_lock = threading.Lock()
-_matcher_instance: Optional[CosineSkillMatcher] = None
+_matcher_instance: CosineSkillMatcher | None = None
 
 
 def get_skill_matcher() -> CosineSkillMatcher:
@@ -125,7 +124,7 @@ def get_skill_matcher() -> CosineSkillMatcher:
 
 
 _v4_matcher_lock = threading.Lock()
-_v4_matcher_instance: Optional[CosineSkillMatcher] = None
+_v4_matcher_instance: CosineSkillMatcher | None = None
 
 
 def get_v4_skill_matcher() -> CosineSkillMatcher:
@@ -141,7 +140,7 @@ def get_v4_skill_matcher() -> CosineSkillMatcher:
 
 
 _skill_scorer_lock = threading.Lock()
-_skill_scorer_instance: Optional[SkillScorer] = None
+_skill_scorer_instance: SkillScorer | None = None
 
 
 def get_skill_scorer() -> SkillScorer:
@@ -155,7 +154,7 @@ def get_skill_scorer() -> SkillScorer:
 
 
 _concat_white_lock = threading.Lock()
-_concat_whitener: Optional[ConcatWhitener] = None
+_concat_whitener: ConcatWhitener | None = None
 
 
 def get_concat_whitener() -> ConcatWhitener:
@@ -175,7 +174,7 @@ def get_concat_whitener() -> ConcatWhitener:
 
 _cross_encoder_lock = threading.Lock()
 # One cross-encoder per language: the checkpoint has to understand the label text it scores.
-_cross_encoder_instances: Dict[str, ICrossEncoderClient] = {}
+_cross_encoder_instances: dict[str, ICrossEncoderClient] = {}
 
 
 def get_cross_encoder_client() -> ICrossEncoderClient:
@@ -236,7 +235,7 @@ def get_preference_scorer():
     return UnifiedPreferenceScorer(schema)
 
 
-def preload_models() -> Dict[str, float]:
+def preload_models() -> dict[str, float]:
     """Warm CosineSkillMatcher + CrossEncoder once (call from FastAPI lifespan to avoid per-request cost)."""
     t0 = time.perf_counter()
     get_skill_matcher()

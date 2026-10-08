@@ -93,9 +93,7 @@ class TestMatchConcatMockedEmbeddings:
             {
                 **_job("job-ps", 0),
                 "requires_post_secondary": True,
-                "llm_job_attributes": {
-                    "attributes": {"requires_post_secondary": True}
-                },
+                "llm_job_attributes": {"attributes": {"requires_post_secondary": True}},
             },
             _job("job-ok", 1),
         ]

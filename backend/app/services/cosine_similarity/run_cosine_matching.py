@@ -34,7 +34,6 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 from app.config import EMBEDDING_MODEL_PATH, SKILLS_CSV_PATH, SKILL_TO_ROW_PATH
 
 
-
 def _backend_root() -> Path:
     here = Path(__file__).resolve()
     for parent in here.parents:

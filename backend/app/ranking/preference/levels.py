@@ -40,6 +40,7 @@ COST_ORIENTED_ATTRIBUTES: frozenset[str] = frozenset(
     }
 )
 
+
 def attribute_orientation(attr_name: str) -> Orientation:
     if attr_name in COST_ORIENTED_ATTRIBUTES:
         return "cost"

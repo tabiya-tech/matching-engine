@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import numpy as np
 
@@ -20,11 +20,11 @@ logger = logging.getLogger(__name__)
 
 def skill_detail(
     matcher: CosineSkillMatcher,
-    user: Dict[str, Any],
-    item: Dict[str, Any],
+    user: dict[str, Any],
+    item: dict[str, Any],
     *,
     whitened_gate: bool,
-) -> Tuple[List[Dict[str, Any]], Set[str]]:
+) -> tuple[list[dict[str, Any]], set[str]]:
     """Return (per_job_skill, matcher-resolved essential id set) for matched_skills.
 
     Both sides go through CosineSkillMatcher._resolve_label, so the essential id set is in
@@ -66,22 +66,22 @@ class RankOverrides:
 
     def compute(
         self,
-        user: Dict[str, Any],
-        v3_row: Optional[Dict[str, Any]],
-        item_index: Dict[str, Dict[str, Any]],
-        concat_by_uuid: Dict[str, tuple],
-        u_white_vec: Optional[np.ndarray],
-    ) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, Any]]:
+        user: dict[str, Any],
+        v3_row: dict[str, Any] | None,
+        item_index: dict[str, dict[str, Any]],
+        concat_by_uuid: dict[str, tuple],
+        u_white_vec: np.ndarray | None,
+    ) -> tuple[dict[str, float], dict[str, float], dict[str, Any]]:
         """
         - p_hat override = whitened+rescaled concat cosine(user, item) in [0,1]
         - coverage = essential-coverage in [0,1] (drives the achievability demotion)
         - detail cache {uuid: (per_job_skill, essential_ids)} reused by the formatters (no re-score).
         """
-        p_over: Dict[str, float] = {}
-        cov_over: Dict[str, float] = {}
-        det_cache: Dict[str, Any] = {}
-        parsed_covs: List[float] = []  # coverages of items WITH parsed essential skills
-        unparsed_uuids: List[
+        p_over: dict[str, float] = {}
+        cov_over: dict[str, float] = {}
+        det_cache: dict[str, Any] = {}
+        parsed_covs: list[float] = []  # coverages of items WITH parsed essential skills
+        unparsed_uuids: list[
             str
         ] = []  # items with no essential skills (back-filled below)
         target = self._whitener.rescale_target()

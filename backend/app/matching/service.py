@@ -12,7 +12,8 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 
@@ -64,13 +65,13 @@ def _ms(t0: float) -> float:
 
 
 def _retrieval_trace_meta(
-    jobs: List[Dict[str, Any]],
-    jobs_timing: Dict[str, Any],
-    occ: List[Dict[str, Any]],
-    occ_timing: Dict[str, Any],
-) -> Dict[str, Any]:
+    jobs: list[dict[str, Any]],
+    jobs_timing: dict[str, Any],
+    occ: list[dict[str, Any]],
+    occ_timing: dict[str, Any],
+) -> dict[str, Any]:
     """Counts + Mongo / occupation-cache timings for the ``retrieval`` trace span (no job content)."""
-    meta: Dict[str, Any] = {"n_jobs": len(jobs), "n_occupation_rows": len(occ)}
+    meta: dict[str, Any] = {"n_jobs": len(jobs), "n_occupation_rows": len(occ)}
     for timing in (jobs_timing or {}, occ_timing or {}):
         for k, v in timing.items():
             if isinstance(v, (int, float, bool)):
@@ -83,8 +84,8 @@ class IMatchingService(ABC):
 
     @abstractmethod
     async def match(
-        self, payload: List[MatchRequest], options: MatchOptions
-    ) -> List[MatchResponse]:
+        self, payload: list[MatchRequest], options: MatchOptions
+    ) -> list[MatchResponse]:
         """
         Matches every user in ``payload``; loads the jobs and occupations it needs.
 
@@ -101,16 +102,16 @@ class IMatchingService(ABC):
     @abstractmethod
     def rank(
         self,
-        users: List[Dict[str, Any]],
-        jobs: List[Dict[str, Any]],
-        occupations: List[Dict[str, Any]],
+        users: list[dict[str, Any]],
+        jobs: list[dict[str, Any]],
+        occupations: list[dict[str, Any]],
         *,
         retrieve_top_k: int,
         final_top_k: int,
-        final_score_combiner: Optional[str] = None,
+        final_score_combiner: str | None = None,
         skill_gap_top_k: int = MATCH_TOP_K_SKILL_GAPS,
-        mongo_timing: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
+        mongo_timing: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Ranks already-loaded jobs and occupations for each user (CPU-bound; call off the event loop).
 
@@ -167,8 +168,8 @@ class MatchingService(IMatchingService):
         return self._occupations_repository.attach_embeddings(occ), timing
 
     async def match(
-        self, payload: List[MatchRequest], options: MatchOptions
-    ) -> List[MatchResponse]:
+        self, payload: list[MatchRequest], options: MatchOptions
+    ) -> list[MatchResponse]:
         t_req = time.perf_counter()
         if len(payload) > MATCH_V2_MAX_USERS_PER_REQUEST:
             raise InvalidMatchRequestError(
@@ -234,7 +235,7 @@ class MatchingService(IMatchingService):
         score_ms = _ms(t_score)
 
         with observability.stage("formatting", step="response_model"):
-            out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
+            out: list[MatchResponse] = [MatchResponse(**row) for row in raw]
 
         log_match_step(
             "http /match",
@@ -250,10 +251,10 @@ class MatchingService(IMatchingService):
 
     def _location_tier_overrides(
         self,
-        user: Dict[str, Any],
-        v3_row: Optional[Dict[str, Any]],
-        item_index: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, float]:
+        user: dict[str, Any],
+        v3_row: dict[str, Any] | None,
+        item_index: dict[str, dict[str, Any]],
+    ) -> dict[str, float]:
         """Per-uuid location-tier multiplier for a user's job shortlist (urban-pull Part B).
 
         local=1.0, regional hub=W_REGIONAL, national hub=W_NATIONAL, remote=1.0, off-chain=0.0. Returns ``{}``
@@ -265,7 +266,7 @@ class MatchingService(IMatchingService):
         if hc is None:
             return {}
         county = user.get("province") or user.get("city") or ""
-        tiers: Dict[str, float] = {}
+        tiers: dict[str, float] = {}
         for r in (v3_row or {}).get("concat_gemini_ce_recommendations") or []:
             if not isinstance(r, dict):
                 continue
@@ -285,16 +286,16 @@ class MatchingService(IMatchingService):
 
     def rank(
         self,
-        users: List[Dict[str, Any]],
-        jobs: List[Dict[str, Any]],
-        occupations: List[Dict[str, Any]],
+        users: list[dict[str, Any]],
+        jobs: list[dict[str, Any]],
+        occupations: list[dict[str, Any]],
         *,
         retrieve_top_k: int,
         final_top_k: int,
-        final_score_combiner: Optional[str] = None,
+        final_score_combiner: str | None = None,
         skill_gap_top_k: int = MATCH_TOP_K_SKILL_GAPS,
-        mongo_timing: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
+        mongo_timing: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         combiner = (final_score_combiner or FINAL_SCORE_COMBINER).strip().lower()
         if combiner not in ("product", "geometric_mean"):
             raise ValueError(
@@ -335,12 +336,12 @@ class MatchingService(IMatchingService):
                 "V4_FULL_RANK_DEMOTE is on but the concat-whitening artifact is unavailable; "
                 "falling back to Phase-1 (no demotion, raw p_hat). Build/ship the artifact to enable Phase 2."
             )
-        job_concat: Dict[
+        job_concat: dict[
             str, tuple
         ] = {}  # uuid -> (stage1_vector, is_already_whitened)
-        occ_concat: Dict[str, tuple] = {}
-        u_white_by_uid: Dict[str, np.ndarray] = {}
-        rank_overrides: Optional[RankOverrides] = None
+        occ_concat: dict[str, tuple] = {}
+        u_white_by_uid: dict[str, np.ndarray] = {}
+        rank_overrides: RankOverrides | None = None
         if demote_active:
             whitener = self._whitener_provider()
             rank_overrides = RankOverrides(
@@ -409,7 +410,7 @@ class MatchingService(IMatchingService):
                 matcher, user, item, whitened_gate=V4_FULL_WHITENED_GATE
             )
 
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         cov_gamma = V4_FULL_COVERAGE_GAMMA if demote_active else 0.0
         for user in users:
             uid = str(user.get("user_id") or "")
@@ -448,7 +449,7 @@ class MatchingService(IMatchingService):
                     coverage_gamma=cov_gamma,
                     location_tier_by_uuid=job_tiers,
                 )
-            opportunities: List[Dict[str, Any]] = []
+            opportunities: list[dict[str, Any]] = []
             with observability.stage("formatting", corpus="jobs"):
                 for rec in job_recs:
                     item = job_index.get(str(rec.get("job_uuid") or ""))
@@ -473,7 +474,7 @@ class MatchingService(IMatchingService):
             # county, fall back to a random available county (location filter only — the user's real
             # preferences still drive u_hat). Then dedupe by code, keep best-ranked, take top-k.
             # Skipped entirely (empty list) when MATCH_V4_DISABLE_OCCUPATIONS is set.
-            occupations_out: List[Dict[str, Any]] = []
+            occupations_out: list[dict[str, Any]] = []
             if occupations_enabled:
                 with observability.stage("preference_scoring", corpus="occupations"):
                     occ_p, occ_cov, occ_det = ({}, {}, {})

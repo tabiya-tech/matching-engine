@@ -1,7 +1,6 @@
 """Routes for browsing the jobs catalog: ``GET /jobs`` and ``GET /jobs/stats``."""
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -43,7 +42,7 @@ def add_jobs_routes(router: APIRouter) -> None:
         },
     )
     async def list_jobs(
-        cursor: Optional[str] = Query(
+        cursor: str | None = Query(
             None,
             description=(
                 "Opaque pagination cursor returned as ``next_cursor`` by the previous "
@@ -56,24 +55,24 @@ def add_jobs_routes(router: APIRouter) -> None:
             le=JOBS_PAGE_MAX_LIMIT,
             description=f"Page size (1–{JOBS_PAGE_MAX_LIMIT}). Default {JOBS_PAGE_DEFAULT_LIMIT}.",
         ),
-        search: Optional[str] = Query(
+        search: str | None = Query(
             None, description="Case-insensitive search on the job title."
         ),
-        category: Optional[str] = Query(
+        category: str | None = Query(
             None,
             description="Filter by sector/category (matches category, sector, or ISCO group).",
         ),
-        employment_type: Optional[str] = Query(
+        employment_type: str | None = Query(
             None, description="Filter by employment type (exact match)."
         ),
-        location: Optional[str] = Query(
+        location: str | None = Query(
             None, description="Case-insensitive filter on city/county/province."
         ),
-        skills: Optional[str] = Query(
+        skills: str | None = Query(
             None,
             description="Case-insensitive filter on a skill label of the opportunity.",
         ),
-        days: Optional[int] = Query(
+        days: int | None = Query(
             None, ge=1, le=3650, description="Only jobs posted within the last N days."
         ),
         include_total: bool = Query(

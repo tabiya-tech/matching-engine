@@ -4,7 +4,8 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from app.config import OCCUPATION_CONCAT_EMBEDDINGS_PATH, OCCUPATION_JSON_PATH
 from app.ranking.whitening import ConcatWhitener
@@ -16,9 +17,9 @@ def _ms(t0: float) -> float:
     return (time.perf_counter() - t0) * 1000.0
 
 
-def _occ_skill_pairs(uuids: list, labels: list) -> List[Dict[str, str]]:
+def _occ_skill_pairs(uuids: list, labels: list) -> list[dict[str, str]]:
     """Zip occupation skill uuids with their labels (from the occupation JSON; '' if absent)."""
-    pairs: List[Dict[str, str]] = []
+    pairs: list[dict[str, str]] = []
     for i, u in enumerate(uuids):
         lab = labels[i] if i < len(labels) else ""
         pairs.append({"id": str(u), "label": str(lab) if lab else ""})
@@ -73,7 +74,7 @@ class IOccupationsRepository(ABC):
     """Interface for the occupation corpus (one row per occupation and county)."""
 
     @abstractmethod
-    async def load_with_timing(self) -> Tuple[List[dict], Dict[str, Any]]:
+    async def load_with_timing(self) -> tuple[list[dict], dict[str, Any]]:
         """
         Loads the flattened occupation corpus (cached after the first call).
 
@@ -83,7 +84,7 @@ class IOccupationsRepository(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def attach_embeddings(self, occupations: Sequence[dict]) -> List[dict]:
+    def attach_embeddings(self, occupations: Sequence[dict]) -> list[dict]:
         """
         Returns occupation rows with ``job_embedding`` / ``job_embedding_whitened`` attached by code.
 
@@ -95,7 +96,7 @@ class IOccupationsRepository(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def load_wa_lookup(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    def load_wa_lookup(self) -> tuple[dict[str, Any], dict[str, Any]]:
         """
         Builds the work-activity importance/level lookup from the occupation taxonomy.
 
@@ -109,18 +110,18 @@ class OccupationsRepository(IOccupationsRepository):
     def __init__(self, *, whitener_provider: Callable[[], ConcatWhitener]):
         # Whitens the occupation embeddings once at load (see _load_occupation_embeddings).
         self._whitener_provider = whitener_provider
-        self._cached_occupations: Optional[List[dict]] = None
+        self._cached_occupations: list[dict] | None = None
         # {occupation_code: np.ndarray(float32, EMBEDDING_DIM)}
-        self._cached_occ_embeddings: Optional[Dict[str, Any]] = None
+        self._cached_occ_embeddings: dict[str, Any] | None = None
         # True once the cached occ embeddings are whitened (consumed directly, no per-request whitening)
         self._occ_prewhitened = False
         # {occupation_label_lower: {WA_code: {importance, level}}}
-        self._wa_lookup: Optional[Dict[str, Any]] = None
+        self._wa_lookup: dict[str, Any] | None = None
         # {WA_code: {importance, level}} — fallback for unmatched
-        self._wa_averages: Optional[Dict[str, Any]] = None
+        self._wa_averages: dict[str, Any] | None = None
         self._logger = logging.getLogger(self.__class__.__name__)
 
-    async def load_with_timing(self) -> Tuple[List[dict], Dict[str, Any]]:
+    async def load_with_timing(self) -> tuple[list[dict], dict[str, Any]]:
         """Load occupations; returns (flat_list, timing_dict).
 
         On cache hit, occupation_file_read_ms is 0 and occupation_cache_hit is True.
@@ -209,7 +210,9 @@ class OccupationsRepository(IOccupationsRepository):
 
                     # Demand label so DemandScorer can read attributes["expected_demand"]
                     # (engine-agnostic; powers score_breakdown.demand_* on /match_v4).
-                    expected_demand = (cd.get("labor_demand") or {}).get("expected_demand")
+                    expected_demand = (cd.get("labor_demand") or {}).get(
+                        "expected_demand"
+                    )
                     if expected_demand:
                         attributes = {**attributes, "expected_demand": expected_demand}
 
@@ -258,7 +261,7 @@ class OccupationsRepository(IOccupationsRepository):
             logger.exception(e)
             raise RuntimeError(f"Failed to load occupations: {e}")
 
-    def _load_occupation_embeddings(self) -> Dict[str, Any]:
+    def _load_occupation_embeddings(self) -> dict[str, Any]:
         """Lazy/cached load of the committed occupation concat-embeddings NPZ (code -> vector).
 
         Returns {} (with a warning) if the artifact is missing/unreadable, so occupations are
@@ -266,7 +269,7 @@ class OccupationsRepository(IOccupationsRepository):
         """
         if self._cached_occ_embeddings is not None:
             return self._cached_occ_embeddings
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         try:
             import numpy as np
 
@@ -322,7 +325,7 @@ class OccupationsRepository(IOccupationsRepository):
         self._cached_occ_embeddings = out
         return out
 
-    def attach_embeddings(self, occupations: Sequence[dict]) -> List[dict]:
+    def attach_embeddings(self, occupations: Sequence[dict]) -> list[dict]:
         """Return occupation dicts with ``job_embedding`` (shared np.ndarray) attached by code.
 
         Vector is shared across all county-rows of the same occupation code (skills are identical),
@@ -332,7 +335,7 @@ class OccupationsRepository(IOccupationsRepository):
         emb = self._load_occupation_embeddings()
         if not emb:
             return list(occupations)
-        out: List[dict] = []
+        out: list[dict] = []
         for occ in occupations:
             vec = emb.get(str(occ.get("originUuid") or ""))
             if vec is None:
@@ -346,7 +349,7 @@ class OccupationsRepository(IOccupationsRepository):
                 out.append(o)
         return out
 
-    def load_wa_lookup(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    def load_wa_lookup(self) -> tuple[dict[str, Any], dict[str, Any]]:
         """Build WA importance/level lookup from the occupation taxonomy JSON.
 
         Returns (per_occupation_lookup, cross_occupation_averages).
@@ -363,7 +366,9 @@ class OccupationsRepository(IOccupationsRepository):
         sums = defaultdict(lambda: {"imp": 0.0, "lvl": 0.0, "n": 0})
 
         for entry in raw:
-            label = entry.get("occupation", {}).get("preferred_label", "").lower().strip()
+            label = (
+                entry.get("occupation", {}).get("preferred_label", "").lower().strip()
+            )
             wa_dict = {}
             for w in entry.get("onet_work_activities", []):
                 code = w.get("WA_code")

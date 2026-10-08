@@ -1,9 +1,9 @@
 """Swagger request-body examples and descriptions for the matching endpoints."""
 
-from typing import Any, Dict, List
+from typing import Any
 
 # Swagger default request body for POST /match (Kenya, post-secondary user).
-MATCH_BODY_EXAMPLE: List[Dict[str, Any]] = [
+MATCH_BODY_EXAMPLE: list[dict[str, Any]] = [
     {
         "user_id": "u1",
         "city": "Nairobi",
@@ -36,7 +36,7 @@ MATCH_BODY_DESCRIPTION = (
 )
 
 # Swagger default for /experiments/v5/match (Zambia: ZQF annotation on opportunities).
-MATCH_V5_BODY_EXAMPLE: List[Dict[str, Any]] = [
+MATCH_V5_BODY_EXAMPLE: list[dict[str, Any]] = [
     {
         "user_id": "u1",
         "city": "Lusaka",

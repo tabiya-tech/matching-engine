@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
+from typing import Any
 
 from app.ranking.location import user_matches_any_county
 
 logger = logging.getLogger(__name__)
 
 
-def occupation_counties(occupations: Iterable[Dict[str, Any]]) -> List[str]:
+def occupation_counties(occupations: Iterable[dict[str, Any]]) -> list[str]:
     """Sorted distinct counties the occupation corpus is flattened over."""
     return sorted({str(o.get("province")) for o in occupations if o.get("province")})
 
@@ -21,8 +22,8 @@ class OccupationSelector:
     keep one row per code in the user's county."""
 
     def fallback_location(
-        self, user: Dict[str, Any], counties: List[str]
-    ) -> Optional[Dict[str, str]]:
+        self, user: dict[str, Any], counties: list[str]
+    ) -> dict[str, str] | None:
         """A random available county to filter by when the user's province matches none of them
         (location filter only — the user's real preferences still drive u_hat); None otherwise."""
         if counties and not user_matches_any_county(user, counties):
@@ -43,12 +44,12 @@ class OccupationSelector:
 
     def unique_by_code(
         self,
-        recs: List[Dict[str, Any]],
-        item_index: Dict[str, Dict[str, Any]],
+        recs: list[dict[str, Any]],
+        item_index: dict[str, dict[str, Any]],
         limit: int,
-    ) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
         """The first ``limit`` (rec, item) pairs, in rank order, with one row per occupation code."""
-        out: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+        out: list[tuple[dict[str, Any], dict[str, Any]]] = []
         seen_codes: set = set()
         for rec in recs:
             item = item_index.get(str(rec.get("job_uuid") or ""))

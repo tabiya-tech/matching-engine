@@ -1,7 +1,7 @@
 """Route for matching users: ``POST /match``."""
 
 import logging
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
@@ -22,7 +22,7 @@ from app.schemas import MatchRequest, MatchResponse
 logger = logging.getLogger(__name__)
 
 
-def _error(description: str, detail: str) -> Dict[str, Any]:
+def _error(description: str, detail: str) -> dict[str, Any]:
     return {
         "description": description,
         "content": {"application/json": {"example": {"detail": detail}}},
@@ -41,7 +41,7 @@ def add_matching_routes(router: APIRouter) -> None:
         tags=["matching"],
         operation_id="match",
         summary="Match users to occupations, job opportunities and skill gaps",
-        response_model=List[MatchResponse],
+        response_model=list[MatchResponse],
         responses={
             400: _error(
                 "Bad Request: empty body, too many users, invalid "
@@ -58,7 +58,7 @@ def add_matching_routes(router: APIRouter) -> None:
     )
     async def match(
         payload: Annotated[
-            List[MatchRequest],
+            list[MatchRequest],
             Body(
                 ...,
                 description=(
@@ -68,7 +68,7 @@ def add_matching_routes(router: APIRouter) -> None:
                 example=MATCH_BODY_EXAMPLE,
             ),
         ],
-        retrieve_top_k: Optional[int] = Query(
+        retrieve_top_k: int | None = Query(
             None,
             ge=1,
             le=500,
@@ -77,7 +77,7 @@ def add_matching_routes(router: APIRouter) -> None:
                 f"Default: {MATCH_V4_RETRIEVE_TOP_K}."
             ),
         ),
-        final_top_k: Optional[int] = Query(
+        final_top_k: int | None = Query(
             None,
             ge=1,
             le=200,
@@ -86,7 +86,7 @@ def add_matching_routes(router: APIRouter) -> None:
                 f"Default: {MATCH_V4_FINAL_TOP_K}."
             ),
         ),
-        final_score_combiner: Optional[str] = Query(
+        final_score_combiner: str | None = Query(
             None,
             description=(
                 "How ``final_score`` combines ``u_hat`` and ``p_hat``: ``product`` (u_hat × p_hat) or "
@@ -94,7 +94,7 @@ def add_matching_routes(router: APIRouter) -> None:
                 "(``product`` unless overridden)."
             ),
         ),
-        skill_gap_top_k: Optional[int] = Query(
+        skill_gap_top_k: int | None = Query(
             None,
             ge=1,
             le=50,

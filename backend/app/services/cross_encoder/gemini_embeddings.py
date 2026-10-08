@@ -43,6 +43,7 @@ from app.clients.gemini_embedding_client import (
 )
 from app.ranking.vectors import l2_normalize_rows
 
+
 def _backend_root() -> Path:
     here = Path(__file__).resolve()
     for parent in here.parents:

@@ -7,8 +7,9 @@ import base64
 import binascii
 import logging
 import re
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Only jobs intended to be shown / matched; keeps Mongo transfers and Python work small.
 # Recommended index: { "is_active": 1 } (plus compounds if you add more filters)
-RANKED_JOBS_ACTIVE_FILTER: Dict[str, Any] = {"is_active": True}
+RANKED_JOBS_ACTIVE_FILTER: dict[str, Any] = {"is_active": True}
 
 # Ranked / enriched job docs: listing fields on classifier_metadata (see build_job_dict_from_ranked).
 _M_CITY = "classifier_metadata.city"
@@ -29,7 +30,7 @@ _M_COUNTY = "classifier_metadata.county"
 _M_PROVINCE = "classifier_metadata.province"
 
 # Inclusion projection for job find (must stay aligned with build_job_dict_from_ranked).
-RANKED_JOB_FIND_PROJECTION: Dict[str, int] = {
+RANKED_JOB_FIND_PROJECTION: dict[str, int] = {
     "job_id": 1,
     "job_fingerprint": 1,
     "is_active": 1,
@@ -99,7 +100,7 @@ def _norm_loc_value(v: Any) -> str:
     return s.casefold() if s else ""
 
 
-def _remote_substring_ors() -> List[Dict[str, Any]]:
+def _remote_substring_ors() -> list[dict[str, Any]]:
     r = "remote"
     return [
         {_M_CITY: {"$regex": r, "$options": "i"}},
@@ -107,9 +108,7 @@ def _remote_substring_ors() -> List[Dict[str, Any]]:
     ]
 
 
-def _field_contains_substr_regex(
-    field: str, needle_cf: str
-) -> Optional[Dict[str, Any]]:
+def _field_contains_substr_regex(field: str, needle_cf: str) -> dict[str, Any] | None:
     if not needle_cf:
         return None
     return {field: {"$regex": re.escape(needle_cf), "$options": "i"}}
@@ -117,7 +116,7 @@ def _field_contains_substr_regex(
 
 def _expr_haystack_contains_mongo_subfield(
     haystack_casefold: str, dollar_field: str
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """True when haystack (user string) contains the job’s city/county (Python: job in user).
 
     Requires a non-empty job field: MongoDB matches an empty substring at index 0 for
@@ -136,7 +135,7 @@ def _expr_haystack_contains_mongo_subfield(
     }
 
 
-def _location_or_clauses_for_one_user(user: dict) -> List[Dict[str, Any]]:
+def _location_or_clauses_for_one_user(user: dict) -> list[dict[str, Any]]:
     """Superset of matching_service._job_matches_user_location, on classifier_metadata fields.
 
     By default the needle set is the user's {city, province}. When LOCATION_TIER_ENABLED (urban-pull
@@ -146,7 +145,7 @@ def _location_or_clauses_for_one_user(user: dict) -> List[Dict[str, Any]]:
     """
     uc = _norm_loc_value(user.get("city"))
     up = _norm_loc_value(user.get("province"))
-    ors: List[Dict[str, Any]] = list(_remote_substring_ors())
+    ors: list[dict[str, Any]] = list(_remote_substring_ors())
     if not uc or not up:
         return ors
     needles = {uc, up}
@@ -174,14 +173,14 @@ def _location_or_clauses_for_one_user(user: dict) -> List[Dict[str, Any]]:
 
 def build_mongo_filter_active_and_location(
     users: Sequence[dict],
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """
     is_active and (OR of all per-user location clauses). None if the caller should
     use active-only (no user context or empty list).
     """
     if not users:
         return None
-    parts: List[Dict[str, Any]] = []
+    parts: list[dict[str, Any]] = []
     for u in users:
         parts.extend(_location_or_clauses_for_one_user(u))
     if not parts:
@@ -189,7 +188,7 @@ def build_mongo_filter_active_and_location(
     return {"$and": [RANKED_JOBS_ACTIVE_FILTER, {"$or": parts}]}
 
 
-def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def build_job_dict_from_ranked(rd: dict[str, Any]) -> dict[str, Any] | None:
     """Build the flat job dict used by matching from one stored job document.
 
     Listing metadata (title, employer, location, …) comes from ``classifier_metadata``.
@@ -246,7 +245,7 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     onet_wa = list(rd.get("onet_work_activities") or [])
     raw_sgu = rd.get("skill_groups_origin_uuids")
     if raw_sgu is None:
-        skill_groups: List[str] = []
+        skill_groups: list[str] = []
     elif isinstance(raw_sgu, list):
         skill_groups = [str(x) for x in raw_sgu]
     else:
@@ -277,14 +276,14 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     source_platform = (
         meta.get("source_platform") or meta.get("source") or meta.get("platform")
     )
-    skill_labels: List[str] = []
+    skill_labels: list[str] = []
     _seen_labels: set = set()
     for s in essential_skills + optional_skills:
         lbl = s.get("label")
         if lbl and lbl not in _seen_labels:
             _seen_labels.add(lbl)
             skill_labels.append(lbl)
-    out: Dict[str, Any] = {
+    out: dict[str, Any] = {
         "uuid": job_id,
         "originUuid": (
             rd.get("origin_uuid") or rd.get("originUuid") or job_fp_s or job_id
@@ -348,11 +347,9 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # The matching engine consumes such vectors directly; raw vectors (offline, occupations, not-yet-
     # whitened jobs) are whitened in-process. Absent/False => raw (safe default).
     out["job_embedding_whitened"] = (
-        (((rd.get("llm_reranker_meta") or {}).get("embedding") or {}).get("whitening") or {}).get(
-            "enabled"
-        )
-        is True
-    )
+        ((rd.get("llm_reranker_meta") or {}).get("embedding") or {}).get("whitening")
+        or {}
+    ).get("enabled") is True
     return out
 
 
@@ -377,13 +374,13 @@ def _decode_jobs_cursor(cursor: str) -> ObjectId:
 
 def build_jobs_browse_filter(
     *,
-    search: Optional[str] = None,
-    category: Optional[str] = None,
-    employment_type: Optional[str] = None,
-    location: Optional[str] = None,
-    skills: Optional[str] = None,
-    days: Optional[int] = None,
-) -> Dict[str, Any]:
+    search: str | None = None,
+    category: str | None = None,
+    employment_type: str | None = None,
+    location: str | None = None,
+    skills: str | None = None,
+    days: int | None = None,
+) -> dict[str, Any]:
     """Mongo filter for the /jobs browse endpoint, composed with ``is_active``.
 
     Every clause is optional; all supplied clauses are AND-ed together (a job must match
@@ -391,11 +388,16 @@ def build_jobs_browse_filter(
     document so the filter is applied by Mongo before shaping. ``category`` and ``location``
     span several candidate field names because the stored data is not uniform.
     """
-    clauses: List[Dict[str, Any]] = [RANKED_JOBS_ACTIVE_FILTER]
+    clauses: list[dict[str, Any]] = [RANKED_JOBS_ACTIVE_FILTER]
 
     if search and search.strip():
         clauses.append(
-            {"classifier_metadata.title": {"$regex": re.escape(search.strip()), "$options": "i"}}
+            {
+                "classifier_metadata.title": {
+                    "$regex": re.escape(search.strip()),
+                    "$options": "i",
+                }
+            }
         )
     if category and category.strip():
         rx = {"$regex": re.escape(category.strip()), "$options": "i"}
@@ -425,8 +427,8 @@ def build_jobs_browse_filter(
         )
     if days is not None:
         cutoff = (
-            datetime.now(timezone.utc) - timedelta(days=int(days))
-        ).date().isoformat()
+            (datetime.now(timezone.utc) - timedelta(days=int(days))).date().isoformat()
+        )
         gte = {"$gte": cutoff}
         clauses.append(
             {
@@ -475,7 +477,10 @@ JOBS_INDEX_MODELS = [
         name="is_active_category",
     ),
     IndexModel(
-        [("is_active", ASCENDING), ("classifier_metadata.isco_occupation_group", ASCENDING)],
+        [
+            ("is_active", ASCENDING),
+            ("classifier_metadata.isco_occupation_group", ASCENDING),
+        ],
         name="is_active_isco_group",
     ),
     IndexModel(
