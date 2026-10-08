@@ -87,9 +87,9 @@ python tests/sanity_checks/data_schema_check.py
 Runs `pytest tests/data_schema/` which includes:
 
 - **`test_openapi_schema.py`** — API wiring
-  - All 6 endpoints registered (`/health`, `/match`, `/experiments/v2/match`, `/experiments/v3/match`, `/match_v4`, `/experiments/v5/match`)
+  - Exactly the served endpoints are registered (`/health`, `/jobs`, `/jobs/stats`, `/match`); retired v2/v3/v5/`/match_v4` routes are absent
   - Correct HTTP methods (GET for health, POST for all match endpoints)
-  - Auth boundaries: `/health` and `/match` require `x-api-key`; experiment endpoints are public
+  - Auth boundaries: every endpoint requires `x-api-key`
 
 - **`test_config_validation.py`** — Configuration safety
   - Invalid `FINAL_SCORE_COMBINER` values are rejected at import time
@@ -110,8 +110,9 @@ Runs `pytest tests/smoke/` which includes:
 - **`test_endpoint_smoke.py`** — Endpoint behavior
   - Empty payload `[]` returns `400`
   - Invalid `final_score_combiner` query param returns `400`
-  - `_zqf_annotation` logic: eligible, ineligible, missing user ZQF, missing job ZQF
-  - Unified response contract: all match endpoints (`/match`, `/experiments/v2/match`, `/experiments/v3/match`, `/match_v4`, `/experiments/v5/match`) return `user_id` + three recommendation lists
+  - `POST /match` without `x-api-key` returns 403
+  - `_zqf_annotation` logic (retired v5 code, still unit-tested): eligible, ineligible, missing user ZQF, missing job ZQF
+  - Response contract: `POST /match` returns `user_id` + three recommendation lists
 
 ### Run Everything at Once
 

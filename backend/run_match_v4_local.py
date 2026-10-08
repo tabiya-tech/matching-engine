@@ -1,21 +1,21 @@
 """
-Run the live ``POST /match``, ``POST /experiments/v3/match``, ``POST /match_v4`` or
-``POST /experiments/v5/match`` algorithm locally against offline datasets — no MongoDB. Pick the
-engine with ``--version {match,v3,v4,v5}`` (default v4).
+Run the live ``POST /match`` engine (v4) — or one of the retired engines (legacy, v3, v5), which are
+no longer served — locally against offline datasets, no MongoDB. Pick the engine with
+``--version {match,v3,v4,v5}`` (default v4).
 
-Each version calls the SAME function its live route calls, so the local output is identical to what
-that endpoint's consumers receive:
+Each version calls the SAME engine function its route calls (or called, for retired versions), so
+the local output is identical to what that endpoint's consumers receive(d):
   * ``--version v3`` -> ``run_match_v3_full`` (app.routes.match_v3): Gemini concat-cosine -> cross-
     encoder rerank. ``final_score`` is the concat cosine (whitened space when the artifact is present);
     NO preference layer (u_hat/p_hat empty). Same ``MatchResponse`` shape. Route defaults: 50/30.
-  * ``--version v4`` -> ``run_match_v4_full`` (app.routes.match_v4): Pydantic validation -> Gemini
+  * ``--version v4`` -> ``run_match_v4_full`` (app.routes.match, served at ``POST /match``): Pydantic validation -> Gemini
     user embedding -> concat-cosine retrieval -> cross-encoder rerank -> u_hat/p_hat preference final
     score -> ``MatchResponse`` with opportunities (jobs), occupations/careers (demand-gamma weighting
     + per-user location filter + top-k) and Node2Vec skill-gap recommendations.
   * ``--version v5`` -> the SAME ``run_match_v4_full`` engine, then per-opportunity ZQF (Zambia)
     eligibility annotation (zqf_eligible/zqf_gap + labels) from the user's ``zqf_level`` and each job's
     ``zqf_min`` (app.routes.match_v5) -> ``MatchResponseV5``. Null unless the data carries ZQF fields.
-  * ``--version match`` -> ``match_user_with_data`` (app.routes.match): the legacy skill/Node2Vec
+  * ``--version match`` -> ``match_user_with_data`` (app.routes.match_legacy, retired): the legacy skill/Node2Vec
     engine — no Gemini user embedding, no cross-encoder, no retrieve/final top-k. Same ``MatchResponse``
     shape (opportunities + occupations + skill-gaps), so all the CSV/manifest outputs below apply; the
     v4-only u_hat/p_hat/demand columns are simply empty.
@@ -181,7 +181,7 @@ def _completeness(u: dict, require_bws: bool) -> tuple[bool, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run /match, /match_v3, /match_v4 or /match_v5 locally against offline files (no Mongo)"
+        description="Run the POST /match engine (v4) or a retired engine locally against offline files (no Mongo)"
     )
     parser.add_argument(
         "--version",
@@ -189,14 +189,14 @@ def main() -> None:
         default="v4",
         help=(
             "Which endpoint engine to run (default v4):\n"
-            "  match -> POST /match            : legacy skill/Node2Vec engine (match_user_with_data); "
+            "  match -> retired legacy /match  : legacy skill/Node2Vec engine (match_user_with_data); "
             "no Gemini/cross-encoder, no retrieve/final top-k.\n"
-            "  v3    -> POST /experiments/v3/match : Gemini concat-cosine -> cross-encoder rerank "
+            "  v3    -> retired v3 (not served) : Gemini concat-cosine -> cross-encoder rerank "
             "(run_match_v3_full); final_score is the concat cosine (whitened when the artifact is "
             "present), NO preference layer (u_hat/p_hat empty). Defaults retrieve=50/final=30.\n"
-            "  v4    -> POST /match_v4         : Gemini concat-cosine -> cross-encoder -> u_hat x p_hat "
+            "  v4    -> POST /match            : Gemini concat-cosine -> cross-encoder -> u_hat x p_hat "
             "(run_match_v4_full). Defaults retrieve=100/final=50.\n"
-            "  v5    -> POST /experiments/v5/match : same engine as v4 plus per-opportunity ZQF "
+            "  v5    -> retired v5 (not served) : same engine as v4 plus per-opportunity ZQF "
             "(Zambia) eligibility annotation from the user's zqf_level and each job's zqf_min."
         ),
     )
@@ -586,10 +586,10 @@ def main() -> None:
         file=sys.stderr,
     )
     endpoint_label = {
-        "match": "/match",
-        "v3": "/experiments/v3/match",
-        "v4": "/match_v4",
-        "v5": "/experiments/v5/match",
+        "match": "/match (retired legacy engine)",
+        "v3": "/experiments/v3/match (retired)",
+        "v4": "/match",
+        "v5": "/experiments/v5/match (retired)",
     }[args.version]
     if HAS_PREF:
         print(
@@ -1022,13 +1022,13 @@ def main() -> None:
         "version": args.version,
         "endpoint": endpoint_label,
         "engine": (
-            "run_match_v3_full (identical to the live POST /experiments/v3/match route; "
+            "run_match_v3_full (identical to the retired POST /experiments/v3/match route; "
             "Gemini concat-cosine -> cross-encoder rerank, concat-cosine [whitened] final_score, no preference layer)"
             if args.version == "v3"
-            else f"run_match_v4_full (identical to the live POST {endpoint_label} route)"
+            else f"run_match_v4_full (identical to the POST {endpoint_label} route)"
             + (" + per-opportunity ZQF eligibility annotation" if is_v5 else "")
             if IS_GEMINI
-            else "match_user_with_data (identical to the live POST /match route; legacy skill/Node2Vec engine)"
+            else "match_user_with_data (identical to the retired legacy POST /match route; legacy skill/Node2Vec engine)"
         ),
         "generated_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "wall_seconds": round(wall_s, 2),
@@ -1116,7 +1116,7 @@ def main() -> None:
                 if args.version == "v3"
                 else f"Drives run_match_v4_full directly — same engine, scoring, occupation demand-gamma + per-user location filter, top-k, and skill-gaps as the deployed POST {endpoint_label}. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ."
                 if IS_GEMINI
-                else "Drives match_user_with_data directly — same legacy skill/Node2Vec engine, scoring, top-k and skill-gaps as the deployed POST /match. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ."
+                else "Drives match_user_with_data directly — same legacy skill/Node2Vec engine, scoring, top-k and skill-gaps as the retired legacy POST /match. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ."
             ),
             (
                 "Job vectors come from each job's 3072-dim 'job_embedding' (stage-1 fallback); same space as gemini-embedding-001."
