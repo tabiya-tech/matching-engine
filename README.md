@@ -77,6 +77,21 @@ VITE_MATCHING_API_KEY=<your-api-key> npm run dev
 
 The frontend calls the backend at `http://127.0.0.1:8000/match` and sends `VITE_MATCHING_API_KEY` as the `x-api-key` header.
 
+## Code Quality & Type Checking
+
+Every push runs a CI gate (`.github/workflows/main.yml`, calling `backend-ci.yml`) against `backend/` that must pass: lint (`ruff check`, including the `ANN401` rule banning `Any` in function parameters and return types), formatting (`ruff format --check`), and strict type checking (`pyright`).
+
+Run the same checks locally from `backend/`:
+
+```bash
+pip install -r requirements-dev.txt
+ruff check .
+ruff format --check .
+pyright .
+```
+
+**Strictness policy:** `Any` is banned in function parameter and return type annotations (`ruff`'s `ANN401` rule, enabled in `backend/pyproject.toml`). An existing, unavoidable use is suppressed inline with `# noqa: ANN401` and a short reason — visible in the diff and reviewable, not silently ignored — rather than disabled project-wide.
+
 ## Languages
 
 Each deployment is configured for one language with `TARGET_LANGUAGE` (`en` | `es`, or a
