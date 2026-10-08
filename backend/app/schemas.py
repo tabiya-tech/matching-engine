@@ -51,7 +51,9 @@ class PreferenceVector(BaseModel):
         examples=[0.7],
     )
     task_content: Optional[float] = Field(
-        default=0.5, description="Preference for the job's task content, in [0, 1]. 0.5 = neutral.", examples=[0.5]
+        default=0.5,
+        description="Preference for the job's task content, in [0, 1]. 0.5 = neutral.",
+        examples=[0.5],
     )
     physical_demand: float = Field(
         default=0.5,
@@ -59,16 +61,24 @@ class PreferenceVector(BaseModel):
         examples=[0.4],
     )
     work_flexibility: Optional[float] = Field(
-        default=0.5, description="Preference for flexible working arrangements, in [0, 1]. 0.5 = neutral.", examples=[0.5]
+        default=0.5,
+        description="Preference for flexible working arrangements, in [0, 1]. 0.5 = neutral.",
+        examples=[0.5],
     )
     social_interaction: float = Field(
-        default=0.5, description="Preference for social / people-facing work, in [0, 1]. 0.5 = neutral.", examples=[0.6]
+        default=0.5,
+        description="Preference for social / people-facing work, in [0, 1]. 0.5 = neutral.",
+        examples=[0.6],
     )
     career_growth: float = Field(
-        default=0.5, description="Preference for career-growth potential, in [0, 1]. 0.5 = neutral.", examples=[0.8]
+        default=0.5,
+        description="Preference for career-growth potential, in [0, 1]. 0.5 = neutral.",
+        examples=[0.8],
     )
     social_meaning: Optional[float] = Field(
-        default=0.5, description="Preference for socially meaningful work, in [0, 1]. 0.5 = neutral.", examples=[0.5]
+        default=0.5,
+        description="Preference for socially meaningful work, in [0, 1]. 0.5 = neutral.",
+        examples=[0.5],
     )
     bws_scores: Optional[dict] = Field(
         default=None,
@@ -97,7 +107,7 @@ class MatchRequest(BaseModel):
     city: str = Field(
         default="",
         description=(
-            "User's city/town. Used to prefer nearby opportunities. A trailing \" County\" is stripped. "
+            'User\'s city/town. Used to prefer nearby opportunities. A trailing " County" is stripped. '
             "Empty = no location preference."
         ),
         examples=["Nairobi"],
@@ -106,7 +116,7 @@ class MatchRequest(BaseModel):
         default="",
         description=(
             "User's province/county. Scopes occupations and opportunities to the user's region. "
-            "A trailing \" County\" is stripped. Empty = a fallback region is used for occupations."
+            'A trailing " County" is stripped. Empty = a fallback region is used for occupations.'
         ),
         examples=["Nairobi"],
     )
@@ -152,21 +162,37 @@ class MatchRequest(BaseModel):
 class SkillComponents(BaseModel):
     # Optional so the response can carry a partial, interpretable breakdown (ess/opt in [0,1];
     # loc/grp null = "not computed").
-    loc: Optional[float] = Field(default=None, description="Location similarity. Not computed by the current engine (null).")
+    loc: Optional[float] = Field(
+        default=None,
+        description="Location similarity. Not computed by the current engine (null).",
+    )
     ess: Optional[float] = Field(
-        default=None, description="Mean best cosine similarity over the item's essential skills, in [0, 1].", examples=[0.62]
+        default=None,
+        description="Mean best cosine similarity over the item's essential skills, in [0, 1].",
+        examples=[0.62],
     )
     opt: Optional[float] = Field(
-        default=None, description="Mean best cosine similarity over the item's optional skills, in [0, 1].", examples=[0.48]
+        default=None,
+        description="Mean best cosine similarity over the item's optional skills, in [0, 1].",
+        examples=[0.48],
     )
-    grp: Optional[float] = Field(default=None, description="Skill-group recall. Not computed by the current engine (null).")
+    grp: Optional[float] = Field(
+        default=None,
+        description="Skill-group recall. Not computed by the current engine (null).",
+    )
 
 
 class PHatComponents(BaseModel):
     gate: float = Field(default=0.0, description="Eligibility gate component of p_hat.")
-    essential_fit: float = Field(default=0.0, description="Essential-skill fit component of p_hat.")
-    recruiter_readiness: float = Field(default=0.0, description="Recruiter-readiness component of p_hat.")
-    market_opportunity: float = Field(default=0.0, description="Market-opportunity component of p_hat.")
+    essential_fit: float = Field(
+        default=0.0, description="Essential-skill fit component of p_hat."
+    )
+    recruiter_readiness: float = Field(
+        default=0.0, description="Recruiter-readiness component of p_hat."
+    )
+    market_opportunity: float = Field(
+        default=0.0, description="Market-opportunity component of p_hat."
+    )
 
 
 class ScoreBreakdown(BaseModel):
@@ -187,17 +213,21 @@ class ScoreBreakdown(BaseModel):
         examples=["concat_cosine_whitened"],
     )
     p_hat_components: Optional[PHatComponents] = Field(
-        default=None, description="Decomposition of p_hat. Null when the engine does not compute it."
+        default=None,
+        description="Decomposition of p_hat. Null when the engine does not compute it.",
     )
     # --- Legacy additive fields ---
     total_skill_utility: Optional[float] = Field(
-        default=None, description="Essential-skill fit aggregate in [0, 1] (same value as ``skill_components.ess``).", examples=[0.62]
+        default=None,
+        description="Essential-skill fit aggregate in [0, 1] (same value as ``skill_components.ess``).",
+        examples=[0.62],
     )
     skill_components: Optional[SkillComponents] = Field(
         default=None, description="Per-component skill-similarity breakdown."
     )
     skill_diagnostics: Optional[SkillComponents] = Field(
-        default=None, description="Reserved for raw skill diagnostics. Null in the current engine."
+        default=None,
+        description="Reserved for raw skill diagnostics. Null in the current engine.",
     )
     skill_penalty_applied: Optional[float] = Field(
         default=None,
@@ -205,16 +235,24 @@ class ScoreBreakdown(BaseModel):
         examples=[0.25],
     )
     preference_score: Optional[float] = Field(
-        default=None, description="Preference score; equal to ``u_hat``.", examples=[0.71]
+        default=None,
+        description="Preference score; equal to ``u_hat``.",
+        examples=[0.71],
     )
     preference_score_legacy: Optional[float] = Field(
-        default=None, description="Preference score from the previous scorer, kept for comparison.", examples=[0.68]
+        default=None,
+        description="Preference score from the previous scorer, kept for comparison.",
+        examples=[0.68],
     )
     demand_score: Optional[float] = Field(
-        default=None, description="Expected labour-market demand score for the item. Null when unknown.", examples=[0.75]
+        default=None,
+        description="Expected labour-market demand score for the item. Null when unknown.",
+        examples=[0.75],
     )
     demand_label: Optional[str] = Field(
-        default=None, description="Human-readable demand level. Null when unknown.", examples=["High Expected Demand"]
+        default=None,
+        description="Human-readable demand level. Null when unknown.",
+        examples=["High Expected Demand"],
     )
     # Per-skill gate: essential-coverage in [0,1] and the graded badge (strong/partial/weak)
     essential_coverage: Optional[float] = Field(
@@ -255,171 +293,360 @@ class ScoreBreakdown(BaseModel):
 
 
 class MatchedSkill(BaseModel):
-    job_skill_id: str = Field(description="ESCO UUID of the item's skill.", examples=["00000000-0000-4000-8000-000000000001"])
-    job_skill_label: Optional[str] = Field(default=None, description="Label of the item's skill.", examples=["customer service"])
+    job_skill_id: str = Field(
+        description="ESCO UUID of the item's skill.",
+        examples=["00000000-0000-4000-8000-000000000001"],
+    )
+    job_skill_label: Optional[str] = Field(
+        default=None,
+        description="Label of the item's skill.",
+        examples=["customer service"],
+    )
     best_user_skill_id: Optional[str] = Field(
-        default=None, description="UUID of the user's skill most similar to this one.", examples=["00000000-0000-4000-8000-000000000001"]
+        default=None,
+        description="UUID of the user's skill most similar to this one.",
+        examples=["00000000-0000-4000-8000-000000000001"],
     )
     best_user_skill_label: Optional[str] = Field(
-        default=None, description="Label of the user's most similar skill.", examples=["customer service"]
+        default=None,
+        description="Label of the user's most similar skill.",
+        examples=["customer service"],
     )
-    similarity: float = Field(description="Cosine similarity between the two skills, in [0, 1].", examples=[0.93])
+    similarity: float = Field(
+        description="Cosine similarity between the two skills, in [0, 1].",
+        examples=[0.93],
+    )
     meets_threshold: bool = Field(
         description="True when the user is considered to have this skill (exact UUID match or similarity above threshold).",
         examples=[True],
     )
     match_tier: Optional[str] = Field(
-        default=None, description="How it matched: ``exact``, ``embedding`` or ``none``.", examples=["exact"]
+        default=None,
+        description="How it matched: ``exact``, ``embedding`` or ``none``.",
+        examples=["exact"],
     )
 
 
 class OptionalSkillMatch(BaseModel):
     skill_id: str = Field(description="ESCO UUID of the matched optional skill.")
-    skill_label: Optional[str] = Field(default=None, description="Label of the matched optional skill.")
+    skill_label: Optional[str] = Field(
+        default=None, description="Label of the matched optional skill."
+    )
 
 
 class SkillGroupMatch(BaseModel):
     skill_group_id: str = Field(description="ESCO UUID of the matched skill group.")
-    skill_group_label: Optional[str] = Field(default=None, description="Label of the matched skill group.")
+    skill_group_label: Optional[str] = Field(
+        default=None, description="Label of the matched skill group."
+    )
 
 
 class MatchedSkills(BaseModel):
     essential_skill_matches: List[MatchedSkill] = Field(
-        default_factory=list, description="One row per essential skill of the item, met or not."
+        default_factory=list,
+        description="One row per essential skill of the item, met or not.",
     )
     optional_exact_matches: List[OptionalSkillMatch] = Field(
-        default_factory=list, description="Optional skills of the item that the user meets."
+        default_factory=list,
+        description="Optional skills of the item that the user meets.",
     )
     skill_group_matches: List[SkillGroupMatch] = Field(
-        default_factory=list, description="Matched skill groups. Empty in the current engine."
+        default_factory=list,
+        description="Matched skill groups. Empty in the current engine.",
     )
 
 
 class MatchedPreference(BaseModel):
-    attribute: str = Field(description="Job attribute name (matches a ``PreferenceVector`` field).", examples=["earnings_per_month"])
-    job_value: Optional[str] = Field(default=None, description="The item's raw value for the attribute.", examples=["earn_70k"])
-    job_value_label: Optional[str] = Field(default=None, description="Human-readable item value.", examples=["~70k"])
-    user_weight: float = Field(description="The user's weight for this attribute as used by the scorer.", examples=[0.7])
-    beta: float = Field(description="Model coefficient for the attribute.", examples=[0.35])
-    encoded_value: float = Field(description="Numerically encoded item value used in scoring.", examples=[1.0])
-    contribution: float = Field(description="Contribution to the preference utility (beta × user_weight × encoded_value).", examples=[0.245])
-    matched: bool = Field(description="True when the item has the attribute level the user values (encoded_value > 0).", examples=[True])
+    attribute: str = Field(
+        description="Job attribute name (matches a ``PreferenceVector`` field).",
+        examples=["earnings_per_month"],
+    )
+    job_value: Optional[str] = Field(
+        default=None,
+        description="The item's raw value for the attribute.",
+        examples=["earn_70k"],
+    )
+    job_value_label: Optional[str] = Field(
+        default=None, description="Human-readable item value.", examples=["~70k"]
+    )
+    user_weight: float = Field(
+        description="The user's weight for this attribute as used by the scorer.",
+        examples=[0.7],
+    )
+    beta: float = Field(
+        description="Model coefficient for the attribute.", examples=[0.35]
+    )
+    encoded_value: float = Field(
+        description="Numerically encoded item value used in scoring.", examples=[1.0]
+    )
+    contribution: float = Field(
+        description="Contribution to the preference utility (beta × user_weight × encoded_value).",
+        examples=[0.245],
+    )
+    matched: bool = Field(
+        description="True when the item has the attribute level the user values (encoded_value > 0).",
+        examples=[True],
+    )
 
 
 class MatchedWorkActivity(BaseModel):
-    wa_code: str = Field(description="O*NET work-activity code.", examples=["4.A.4.a.4"])
-    wa_label: Optional[str] = Field(default=None, description="O*NET work-activity label.")
+    wa_code: str = Field(
+        description="O*NET work-activity code.", examples=["4.A.4.a.4"]
+    )
+    wa_label: Optional[str] = Field(
+        default=None, description="O*NET work-activity label."
+    )
     user_bws: float = Field(description="The user's BWS score for this activity.")
-    wa_importance: float = Field(description="O*NET importance of the activity for the item (1–5).")
-    wa_level: float = Field(description="O*NET level of the activity for the item (1–7).")
+    wa_importance: float = Field(
+        description="O*NET importance of the activity for the item (1–5)."
+    )
+    wa_level: float = Field(
+        description="O*NET level of the activity for the item (1–7)."
+    )
     norm_importance: float = Field(description="Importance normalised to [0, 1].")
     norm_level: float = Field(description="Level normalised to [0, 1].")
-    wa_contribution: float = Field(description="Contribution of this activity to the work-activity utility.")
+    wa_contribution: float = Field(
+        description="Contribution of this activity to the work-activity utility."
+    )
     # Additive-RUM diagnostics (BWS_INTEGRATION_MODE="additive_rum")
-    weight: Optional[float] = Field(default=None, description="Importance weight of the activity (weights sum to 1).")
-    beta: Optional[float] = Field(default=None, description="User's BWS part-worth for this activity.")
+    weight: Optional[float] = Field(
+        default=None,
+        description="Importance weight of the activity (weights sum to 1).",
+    )
+    beta: Optional[float] = Field(
+        default=None, description="User's BWS part-worth for this activity."
+    )
 
 
 class WorkActivityBWS(BaseModel):
-    wa_score_sum: float = Field(default=0.0, description="Sum of work-activity contributions.")
-    details: List[MatchedWorkActivity] = Field(default_factory=list, description="Per-activity breakdown.")
+    wa_score_sum: float = Field(
+        default=0.0, description="Sum of work-activity contributions."
+    )
+    details: List[MatchedWorkActivity] = Field(
+        default_factory=list, description="Per-activity breakdown."
+    )
     # Additive-RUM diagnostics
-    wa_aggregation: Optional[str] = Field(default=None, description="Aggregation method used over activities.")
-    n_work_activities: Optional[int] = Field(default=None, description="Number of activities considered.")
-    V_task: Optional[float] = Field(default=None, description="Raw task (work-activity) utility.")
-    V_task_hat: Optional[float] = Field(default=None, description="Task utility rescaled to [-1, 1].")
+    wa_aggregation: Optional[str] = Field(
+        default=None, description="Aggregation method used over activities."
+    )
+    n_work_activities: Optional[int] = Field(
+        default=None, description="Number of activities considered."
+    )
+    V_task: Optional[float] = Field(
+        default=None, description="Raw task (work-activity) utility."
+    )
+    V_task_hat: Optional[float] = Field(
+        default=None, description="Task utility rescaled to [-1, 1]."
+    )
 
 
 class OpportunityRecommendation(BaseModel):
-    uuid: str = Field(description="Job opportunity identifier.", examples=["6a27a1d40c73458a0b453373"])
-    originUuid: Optional[str] = Field(default=None, description="Identifier of the job in its source system.", examples=["src-123"])
-    URL: Optional[str] = Field(default=None, description="Link to the job posting.", examples=["https://example.com/jobs/123"])
-    rank: int = Field(description="1-based rank within this user's opportunities (1 = best).", examples=[1])
-    opportunity_title: str = Field(description="Job title.", examples=["Customer Service Representative"])
-    opportunity_isco_occupation_group: Optional[str] = Field(default=None, description="ISCO occupation group label.", examples=["Client information workers"])
-    opportunity_isco_occupation_group_id: Optional[str] = Field(default=None, description="ISCO occupation group code.", examples=["422"])
-    related_occupation_id: Optional[str] = Field(default=None, description="ESCO occupation the job maps to.", examples=["00000000-0000-4000-8000-0000000000aa"])
-    location: Optional[str] = Field(default=None, description="Job location.", examples=["Nairobi"])
-    employer: Optional[str] = Field(default=None, description="Employer name.", examples=["Acme Ltd"])
-    employment_type: Optional[str] = Field(default=None, description="Employment type (e.g. full-time).", examples=["Full-time"])
-    salary_text: Optional[str] = Field(default=None, description="Salary as stated in the posting.", examples=["KES 40,000 per month"])
-    required_education: Optional[str] = Field(default=None, description="Education requirement as stated in the posting.", examples=["Diploma"])
-    required_experience: Optional[str] = Field(default=None, description="Experience requirement as stated in the posting.", examples=["1 year"])
-    closing_date: Optional[str] = Field(default=None, description="Application closing date.", examples=["2026-11-01"])
-    posted_date: Optional[str] = Field(default=None, description="Date the job was posted.", examples=["2026-10-01"])
+    uuid: str = Field(
+        description="Job opportunity identifier.", examples=["6a27a1d40c73458a0b453373"]
+    )
+    originUuid: Optional[str] = Field(
+        default=None,
+        description="Identifier of the job in its source system.",
+        examples=["src-123"],
+    )
+    URL: Optional[str] = Field(
+        default=None,
+        description="Link to the job posting.",
+        examples=["https://example.com/jobs/123"],
+    )
+    rank: int = Field(
+        description="1-based rank within this user's opportunities (1 = best).",
+        examples=[1],
+    )
+    opportunity_title: str = Field(
+        description="Job title.", examples=["Customer Service Representative"]
+    )
+    opportunity_isco_occupation_group: Optional[str] = Field(
+        default=None,
+        description="ISCO occupation group label.",
+        examples=["Client information workers"],
+    )
+    opportunity_isco_occupation_group_id: Optional[str] = Field(
+        default=None, description="ISCO occupation group code.", examples=["422"]
+    )
+    related_occupation_id: Optional[str] = Field(
+        default=None,
+        description="ESCO occupation the job maps to.",
+        examples=["00000000-0000-4000-8000-0000000000aa"],
+    )
+    location: Optional[str] = Field(
+        default=None, description="Job location.", examples=["Nairobi"]
+    )
+    employer: Optional[str] = Field(
+        default=None, description="Employer name.", examples=["Acme Ltd"]
+    )
+    employment_type: Optional[str] = Field(
+        default=None,
+        description="Employment type (e.g. full-time).",
+        examples=["Full-time"],
+    )
+    salary_text: Optional[str] = Field(
+        default=None,
+        description="Salary as stated in the posting.",
+        examples=["KES 40,000 per month"],
+    )
+    required_education: Optional[str] = Field(
+        default=None,
+        description="Education requirement as stated in the posting.",
+        examples=["Diploma"],
+    )
+    required_experience: Optional[str] = Field(
+        default=None,
+        description="Experience requirement as stated in the posting.",
+        examples=["1 year"],
+    )
+    closing_date: Optional[str] = Field(
+        default=None, description="Application closing date.", examples=["2026-11-01"]
+    )
+    posted_date: Optional[str] = Field(
+        default=None, description="Date the job was posted.", examples=["2026-10-01"]
+    )
     is_eligible: bool = Field(
         description="True when the user meets enough of the job's essential skills (essential_coverage at or above the eligibility share).",
         examples=[True],
     )
     justification: str = Field(
         description="Short plain-language explanation of why this job was recommended.",
-        examples=["Strong match on your customer service skills. It fits your preferences for career growth (high)."],
+        examples=[
+            "Strong match on your customer service skills. It fits your preferences for career growth (high)."
+        ],
     )
-    opportunity_description: Optional[str] = Field(default=None, description="Job description.", examples=["Handle customer enquiries by phone and email."])
-    contract_type: Optional[str] = Field(default=None, description="Contract type.", examples=["permanent"])
+    opportunity_description: Optional[str] = Field(
+        default=None,
+        description="Job description.",
+        examples=["Handle customer enquiries by phone and email."],
+    )
+    contract_type: Optional[str] = Field(
+        default=None, description="Contract type.", examples=["permanent"]
+    )
     final_score: float = Field(
-        description="Ranking score in [0, 1]: u_hat combined with p_hat (product by default). Higher is better.", examples=[0.4544]
+        description="Ranking score in [0, 1]: u_hat combined with p_hat (product by default). Higher is better.",
+        examples=[0.4544],
     )
-    score_breakdown: ScoreBreakdown = Field(description="Components behind final_score.")
+    score_breakdown: ScoreBreakdown = Field(
+        description="Components behind final_score."
+    )
     matched_skills: MatchedSkills = Field(description="Skill-level match details.")
     matched_preferences: List[MatchedPreference] = Field(
         default_factory=list, description="Per-attribute preference match details."
     )
     matched_work_activities: Optional[WorkActivityBWS] = Field(
-        default=None, description="Work-activity (BWS) match details. Null when the user sent no BWS scores."
+        default=None,
+        description="Work-activity (BWS) match details. Null when the user sent no BWS scores.",
     )
 
 
 class OccupationRecommendation(BaseModel):
     uuid: str = Field(description="Occupation identifier.", examples=["occ-0001"])
-    originUuid: Optional[str] = Field(default=None, description="ESCO occupation origin UUID.", examples=["00000000-0000-4000-8000-0000000000aa"])
-    rank: int = Field(description="1-based rank within this user's occupations (1 = best).", examples=[1])
-    occupation_label: str = Field(description="Occupation name.", examples=["call centre agent"])
-    province: Optional[str] = Field(default=None, description="Region the occupation record applies to.", examples=["Nairobi"])
-    is_eligible: bool = Field(description="True when the user meets enough of the occupation's essential skills.", examples=[True])
-    justification: str = Field(description="Short plain-language explanation of why this occupation was recommended.", examples=["Strong match on your customer service skills. This role is in high demand."])
-    occupation_description: Optional[str] = Field(default=None, description="Occupation description.", examples=["Call centre agents handle inbound and outbound customer calls."])
-    salary_range: Optional[str] = Field(default=None, description="Typical monthly earnings level.", examples=["~70k"])
-    typical_tasks: List[str] = Field(default_factory=list, description="Typical tasks of the occupation (up to 8).", examples=[["Answer customer enquiries", "Record customer interactions"]])
+    originUuid: Optional[str] = Field(
+        default=None,
+        description="ESCO occupation origin UUID.",
+        examples=["00000000-0000-4000-8000-0000000000aa"],
+    )
+    rank: int = Field(
+        description="1-based rank within this user's occupations (1 = best).",
+        examples=[1],
+    )
+    occupation_label: str = Field(
+        description="Occupation name.", examples=["call centre agent"]
+    )
+    province: Optional[str] = Field(
+        default=None,
+        description="Region the occupation record applies to.",
+        examples=["Nairobi"],
+    )
+    is_eligible: bool = Field(
+        description="True when the user meets enough of the occupation's essential skills.",
+        examples=[True],
+    )
+    justification: str = Field(
+        description="Short plain-language explanation of why this occupation was recommended.",
+        examples=[
+            "Strong match on your customer service skills. This role is in high demand."
+        ],
+    )
+    occupation_description: Optional[str] = Field(
+        default=None,
+        description="Occupation description.",
+        examples=["Call centre agents handle inbound and outbound customer calls."],
+    )
+    salary_range: Optional[str] = Field(
+        default=None, description="Typical monthly earnings level.", examples=["~70k"]
+    )
+    typical_tasks: List[str] = Field(
+        default_factory=list,
+        description="Typical tasks of the occupation (up to 8).",
+        examples=[["Answer customer enquiries", "Record customer interactions"]],
+    )
     career_path_next_steps: List[str] = Field(
-        default_factory=list, description="Suggested next career steps. Currently always empty.", examples=[[]])
-    final_score: float = Field(description="Ranking score in [0, 1]. Higher is better.", examples=[0.52])
-    score_breakdown: ScoreBreakdown = Field(description="Components behind final_score.")
+        default_factory=list,
+        description="Suggested next career steps. Currently always empty.",
+        examples=[[]],
+    )
+    final_score: float = Field(
+        description="Ranking score in [0, 1]. Higher is better.", examples=[0.52]
+    )
+    score_breakdown: ScoreBreakdown = Field(
+        description="Components behind final_score."
+    )
     matched_skills: MatchedSkills = Field(description="Skill-level match details.")
     matched_preferences: List[MatchedPreference] = Field(
         default_factory=list, description="Per-attribute preference match details."
     )
     matched_work_activities: Optional[WorkActivityBWS] = Field(
-        default=None, description="Work-activity (BWS) match details. Null when the user sent no BWS scores."
+        default=None,
+        description="Work-activity (BWS) match details. Null when the user sent no BWS scores.",
     )
 
 
 class SkillGapRecommendation(BaseModel):
-    skill_id: str = Field(description="ESCO UUID of the suggested skill to learn.", examples=["00000000-0000-4000-8000-0000000000bb"])
-    skill_label: str = Field(description="Label of the suggested skill.", examples=["use spreadsheets software"])
-    proximity_score: float = Field(description="Closeness to the user's existing skills, in [0, 1].", examples=[0.71])
+    skill_id: str = Field(
+        description="ESCO UUID of the suggested skill to learn.",
+        examples=["00000000-0000-4000-8000-0000000000bb"],
+    )
+    skill_label: str = Field(
+        description="Label of the suggested skill.",
+        examples=["use spreadsheets software"],
+    )
+    proximity_score: float = Field(
+        description="Closeness to the user's existing skills, in [0, 1].",
+        examples=[0.71],
+    )
     job_unlock_count: int = Field(
-        description="Weighted count of nearby jobs this skill would help with (essential = 2, optional = 1).", examples=[6]
+        description="Weighted count of nearby jobs this skill would help with (essential = 2, optional = 1).",
+        examples=[6],
     )
     combined_score: float = Field(
-        description="Ranking score: 0.4 × proximity + 0.6 × normalised job_unlock_count.", examples=[0.684]
+        description="Ranking score: 0.4 × proximity + 0.6 × normalised job_unlock_count.",
+        examples=[0.684],
     )
     reasoning: str = Field(
         description="Plain-language reason for the suggestion.",
-        examples=["Similar to your 'customer service' skill. Would help unlock or improve 6 jobs."],
+        examples=[
+            "Similar to your 'customer service' skill. Would help unlock or improve 6 jobs."
+        ],
     )
 
 
 class MatchResponse(BaseModel):
-    user_id: str = Field(description="Echo of the request's ``user_id``.", examples=["u1"])
+    user_id: str = Field(
+        description="Echo of the request's ``user_id``.", examples=["u1"]
+    )
     occupation_recommendations: List[OccupationRecommendation] = Field(
-        default_factory=list, description="Ranked occupations (career pathways) for the user."
+        default_factory=list,
+        description="Ranked occupations (career pathways) for the user.",
     )
     opportunity_recommendations: List[OpportunityRecommendation] = Field(
         default_factory=list, description="Ranked live job opportunities for the user."
     )
     skill_gap_recommendations: List[SkillGapRecommendation] = Field(
-        default_factory=list, description="Skills that would most improve the user's prospects."
+        default_factory=list,
+        description="Skills that would most improve the user's prospects.",
     )
 
 

@@ -569,11 +569,9 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # The matching engine consumes such vectors directly; raw vectors (offline, occupations, not-yet-
     # whitened jobs) are whitened in-process. Absent/False => raw (safe default).
     out["job_embedding_whitened"] = (
-        (((rd.get("llm_reranker_meta") or {}).get("embedding") or {}).get("whitening") or {}).get(
-            "enabled"
-        )
-        is True
-    )
+        ((rd.get("llm_reranker_meta") or {}).get("embedding") or {}).get("whitening")
+        or {}
+    ).get("enabled") is True
     return out
 
 
@@ -694,7 +692,12 @@ def build_jobs_browse_filter(
 
     if search and search.strip():
         clauses.append(
-            {"classifier_metadata.title": {"$regex": re.escape(search.strip()), "$options": "i"}}
+            {
+                "classifier_metadata.title": {
+                    "$regex": re.escape(search.strip()),
+                    "$options": "i",
+                }
+            }
         )
     if category and category.strip():
         rx = {"$regex": re.escape(category.strip()), "$options": "i"}
@@ -724,8 +727,8 @@ def build_jobs_browse_filter(
         )
     if days is not None:
         cutoff = (
-            datetime.now(timezone.utc) - timedelta(days=int(days))
-        ).date().isoformat()
+            (datetime.now(timezone.utc) - timedelta(days=int(days))).date().isoformat()
+        )
         gte = {"$gte": cutoff}
         clauses.append(
             {
@@ -774,7 +777,10 @@ JOBS_INDEX_MODELS = [
         name="is_active_category",
     ),
     IndexModel(
-        [("is_active", ASCENDING), ("classifier_metadata.isco_occupation_group", ASCENDING)],
+        [
+            ("is_active", ASCENDING),
+            ("classifier_metadata.isco_occupation_group", ASCENDING),
+        ],
         name="is_active_isco_group",
     ),
     IndexModel(
@@ -813,7 +819,9 @@ async def get_jobs_stats() -> JobsStats:
     col = db[MONGO_JOBS_COLLECTION]
     total = await col.count_documents(RANKED_JOBS_ACTIVE_FILTER)
 
-    raw_categories = await col.distinct("classifier_metadata.category", RANKED_JOBS_ACTIVE_FILTER)
+    raw_categories = await col.distinct(
+        "classifier_metadata.category", RANKED_JOBS_ACTIVE_FILTER
+    )
     if not raw_categories:
         raw_categories = await col.distinct(
             "classifier_metadata.isco_occupation_group", RANKED_JOBS_ACTIVE_FILTER
@@ -903,30 +911,36 @@ async def get_jobs_page_with_timing(
         if built is None:
             skipped += 1
             continue
-        jobs.append(JobListItem(
-            uuid=built.get("uuid"),
-            originUuid=built.get("originUuid"),
-            url=built.get("url"),
-            opportunity_title=built.get("opportunity_title", "No title"),
-            opportunity_isco_occupation_group=built.get("opportunity_isco_occupation_group"),
-            opportunity_isco_occupation_group_id=built.get("opportunity_isco_occupation_group_id"),
-            related_occupation_id=built.get("related_occupation_id"),
-            location=built.get("location"),
-            city=built.get("city"),
-            province=built.get("province"),
-            employer=built.get("employer"),
-            employment_type=built.get("employment_type"),
-            contract_type=built.get("contract_type"),
-            salary_text=built.get("salary_text"),
-            closing_date=built.get("closing_date"),
-            posted_date=built.get("posted_date"),
-            opportunity_description=built.get("opportunity_description"),
-            # Consumer-contract fields (Compass jobs board)=built.get("# Consumer-contract fields (Compass jobs board),
-            # posting was scraped from, and the flat list of skill labels for this opportunity.
-            category=built.get("category"),
-            source_platform=built.get("source_platform"),
-            skills=built.get("skills", [])
-        ))
+        jobs.append(
+            JobListItem(
+                uuid=built.get("uuid"),
+                originUuid=built.get("originUuid"),
+                url=built.get("url"),
+                opportunity_title=built.get("opportunity_title", "No title"),
+                opportunity_isco_occupation_group=built.get(
+                    "opportunity_isco_occupation_group"
+                ),
+                opportunity_isco_occupation_group_id=built.get(
+                    "opportunity_isco_occupation_group_id"
+                ),
+                related_occupation_id=built.get("related_occupation_id"),
+                location=built.get("location"),
+                city=built.get("city"),
+                province=built.get("province"),
+                employer=built.get("employer"),
+                employment_type=built.get("employment_type"),
+                contract_type=built.get("contract_type"),
+                salary_text=built.get("salary_text"),
+                closing_date=built.get("closing_date"),
+                posted_date=built.get("posted_date"),
+                opportunity_description=built.get("opportunity_description"),
+                # Consumer-contract fields (Compass jobs board)=built.get("# Consumer-contract fields (Compass jobs board),
+                # posting was scraped from, and the flat list of skill labels for this opportunity.
+                category=built.get("category"),
+                source_platform=built.get("source_platform"),
+                skills=built.get("skills", []),
+            )
+        )
     python_build_ms = _ms(t0)
 
     next_cursor = (

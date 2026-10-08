@@ -342,7 +342,9 @@ def run_match_v4_full(
         cov_over: Dict[str, float] = {}
         det_cache: Dict[str, Any] = {}
         parsed_covs: List[float] = []  # coverages of items WITH parsed essential skills
-        unparsed_uuids: List[str] = []  # items with no essential skills (back-filled below)
+        unparsed_uuids: List[
+            str
+        ] = []  # items with no essential skills (back-filled below)
         target = concat_rescale_target()
         ce = (v3_row or {}).get("concat_gemini_ce_recommendations") or []
         for r in ce:

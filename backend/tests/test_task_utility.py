@@ -73,7 +73,9 @@ def test_no_activities_returns_empty():
 
 def test_combine_perfect_match_saturates_near_098():
     # gamma=4, both components harmonised to 1 -> V=4 -> logistic(4) ~ 0.982
-    c = combine_utilities(2.0, 1.0, 1.0, alpha=0.5, gamma=4.0, v_dce_already_harmonized=True)
+    c = combine_utilities(
+        2.0, 1.0, 1.0, alpha=0.5, gamma=4.0, v_dce_already_harmonized=True
+    )
     assert c["v_task_h"] == pytest.approx(1.0)
     assert c["V"] == pytest.approx(4.0)
     assert c["u_hat"] == pytest.approx(1.0 / (1.0 + math.exp(-4.0)), abs=1e-3)
@@ -90,9 +92,15 @@ def test_harmonization_clamps_to_unit_range():
 
 def test_alpha_selects_component():
     # alpha=1 -> task only; alpha=0 -> dce only; alpha=0.5 -> average
-    only_task = combine_utilities(2.0, -1.0, 1.0, alpha=1.0, gamma=4.0, v_dce_already_harmonized=True)
-    only_dce = combine_utilities(2.0, -1.0, 1.0, alpha=0.0, gamma=4.0, v_dce_already_harmonized=True)
-    avg = combine_utilities(2.0, -1.0, 1.0, alpha=0.5, gamma=4.0, v_dce_already_harmonized=True)
+    only_task = combine_utilities(
+        2.0, -1.0, 1.0, alpha=1.0, gamma=4.0, v_dce_already_harmonized=True
+    )
+    only_dce = combine_utilities(
+        2.0, -1.0, 1.0, alpha=0.0, gamma=4.0, v_dce_already_harmonized=True
+    )
+    avg = combine_utilities(
+        2.0, -1.0, 1.0, alpha=0.5, gamma=4.0, v_dce_already_harmonized=True
+    )
     assert only_task["V"] == pytest.approx(4.0 * 1.0)
     assert only_dce["V"] == pytest.approx(4.0 * -1.0)
     assert avg["V"] == pytest.approx(4.0 * 0.0)
@@ -101,7 +109,9 @@ def test_alpha_selects_component():
 
 def test_negative_beta_lowers_uhat_below_half():
     # Disliked tasks (negative V_task) with neutral DCE pull u_hat below 0.5.
-    c = combine_utilities(-2.0, 0.0, 1.0, alpha=0.5, gamma=4.0, v_dce_already_harmonized=True)
+    c = combine_utilities(
+        -2.0, 0.0, 1.0, alpha=0.5, gamma=4.0, v_dce_already_harmonized=True
+    )
     assert c["u_hat"] < 0.5
 
 

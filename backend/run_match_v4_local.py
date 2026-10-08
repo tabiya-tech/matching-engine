@@ -751,22 +751,19 @@ def main() -> None:
     # v5 carries the per-opportunity ZQF annotation; expose those columns only for v5.
     is_v5 = args.version == "v5"
     zqf_cols = ["zqf_eligible", "zqf_gap", "zqf_min_label", "zqf_max_label"]
-    opp_base_cols = (
-        [
-            "user_id",
-            "rank",
-            "job_uuid",
-            "opportunity_title",
-            "employer",
-            "location",
-            "is_eligible",
-            "u_hat",
-            "p_hat",
-            "final_score",
-            "demand_label",
-        ]
-        + (zqf_cols if is_v5 else [])
-    )
+    opp_base_cols = [
+        "user_id",
+        "rank",
+        "job_uuid",
+        "opportunity_title",
+        "employer",
+        "location",
+        "is_eligible",
+        "u_hat",
+        "p_hat",
+        "final_score",
+        "demand_label",
+    ] + (zqf_cols if is_v5 else [])
 
     def _opp_base_row(uid, rec):
         row = {
@@ -1131,7 +1128,9 @@ def main() -> None:
             ),
         ]
         + (
-            ["Cross-encoder downloads from HuggingFace on first run unless HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE are set."]
+            [
+                "Cross-encoder downloads from HuggingFace on first run unless HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE are set."
+            ]
             if IS_GEMINI
             else []
         )
