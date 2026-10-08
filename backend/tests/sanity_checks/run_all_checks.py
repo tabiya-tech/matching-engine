@@ -18,7 +18,7 @@ sys.path.insert(0, str(_BACKEND))
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("MONGO_DB_NAME", "test")
 
-TOTAL = 7
+TOTAL = 9
 results = []
 
 
@@ -42,6 +42,14 @@ def check_lint():
 
 def check_format():
     return _run_cmd(["ruff", "format", "--check", "."])
+
+
+def check_type():
+    return _run_cmd(["pyright"])
+
+
+def check_any_baseline():
+    return _run_cmd([sys.executable, "tests/sanity_checks/any_baseline_check.py"])
 
 
 def check_data_validation():
@@ -84,6 +92,8 @@ def main():
     checks = [
         ("Lint Check", check_lint),
         ("Format Check", check_format),
+        ("Type Check", check_type),
+        ("Any Baseline Check", check_any_baseline),
         ("Data Validation Check", check_data_validation),
         ("Data Schema Check", check_data_schema),
         ("Smoke Check", check_smoke),
