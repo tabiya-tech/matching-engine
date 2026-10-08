@@ -89,7 +89,12 @@ class HubChains:
         return chain
 
     def tier_factor_for_job(
-        self, job: Dict[str, Any], county_cf: str, *, w_regional: float, w_national: float
+        self,
+        job: Dict[str, Any],
+        county_cf: str,
+        *,
+        w_regional: float,
+        w_national: float,
     ) -> float:
         """Location multiplier for one job given the user's county.
 

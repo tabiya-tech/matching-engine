@@ -156,7 +156,10 @@ LOCATION_TIER_W_REGIONAL: float = _f("LOCATION_TIER_W_REGIONAL", 0.70)
 LOCATION_TIER_W_NATIONAL: float = _f("LOCATION_TIER_W_NATIONAL", 0.50)
 # County -> hub-chain exceptions (small JSON; every other county defaults to [self, national_hub]).
 LOCATION_HUB_CHAINS_PATH: str = _resolve_under_backend(
-    _s("LOCATION_HUB_CHAINS_PATH", str(_RESOURCES / "location" / "location_hub_chains.json"))
+    _s(
+        "LOCATION_HUB_CHAINS_PATH",
+        str(_RESOURCES / "location" / "location_hub_chains.json"),
+    )
 )
 
 # ---------------------------------------------------------------------------
@@ -496,7 +499,12 @@ def occupation_json_path(language: str = CANONICAL_LANGUAGE) -> str:
     if raw:
         return raw
     subdir = language_setting(language, "resources_subdir", language) or language
-    candidate = _RESOURCES / "occupations" / subdir / "combined_occupation_database_with_wa.json"
+    candidate = (
+        _RESOURCES
+        / "occupations"
+        / subdir
+        / "combined_occupation_database_with_wa.json"
+    )
     if candidate.is_file():
         return str(candidate)
     return str(_DEFAULT_OCC)
@@ -508,7 +516,9 @@ def cross_encoder_model_name(language: str = CANONICAL_LANGUAGE) -> str:
     The reranker scores skill-label text, so an English-only checkpoint on Spanish labels
     scores poorly — hence one per language rather than one globally.
     """
-    return str(language_setting(language, "cross_encoder_model", CROSS_ENCODER_MODEL_NAME))
+    return str(
+        language_setting(language, "cross_encoder_model", CROSS_ENCODER_MODEL_NAME)
+    )
 
 
 def stopwords(language: str = CANONICAL_LANGUAGE) -> frozenset[str]:

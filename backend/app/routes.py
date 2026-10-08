@@ -228,9 +228,7 @@ async def health() -> Health:
     responses={
         400: {
             "description": "Bad Request - invalid cursor",
-            "content": {
-                "application/json": {"example": {"detail": "invalid cursor"}}
-            },
+            "content": {"application/json": {"example": {"detail": "invalid cursor"}}},
         },
         500: {
             "description": "Internal Server Error",
@@ -254,13 +252,29 @@ async def list_jobs(
         le=JOBS_PAGE_MAX_LIMIT,
         description=f"Page size (1–{JOBS_PAGE_MAX_LIMIT}). Default {JOBS_PAGE_DEFAULT_LIMIT}.",
     ),
-    search: Optional[str] = Query(None, description="Case-insensitive search on the job title."),
-    category: Optional[str] = Query(None, description="Filter by sector/category (matches category, sector, or ISCO group)."),
-    employment_type: Optional[str] = Query(None, description="Filter by employment type (exact match)."),
-    location: Optional[str] = Query(None, description="Case-insensitive filter on city/county/province."),
-    skills: Optional[str] = Query(None, description="Case-insensitive filter on a skill label of the opportunity."),
-    days: Optional[int] = Query(None, ge=1, le=3650, description="Only jobs posted within the last N days."),
-    include_total: bool = Query(False, description="When true, include the total count of jobs matching the filters."),
+    search: Optional[str] = Query(
+        None, description="Case-insensitive search on the job title."
+    ),
+    category: Optional[str] = Query(
+        None,
+        description="Filter by sector/category (matches category, sector, or ISCO group).",
+    ),
+    employment_type: Optional[str] = Query(
+        None, description="Filter by employment type (exact match)."
+    ),
+    location: Optional[str] = Query(
+        None, description="Case-insensitive filter on city/county/province."
+    ),
+    skills: Optional[str] = Query(
+        None, description="Case-insensitive filter on a skill label of the opportunity."
+    ),
+    days: Optional[int] = Query(
+        None, ge=1, le=3650, description="Only jobs posted within the last N days."
+    ),
+    include_total: bool = Query(
+        False,
+        description="When true, include the total count of jobs matching the filters.",
+    ),
 ):
     """
     Browse active jobs with cursor-based pagination and optional filters.

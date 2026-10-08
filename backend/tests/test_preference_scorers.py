@@ -13,7 +13,7 @@ def _user(**overrides):
     pv = {
         "earnings_per_month": 0.8,
         "career_growth": 0.75,
-        "physical_demand": 0.8,        # v>0.5 => prefers light/safe (dislikes heavy/risky)
+        "physical_demand": 0.8,  # v>0.5 => prefers light/safe (dislikes heavy/risky)
         "social_interaction": 0.5,
         "bws_scores": {"4.A.1": 2.0, "4.A.2": -2.0},
         "top_10_bws": ["4.A.1"],
@@ -31,21 +31,45 @@ def _job(earn="earn_70k", growth="growth_high", phys="phys_light", soc="soc_peer
             "social_interaction": soc,
         },
         "onet_work_activities": [
-            {"WA_code": "4.A.1", "WA_Importance": 3, "WA_Level": 5, "WA_label": "Plan work"},
-            {"WA_code": "4.A.2", "WA_Importance": 1, "WA_Level": 5, "WA_label": "Lift loads"},
+            {
+                "WA_code": "4.A.1",
+                "WA_Importance": 3,
+                "WA_Level": 5,
+                "WA_label": "Plan work",
+            },
+            {
+                "WA_code": "4.A.2",
+                "WA_Importance": 1,
+                "WA_Level": 5,
+                "WA_label": "Lift loads",
+            },
         ],
     }
 
 
 # --- Unified scorer ---------------------------------------------------------
 
+
 def test_unified_scorer_keys_and_bounds():
     res = UnifiedPreferenceScorer().calculate_score(_user(), _job())
-    for k in ("u_hat", "score", "details", "S_attrs", "S_wa", "V", "V_task",
-              "V_dce", "V_dce_hat", "confidence_f", "alpha", "gamma", "scoring_model"):
+    for k in (
+        "u_hat",
+        "score",
+        "details",
+        "S_attrs",
+        "S_wa",
+        "V",
+        "V_task",
+        "V_dce",
+        "V_dce_hat",
+        "confidence_f",
+        "alpha",
+        "gamma",
+        "scoring_model",
+    ):
         assert k in res, f"missing key {k}"
     assert 0.0 <= res["u_hat"] <= 1.0
-    assert -1.0 <= res["S_attrs"] <= 1.0   # harmonised DCE utility
+    assert -1.0 <= res["S_attrs"] <= 1.0  # harmonised DCE utility
     assert -1.0 <= res["S_wa"] <= 1.0
     assert res["scoring_model"] == "unified_dce_bws_v1"
 
@@ -62,7 +86,9 @@ def test_unified_dce_rows_validate_as_matched_preference():
 
 
 def test_unified_include_work_activities_false_zeros_task():
-    res = UnifiedPreferenceScorer().calculate_score(_user(), _job(), include_work_activities=False)
+    res = UnifiedPreferenceScorer().calculate_score(
+        _user(), _job(), include_work_activities=False
+    )
     assert res["V_task"] == pytest.approx(0.0)
     assert 0.0 <= res["u_hat"] <= 1.0
 
@@ -73,15 +99,25 @@ def test_unified_good_job_outranks_bad_job():
     bad = s.calculate_score(_user(), _job("earn_15k", "growth_low", "phys_heavy"))
     assert good["u_hat"] > bad["u_hat"]
     assert good["V_dce"] > 0  # all preferred levels (high pay/growth, light work)
-    assert bad["V_dce"] == pytest.approx(0.0)  # all-reference levels => 0 baseline (RUM dummy-coding)
+    assert bad["V_dce"] == pytest.approx(
+        0.0
+    )  # all-reference levels => 0 baseline (RUM dummy-coding)
 
 
-@pytest.mark.parametrize("attr,target,reference,pref_high", [
-    ("earnings_per_month", "earn_70k", "earn_15k", 0.85),
-    ("career_growth", "growth_high", "growth_low", 0.85),
-    ("physical_demand", "phys_light", "phys_heavy", 0.85),   # v>0.5 => prefers LIGHT/safe
-    ("social_interaction", "soc_customers", "soc_alone", 0.85),
-])
+@pytest.mark.parametrize(
+    "attr,target,reference,pref_high",
+    [
+        ("earnings_per_month", "earn_70k", "earn_15k", 0.85),
+        ("career_growth", "growth_high", "growth_low", 0.85),
+        (
+            "physical_demand",
+            "phys_light",
+            "phys_heavy",
+            0.85,
+        ),  # v>0.5 => prefers LIGHT/safe
+        ("social_interaction", "soc_customers", "soc_alone", 0.85),
+    ],
+)
 def test_directional_target_outranks_reference(attr, target, reference, pref_high):
     """A user preferring an attribute's target level ranks target jobs above reference jobs."""
     s = UnifiedPreferenceScorer()
@@ -105,6 +141,7 @@ def test_confidence_input_shrinks_dce():
 
 # --- Legacy scorer escape hatch (unchanged behavior) ------------------------
 
+
 def _legacy_user():
     return {"preference_vector": {"bws_scores": {"4.A.1": 2.0, "4.A.2": -2.0}}}
 
@@ -120,7 +157,9 @@ def test_legacy_mode_reproduces_old_uhat(monkeypatch):
 
 
 def test_legacy_scorer_additive_mode_keys():
-    res = PreferenceScorer().calculate_score(_legacy_user(), _job())  # default additive_rum
+    res = PreferenceScorer().calculate_score(
+        _legacy_user(), _job()
+    )  # default additive_rum
     for k in ("u_hat", "score", "details", "V", "V_task", "alpha", "gamma"):
         assert k in res
     assert 0.0 <= res["u_hat"] <= 1.0

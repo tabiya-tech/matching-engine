@@ -230,6 +230,7 @@ def test_remote_job_matches_any_user_city():
     job = {"city": "Remote", "province": ""}
     assert _job_matches_user_location(job, user) is True
 
+
 # behavior/test_education_gate.py
 def test_user_without_postsec_excludes_require_ps_jobs():
     user = {"any_post_secondary_educ": 0}
@@ -237,10 +238,12 @@ def test_user_without_postsec_excludes_require_ps_jobs():
     out = filter_jobs_by_education(user, jobs)
     assert [j["uuid"] for j in out] == ["j2"]
 
+
 # components/test_preference_scorer.py
 def test_skills_only_user_final_score_equals_p_hat():
     # after product rule: no preference signal → final_score == p_hat
     ...
+
 
 # integration/test_match_v4_mocked_embeddings.py
 def test_identical_user_job_vector_ranks_first(mock_embed):
