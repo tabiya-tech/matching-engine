@@ -1,6 +1,6 @@
 """Post-secondary education gate invariants."""
 
-from app.services.education_eligibility import (
+from app.ranking.education import (
     filter_jobs_by_education,
     is_education_eligible,
     job_requires_post_secondary,

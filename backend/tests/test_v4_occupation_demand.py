@@ -4,8 +4,9 @@ Demand must re-rank OCCUPATIONS (include_demand=True) but never OPPORTUNITIES (d
 """
 import pytest
 
-from app.services.preference_score_v1 import UnifiedPreferenceScorer
-from app.services.gemini_ce_preference_matching.scoring import enrich_recommendations_with_preferences
+from app.ranking.preference import UnifiedPreferenceScorer
+from app.artifacts.repository import load_attribute_schema
+from app.ranking.enrichment import enrich_recommendations_with_preferences
 
 
 def _items_and_recs():
@@ -30,7 +31,7 @@ def _user():
 
 
 def test_demand_tilt_reranks_occupations():
-    scorer = UnifiedPreferenceScorer()
+    scorer = UnifiedPreferenceScorer(load_attribute_schema())
     items, recs = _items_and_recs()
     occ = enrich_recommendations_with_preferences(
         _user(), recs, items, preference_scorer=scorer, include_demand=True, demand_gamma=0.3,
@@ -44,7 +45,7 @@ def test_demand_tilt_reranks_occupations():
 
 
 def test_opportunities_are_not_demand_tilted():
-    scorer = UnifiedPreferenceScorer()
+    scorer = UnifiedPreferenceScorer(load_attribute_schema())
     items, recs = _items_and_recs()
     opp = enrich_recommendations_with_preferences(  # include_demand defaults False (opportunity path)
         _user(), recs, items, preference_scorer=scorer,

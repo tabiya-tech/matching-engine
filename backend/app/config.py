@@ -134,7 +134,7 @@ MATCH_V2_MAX_USERS_PER_REQUEST: int = _i("MATCH_V2_MAX_USERS_PER_REQUEST", 32)
 MATCH_APPLY_LOCATION_FILTER: bool = _b("MATCH_APPLY_LOCATION_FILTER", True)
 
 # Per-deployment kill-switch for occupation recommendations on the v4 engine (POST /match, via
-# run_match_v4_full): every user gets an empty occupation_recommendations list AND the whole
+# MatchingService.rank): every user gets an empty occupation_recommendations list AND the whole
 # occupation pipeline is skipped (corpus load, embedding attach, stage-1 retrieval, CE rerank,
 # Phase-2 overrides). Opportunities and skill gaps are unaffected. Default false keeps current
 # behaviour.
@@ -311,7 +311,7 @@ V4_FULL_WHITENED_GATE: bool = _b("V4_FULL_WHITENED_GATE", True)
 # annotation-only (ranking unchanged) — INSTANT ROLLBACK via env V4_FULL_RANK_DEMOTE=false, no redeploy.
 # NOTE: stage-1 retrieval now ranks in the WHITENED concat space whenever the artifact is present
 # (job_embedding is whitened on the DB side, or whitened in-process for raw corpora), independent of
-# this toggle — see match_concat_gemini_ce_service. So Phase-1's p_hat is the whitened stage-1 cosine.
+# this toggle — see app.ranking.retrieval. So Phase-1's p_hat is the whitened stage-1 cosine.
 V4_FULL_RANK_DEMOTE: bool = _b("V4_FULL_RANK_DEMOTE", True)
 # Demotion strength: p_hat *= essential_coverage ** gamma (0 -> no demotion; 1 -> linear). 1.0 = full
 # achievability ordering (gamma sweep: corr(rank,cov) -0.42, cov@1 0.88, weak items at top ~0). Env-tunable.

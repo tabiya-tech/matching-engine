@@ -5,8 +5,9 @@ import math
 import pytest
 
 from app.schemas import MatchedPreference, WorkActivityBWS
-from app.services.preference_score import PreferenceScorer
-from app.services.preference_score_v1.scorer import UnifiedPreferenceScorer
+from app.ranking.preference.preference_score import PreferenceScorer
+from app.ranking.preference.scorer import UnifiedPreferenceScorer
+from app.artifacts.repository import load_attribute_schema
 
 
 def _user(**overrides):
@@ -40,7 +41,7 @@ def _job(earn="earn_70k", growth="growth_high", phys="phys_light", soc="soc_peer
 # --- Unified scorer ---------------------------------------------------------
 
 def test_unified_scorer_keys_and_bounds():
-    res = UnifiedPreferenceScorer().calculate_score(_user(), _job())
+    res = UnifiedPreferenceScorer(load_attribute_schema()).calculate_score(_user(), _job())
     for k in ("u_hat", "score", "details", "S_attrs", "S_wa", "V", "V_task",
               "V_dce", "V_dce_hat", "confidence_f", "alpha", "gamma", "scoring_model"):
         assert k in res, f"missing key {k}"
@@ -51,7 +52,7 @@ def test_unified_scorer_keys_and_bounds():
 
 
 def test_unified_dce_rows_validate_as_matched_preference():
-    res = UnifiedPreferenceScorer().calculate_score(_user(), _job())
+    res = UnifiedPreferenceScorer(load_attribute_schema()).calculate_score(_user(), _job())
     dce_rows = [d for d in res["details"] if d.get("layer") == "dce_attributes"]
     assert dce_rows, "expected DCE attribute rows in details"
     for row in dce_rows:
@@ -62,13 +63,13 @@ def test_unified_dce_rows_validate_as_matched_preference():
 
 
 def test_unified_include_work_activities_false_zeros_task():
-    res = UnifiedPreferenceScorer().calculate_score(_user(), _job(), include_work_activities=False)
+    res = UnifiedPreferenceScorer(load_attribute_schema()).calculate_score(_user(), _job(), include_work_activities=False)
     assert res["V_task"] == pytest.approx(0.0)
     assert 0.0 <= res["u_hat"] <= 1.0
 
 
 def test_unified_good_job_outranks_bad_job():
-    s = UnifiedPreferenceScorer()
+    s = UnifiedPreferenceScorer(load_attribute_schema())
     good = s.calculate_score(_user(), _job("earn_70k", "growth_high", "phys_light"))
     bad = s.calculate_score(_user(), _job("earn_15k", "growth_low", "phys_heavy"))
     assert good["u_hat"] > bad["u_hat"]
@@ -84,7 +85,7 @@ def test_unified_good_job_outranks_bad_job():
 ])
 def test_directional_target_outranks_reference(attr, target, reference, pref_high):
     """A user preferring an attribute's target level ranks target jobs above reference jobs."""
-    s = UnifiedPreferenceScorer()
+    s = UnifiedPreferenceScorer(load_attribute_schema())
     user = {"preference_vector": {attr: pref_high}}
     job_t = {"attributes": {attr: target}}
     job_r = {"attributes": {attr: reference}}
@@ -94,7 +95,7 @@ def test_directional_target_outranks_reference(attr, target, reference, pref_hig
 
 
 def test_confidence_input_shrinks_dce():
-    s = UnifiedPreferenceScorer()
+    s = UnifiedPreferenceScorer(load_attribute_schema())
     base = s.calculate_score(_user(), _job(), include_work_activities=False)
     low_conf = s.calculate_score(
         _user(preference_confidence=0.2), _job(), include_work_activities=False
@@ -110,7 +111,7 @@ def _legacy_user():
 
 
 def test_legacy_mode_reproduces_old_uhat(monkeypatch):
-    monkeypatch.setattr("app.services.preference_score.BWS_INTEGRATION_MODE", "legacy")
+    monkeypatch.setattr("app.ranking.preference.preference_score.BWS_INTEGRATION_MODE", "legacy")
     scorer = PreferenceScorer()
     res = scorer.calculate_score(_legacy_user(), _job())
     wa_sum = 2.0 * (3 / 5) * (5 / 7) + (-2.0) * (1 / 5) * (5 / 7)

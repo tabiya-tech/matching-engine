@@ -9,14 +9,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.config import FINAL_SCORE_COMBINER, PREFERENCE_SCORER_MODE
-from app.services.gemini_ce_preference_matching.match_v3_bridge import (
-    v3_recommendation_to_rec,
-)
-from app.services.gemini_ce_preference_matching.scoring import (
+from app.ranking.enrichment import v3_recommendation_to_rec
+from app.ranking.enrichment import (
     enrich_recommendations_with_preferences,
 )
-from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
-from app.services.preference_score_v1 import get_preference_scorer
+from app.matching.get_concat_ce_engine import get_concat_ce_engine
+from app.server_dependencies.model_dependencies import get_preference_scorer
 
 __all__ = ["run_match_concat_gemini_ce_with_preferences"]
 
@@ -71,14 +69,14 @@ def run_match_concat_gemini_ce_with_preferences(
     """Return one dict per user (``MatchConcatGeminiCeResponse`` + preference fields).
 
     ``user_unit_vectors`` (optional) lets a caller embed users once and reuse the matrix across
-    corpora (jobs + occupations); passed straight through to ``run_match_concat_gemini_ce``.
+    corpora (jobs + occupations); passed straight through to ``ConcatCrossEncoderEngine.run``.
     """
 
     combiner = (final_score_combiner or FINAL_SCORE_COMBINER).strip().lower()
     if combiner not in ("product", "geometric_mean"):
         raise ValueError("final_score_combiner must be 'product' or 'geometric_mean'")
 
-    v3_rows = run_match_concat_gemini_ce(
+    v3_rows = get_concat_ce_engine().run(
         users,
         jobs,
         retrieve_top_k=retrieve_top_k,

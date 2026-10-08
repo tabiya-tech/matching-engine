@@ -21,7 +21,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from app.services.gemini_ce_preference_matching.scoring import (
+from app.ranking.enrichment import (
     preference_details_for_dashboard,
     work_activity_match_for_dashboard,
 )

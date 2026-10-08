@@ -1,20 +1,35 @@
 """MATCH_V4_DISABLE_OCCUPATIONS kill-switch (see config.MATCH_V4_DISABLE_OCCUPATIONS).
 
 The flag must do two things, not one: return an empty ``occupation_recommendations`` list AND skip
-every piece of occupation work (corpus load in the route, stage-1 retrieval + CE rerank in the
-engine). Opportunities and skill gaps must be untouched.
+every piece of occupation work (corpus load, stage-1 retrieval + CE rerank in the engine).
+Opportunities and skill gaps must be untouched.
 """
 
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
 
-from app import routes
-from app.services import match_v4_full_service as svc
+from app.matching import service as svc
+from app.matching.service import MatchingService
+
+
+def _service(*, engine=None, occupations_repository=None) -> MatchingService:
+    """MatchingService with the ML stack and the repositories faked."""
+    return MatchingService(
+        jobs_repository=MagicMock(),
+        occupations_repository=occupations_repository or MagicMock(),
+        artifacts_repository=MagicMock(),
+        engine=engine or MagicMock(),
+        gate_matcher_provider=MagicMock,
+        whitener_provider=MagicMock,
+        skill_scorer_provider=MagicMock,
+        preference_scorer_provider=MagicMock,
+        embedding_dim=4,
+    )
 
 
 @pytest.fixture()
@@ -37,24 +52,19 @@ def occupation_rows():
 
 
 def _run(users, jobs, occupations, *, disabled: bool):
-    """run_match_v4_full with the ML stack stubbed; returns (rows, retrieval_mock)."""
-    retrieval = MagicMock(return_value=[])
+    """MatchingService.rank with the ML stack stubbed; returns (rows, retrieval_mock)."""
+    engine = MagicMock()
+    engine.embed_users.return_value = np.zeros((len(users), 4))
+    engine.run.return_value = []
     with (
         patch.object(svc, "MATCH_V4_DISABLE_OCCUPATIONS", disabled),
         patch.object(svc, "V4_FULL_RANK_DEMOTE", False),
-        patch.object(svc, "run_match_concat_gemini_ce", retrieval),
-        patch.object(
-            svc, "embed_user_unit_vectors", return_value=np.zeros((len(users), 4))
-        ),
-        patch.object(svc, "get_preference_scorer", return_value=MagicMock()),
-        patch.object(svc, "_get_v4_matcher", return_value=MagicMock()),
-        patch.object(svc, "_get_matcher", return_value=MagicMock()),
-        patch.object(svc, "_skill_gaps_for", return_value=[]),
+        patch.object(svc, "skill_gaps_for", return_value=[]),
     ):
-        rows = svc.run_match_v4_full(
+        rows = _service(engine=engine).rank(
             users, jobs, occupations, retrieve_top_k=10, final_top_k=5
         )
-    return rows, retrieval
+    return rows, engine.run
 
 
 class TestEngineKillSwitch:
@@ -84,32 +94,29 @@ class TestEngineKillSwitch:
         assert rows[0]["skill_gap_recommendations"] == []
 
 
-class TestRouteCorpusLoad:
+class TestServiceCorpusLoad:
     def test_disabled_skips_the_corpus_load(self):
-        loader = MagicMock()
-        attach = MagicMock()
-        with (
-            patch.object(routes, "MATCH_V4_DISABLE_OCCUPATIONS", True),
-            patch.object(routes, "get_all_occupations_with_timing", loader),
-            patch.object(routes, "attach_occupation_embeddings", attach),
-        ):
-            occ, timing = asyncio.run(routes._load_v4_occupations())
+        repository = MagicMock()
+        repository.load_with_timing = AsyncMock()
+        with patch.object(svc, "MATCH_V4_DISABLE_OCCUPATIONS", True):
+            occ, timing = asyncio.run(
+                _service(occupations_repository=repository)._load_occupations()
+            )
         assert occ == []
         assert timing == {}
-        loader.assert_not_called()
-        attach.assert_not_called()
+        repository.load_with_timing.assert_not_called()
+        repository.attach_embeddings.assert_not_called()
 
     def test_enabled_loads_and_embeds_the_corpus(self):
-        async def _loader():
-            return [{"uuid": "occ-1"}], {"occupation_cache_hit": True}
-
-        attach = MagicMock(side_effect=lambda rows: rows)
-        with (
-            patch.object(routes, "MATCH_V4_DISABLE_OCCUPATIONS", False),
-            patch.object(routes, "get_all_occupations_with_timing", _loader),
-            patch.object(routes, "attach_occupation_embeddings", attach),
-        ):
-            occ, timing = asyncio.run(routes._load_v4_occupations())
+        repository = MagicMock()
+        repository.load_with_timing = AsyncMock(
+            return_value=([{"uuid": "occ-1"}], {"occupation_cache_hit": True})
+        )
+        repository.attach_embeddings.side_effect = lambda rows: rows
+        with patch.object(svc, "MATCH_V4_DISABLE_OCCUPATIONS", False):
+            occ, timing = asyncio.run(
+                _service(occupations_repository=repository)._load_occupations()
+            )
         assert [o["uuid"] for o in occ] == ["occ-1"]
         assert timing["occupation_cache_hit"] is True
-        attach.assert_called_once()
+        repository.attach_embeddings.assert_called_once()

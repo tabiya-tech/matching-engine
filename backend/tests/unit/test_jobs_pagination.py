@@ -50,7 +50,7 @@ class TestJobsEndpoint:
         resp = test_client.get("/jobs")
         assert resp.status_code in (401, 403)
 
-    def test_first_page_shape(self, test_client):
+    def test_first_page_shape(self, test_client, jobs_repository):
         jobs = [
             {
                 "uuid": "job-1",
@@ -63,8 +63,9 @@ class TestJobsEndpoint:
                 "job_embedding": [0.1, 0.2],
             }
         ]
-        with patch(
-            "app.routes.get_jobs_page_with_timing",
+        with patch.object(
+            jobs_repository,
+            "browse_page",
             side_effect=_fake_page(jobs, "next-cursor-token", True),
         ):
             resp = test_client.get("/jobs?limit=1", **self.AUTH)
@@ -79,9 +80,10 @@ class TestJobsEndpoint:
         assert "essential_skills" not in item
         assert "job_embedding" not in item
 
-    def test_last_page_has_null_cursor(self, test_client):
-        with patch(
-            "app.routes.get_jobs_page_with_timing",
+    def test_last_page_has_null_cursor(self, test_client, jobs_repository):
+        with patch.object(
+            jobs_repository,
+            "browse_page",
             side_effect=_fake_page([], None, False),
         ):
             resp = test_client.get("/jobs", **self.AUTH)
@@ -90,11 +92,11 @@ class TestJobsEndpoint:
         assert data["next_cursor"] is None
         assert data["items"] == []
 
-    def test_invalid_cursor_returns_400(self, test_client):
+    def test_invalid_cursor_returns_400(self, test_client, jobs_repository):
         async def _raise(cursor=None, limit=20, **kwargs):
             raise InvalidCursor("invalid cursor")
 
-        with patch("app.routes.get_jobs_page_with_timing", side_effect=_raise):
+        with patch.object(jobs_repository, "browse_page", side_effect=_raise):
             resp = test_client.get("/jobs?cursor=garbage", **self.AUTH)
         assert resp.status_code == 400
 
@@ -103,23 +105,24 @@ class TestJobsEndpoint:
         resp = test_client.get(f"/jobs?limit={limit}", **self.AUTH)
         assert resp.status_code == 422
 
-    def test_total_included_when_requested(self, test_client):
-        with patch(
-            "app.routes.get_jobs_page_with_timing",
+    def test_total_included_when_requested(self, test_client, jobs_repository):
+        with patch.object(
+            jobs_repository,
+            "browse_page",
             side_effect=_fake_page([], None, False, total=42),
         ):
             resp = test_client.get("/jobs?include_total=true", **self.AUTH)
         assert resp.status_code == 200
         assert resp.json()["total"] == 42
 
-    def test_filters_forwarded_to_data_layer(self, test_client):
+    def test_filters_forwarded_to_data_layer(self, test_client, jobs_repository):
         captured = {}
 
         async def _impl(cursor=None, limit=20, **kwargs):
             captured.update(kwargs)
             return [], None, None, {"has_more": False, "limit": limit}
 
-        with patch("app.routes.get_jobs_page_with_timing", side_effect=_impl):
+        with patch.object(jobs_repository, "browse_page", side_effect=_impl):
             resp = test_client.get(
                 "/jobs?search=nurse&category=Health&employment_type=full_time"
                 "&location=Lusaka&skills=care&days=30",
@@ -141,13 +144,13 @@ class TestJobsStatsEndpoint:
         resp = test_client.get("/jobs/stats")
         assert resp.status_code in (401, 403)
 
-    def test_returns_stats(self, test_client):
+    def test_returns_stats(self, test_client, jobs_repository):
         from app.schemas import JobsStats
 
         async def _stats():
             return JobsStats(total=10, sectors=3, platforms=2)
 
-        with patch("app.routes.get_jobs_stats", side_effect=_stats):
+        with patch.object(jobs_repository, "stats", side_effect=_stats):
             resp = test_client.get("/jobs/stats", **self.AUTH)
         assert resp.status_code == 200
         data = resp.json()

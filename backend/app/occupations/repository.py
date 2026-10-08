@@ -4,9 +4,10 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from app.config import OCCUPATION_CONCAT_EMBEDDINGS_PATH, OCCUPATION_JSON_PATH
+from app.ranking.whitening import ConcatWhitener
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,9 @@ class IOccupationsRepository(ABC):
 
 
 class OccupationsRepository(IOccupationsRepository):
-    def __init__(self):
+    def __init__(self, *, whitener_provider: Callable[[], ConcatWhitener]):
+        # Whitens the occupation embeddings once at load (see _load_occupation_embeddings).
+        self._whitener_provider = whitener_provider
         self._cached_occupations: Optional[List[dict]] = None
         # {occupation_code: np.ndarray(float32, EMBEDDING_DIM)}
         self._cached_occ_embeddings: Optional[Dict[str, Any]] = None
@@ -165,7 +168,7 @@ class OccupationsRepository(IOccupationsRepository):
                 label = occ.get("preferred_label", "Unknown")
                 description = occ.get("description", "")
 
-                # Post-secondary education gate (see app.services.education_eligibility):
+                # Post-secondary education gate (see app.ranking.education):
                 # occupation-level flag, applied to all of this occupation's county rows.
                 requires_post_secondary = occ.get("requires_post_secondary")
                 if requires_post_secondary is None:
@@ -230,7 +233,7 @@ class OccupationsRepository(IOccupationsRepository):
                             "requires_post_secondary": requires_post_secondary,
                             "onet_work_activities": onet_wa,
                             # Occupation-specific tasks (sparse in source); formatter falls back to
-                            # O*NET WA labels when absent. See match_v4_formatting._typical_tasks.
+                            # O*NET WA labels when absent. See app.matching.formatting._typical_tasks.
                             "included_tasks": occ.get("included_tasks") or "",
                         }
                     )
@@ -296,14 +299,11 @@ class OccupationsRepository(IOccupationsRepository):
         if out:
             try:
                 import numpy as np
-                from app.services.match_concat_gemini_ce_service import (
-                    concat_rescale_target,
-                    whiten_concat_rows,
-                )
 
-                if concat_rescale_target() > 0:
+                whitener = self._whitener_provider()
+                if whitener.rescale_target() > 0:
                     codes_list = list(out.keys())
-                    wmat = whiten_concat_rows(
+                    wmat = whitener.whiten_rows(
                         np.stack([out[c] for c in codes_list], axis=0)
                     ).astype(np.float32)
                     for c, wv in zip(codes_list, wmat):

@@ -3,6 +3,7 @@
 import threading
 
 from app.occupations.repository import IOccupationsRepository, OccupationsRepository
+from app.server_dependencies.model_dependencies import get_concat_whitener
 
 _occupations_repository_singleton: IOccupationsRepository | None = None
 _occupations_repository_lock = threading.Lock()
@@ -15,6 +16,8 @@ def get_occupations_repository() -> IOccupationsRepository:
     if _occupations_repository_singleton is None:
         with _occupations_repository_lock:
             if _occupations_repository_singleton is None:
-                _occupations_repository_singleton = OccupationsRepository()
+                _occupations_repository_singleton = OccupationsRepository(
+                    whitener_provider=get_concat_whitener
+                )
 
     return _occupations_repository_singleton

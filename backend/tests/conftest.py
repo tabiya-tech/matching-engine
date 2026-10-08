@@ -17,11 +17,13 @@ if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
 # ---------------------------------------------------------------------------
-# Environment: set BEFORE any app module is imported so database.py and
+# Environment: set BEFORE any app module is imported so db_dependencies.py and
 # config.py don't crash on missing MONGO_URL.
 # ---------------------------------------------------------------------------
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("MONGO_DB_NAME", "test")
+
+from app.matching.service import MatchingService  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -40,56 +42,80 @@ def _mock_match_response(user, *_args, **_kwargs):
 
 
 def _mock_run_match_full(users, *_args, **_kwargs):
-    """Batch matcher stub used by v2/v3/v4/v5 HTTP routes."""
+    """Batch matcher stub used by the POST /match route."""
     return [_mock_match_response(u) for u in users]
 
 
-async def _mock_jobs(*_a, **_kw):
-    return ([], {})
+class _StubMatchingService(MatchingService):
+    """The real request handling (validation, retrieval, response model) over a stubbed engine."""
+
+    def rank(self, users, *_args, **_kwargs):
+        return _mock_run_match_full(users)
 
 
-async def _mock_occupations(*_a, **_kw):
-    return ([], {})
+def _fake_jobs_repository() -> MagicMock:
+    repository = MagicMock()
+    repository.find_active = AsyncMock(return_value=([], {}))
+    repository.browse_page = AsyncMock(return_value=([], None, None, {}))
+    repository.stats = AsyncMock()
+    return repository
+
+
+def _fake_occupations_repository() -> MagicMock:
+    repository = MagicMock()
+    repository.load_with_timing = AsyncMock(return_value=([], {}))
+    repository.attach_embeddings.side_effect = lambda rows: rows
+    return repository
 
 
 @pytest.fixture()
-def test_client():
+def jobs_repository():
+    """The fake jobs repository behind ``test_client`` (set side effects on it per test)."""
+    return _fake_jobs_repository()
+
+
+@pytest.fixture()
+def test_client(jobs_repository):
     """TestClient with mocked DB, Gemini, and model loading.
 
     Uses a context-manager so the FastAPI lifespan actually executes.
     """
-    # Import target modules first so patch() can resolve the attribute paths.
-    import app.server_dependencies.warmup  # noqa: F401
-    import app.routes  # noqa: F401
-    import app.services.match_concat_gemini_ce_service  # noqa: F401
-    import app.services.matching_service  # noqa: F401
+    from fastapi.testclient import TestClient
+
+    from app.jobs.get_jobs_service import get_jobs_service
+    from app.jobs.service import JobsService
+    from app.main import app
+    from app.matching.get_matching_service import get_matching_service
+
+    matching_service = _StubMatchingService(
+        jobs_repository=jobs_repository,
+        occupations_repository=_fake_occupations_repository(),
+        artifacts_repository=MagicMock(),
+        engine=MagicMock(),
+        gate_matcher_provider=MagicMock,
+        whitener_provider=MagicMock,
+        skill_scorer_provider=MagicMock,
+        preference_scorer_provider=MagicMock,
+        embedding_dim=4,
+    )
+    app.dependency_overrides[get_matching_service] = lambda: matching_service
+    app.dependency_overrides[get_jobs_service] = lambda: JobsService(
+        jobs_repository=jobs_repository
+    )
 
     patches = [
         patch(
             "app.server_dependencies.warmup.warmup_on_startup", new_callable=AsyncMock
         ),
-        patch(
-            "app.services.match_concat_gemini_ce_service._get_reranker",
-            return_value=MagicMock(),
-        ),
-        patch("app.routes.get_all_jobs_with_timing", side_effect=_mock_jobs),
-        patch(
-            "app.routes.get_all_occupations_with_timing", side_effect=_mock_occupations
-        ),
-        patch("app.routes.attach_occupation_embeddings", side_effect=lambda x: x),
-        patch("app.routes.match_user_with_data", side_effect=_mock_match_response),
-        patch("app.routes.run_match_v2_full", side_effect=_mock_run_match_full),
-        patch("app.routes.run_match_v3_full", side_effect=_mock_run_match_full),
-        patch("app.routes.run_match_v4_full", side_effect=_mock_run_match_full),
+        patch("app.main.get_cross_encoder_client", return_value=MagicMock()),
+        patch("app.main.get_skill_scorer", return_value=MagicMock()),
     ]
     for p in patches:
         p.start()
-
-    from fastapi.testclient import TestClient
-    from app.main import app
 
     with TestClient(app) as client:
         yield client
 
     for p in patches:
         p.stop()
+    app.dependency_overrides = {}

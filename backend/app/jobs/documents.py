@@ -141,7 +141,7 @@ def _location_or_clauses_for_one_user(user: dict) -> List[Dict[str, Any]]:
 
     By default the needle set is the user's {city, province}. When LOCATION_TIER_ENABLED (urban-pull
     Part A), it is widened to also include the user's hub-chain regions (regional + national hub) so
-    hub jobs become candidates in the pool; the per-user soft tier re-rank (match_v4_full_service)
+    hub jobs become candidates in the pool; the per-user soft tier re-rank (MatchingService)
     then keeps local jobs preferred. Strictly additive — remote clauses always come first.
     """
     uc = _norm_loc_value(user.get("city"))
@@ -151,7 +151,7 @@ def _location_or_clauses_for_one_user(user: dict) -> List[Dict[str, Any]]:
         return ors
     needles = {uc, up}
     if LOCATION_TIER_ENABLED:
-        from app.services.location_tiers import load_hub_chains
+        from app.ranking.location import load_hub_chains
 
         hc = load_hub_chains(LOCATION_HUB_CHAINS_PATH)
         if hc is not None:
@@ -309,7 +309,7 @@ def build_job_dict_from_ranked(rd: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "optional_skills": optional_skills,
         "skill_groups_origin_uuids": skill_groups,
         "attributes": attributes,
-        # Post-secondary education gate (see app.services.education_eligibility).
+        # Post-secondary education gate (see app.ranking.education).
         # llm_job_attributes is fully projected, so this subfield is already loaded.
         "requires_post_secondary": attributes.get("requires_post_secondary"),
         # ZQF education annotation (Zambia): classifier_metadata (two naming conventions) or root.

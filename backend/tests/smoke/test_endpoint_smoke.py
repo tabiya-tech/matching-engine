@@ -2,7 +2,7 @@
 ZQF annotation logic, and the MatchResponse contract.
 """
 
-from app.routes import _zqf_annotation
+from app.ranking.education import zqf_annotation as _zqf_annotation
 
 
 MINIMAL_PAYLOAD = [

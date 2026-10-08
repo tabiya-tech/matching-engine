@@ -3,7 +3,8 @@
 import pytest
 
 from app.schemas import MatchResponse, OccupationRecommendation, OpportunityRecommendation
-from app.services import match_v4_formatting as fmt
+from app.matching import formatting as fmt
+from app.ranking import coverage
 
 
 def _per_job_skill():
@@ -47,7 +48,7 @@ def _job_item():
 
 def test_build_matched_skills_splits_and_thresholds():
     # essential_ids are the matcher-resolved ids of the item's essential skills.
-    ms = fmt.build_matched_skills(_per_job_skill(), {"E1", "E2"}, sim_threshold=0.6)
+    ms = coverage.build_matched_skills(_per_job_skill(), {"E1", "E2"}, sim_threshold=0.6)
     ess = {m["job_skill_id"]: m for m in ms["essential_skill_matches"]}
     assert set(ess) == {"E1", "E2"}
     assert ess["E1"]["meets_threshold"] is True   # 0.82 >= 0.6
@@ -59,33 +60,33 @@ def test_build_matched_skills_splits_and_thresholds():
 
 def test_build_matched_skills_optional_below_threshold_dropped():
     pjs = [{"job_skill_id": "O9", "job_skill_label": "x", "cosine_similarity": 0.3}]
-    ms = fmt.build_matched_skills(pjs, set(), sim_threshold=0.6)
+    ms = coverage.build_matched_skills(pjs, set(), sim_threshold=0.6)
     assert ms["essential_skill_matches"] == []
     assert ms["optional_exact_matches"] == []  # 0.3 < 0.6 dropped
 
 
 def test_is_eligible_threshold():
     ess = [{"meets_threshold": True}, {"meets_threshold": False}]
-    assert fmt.is_eligible_from_skills(ess, n_essential_total=2, min_ess_share=0.5) is True   # 1/2 >= 0.5
-    assert fmt.is_eligible_from_skills(ess, n_essential_total=2, min_ess_share=0.75) is False
-    assert fmt.is_eligible_from_skills([], n_essential_total=0, min_ess_share=0.9) is True    # nothing to gate
+    assert coverage.is_eligible_from_skills(ess, n_essential_total=2, min_ess_share=0.5) is True   # 1/2 >= 0.5
+    assert coverage.is_eligible_from_skills(ess, n_essential_total=2, min_ess_share=0.75) is False
+    assert coverage.is_eligible_from_skills([], n_essential_total=0, min_ess_share=0.9) is True    # nothing to gate
 
 
 def test_unparsed_ranking_coverage_uses_mean_not_free_pass():
     # Default (override < 0): an unparsed posting is treated as a TYPICAL one -> the mean of the
     # shortlist's parsed coverages, NOT the old 1.0 free pass. This is the core of the nail-tech fix.
-    assert fmt.unparsed_ranking_coverage([0.2, 0.4, 0.6], override=-1.0) == pytest.approx(0.4)
+    assert coverage.unparsed_ranking_coverage([0.2, 0.4, 0.6], override=-1.0) == pytest.approx(0.4)
     # Crucially below the best parsed coverage, so a well-covered job out-ranks an unparsed one under
     # the monotonic demotion (final *= coverage ** gamma).
-    assert fmt.unparsed_ranking_coverage([0.2, 0.4, 0.6], override=-1.0) < 0.6
+    assert coverage.unparsed_ranking_coverage([0.2, 0.4, 0.6], override=-1.0) < 0.6
 
 
 def test_unparsed_ranking_coverage_override_and_fallback():
     # A fixed override (>=0) wins; 1.0 restores the old demotion-free behaviour (rollback path).
-    assert fmt.unparsed_ranking_coverage([0.2, 0.9], override=1.0) == 1.0
-    assert fmt.unparsed_ranking_coverage([0.2, 0.9], override=0.39) == pytest.approx(0.39)
+    assert coverage.unparsed_ranking_coverage([0.2, 0.9], override=1.0) == 1.0
+    assert coverage.unparsed_ranking_coverage([0.2, 0.9], override=0.39) == pytest.approx(0.39)
     # No parsed coverages in the shortlist -> neutral 0.5 fallback (not 1.0).
-    assert fmt.unparsed_ranking_coverage([], override=-1.0) == 0.5
+    assert coverage.unparsed_ranking_coverage([], override=-1.0) == 0.5
 
 
 def test_split_pref_details():

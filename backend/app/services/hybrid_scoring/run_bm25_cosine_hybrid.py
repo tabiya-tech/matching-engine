@@ -4,7 +4,7 @@ Pipeline
 ========
 
 1. **BM25** — :mod:`bm25_scoring.bm25library` / ``rank_bm25.BM25Okapi`` (PyPI ``rank-bm25``) on phrase tokens.
-2. **Cosine skills** — legacy :class:`~app.services.cosine_similarity.skill_score.CosineSkillMatcher`
+2. **Cosine skills** — legacy :class:`~app.ranking.skill_matcher.CosineSkillMatcher`
    (``mean_best_cosine`` pool; essential ∪ optional; vectors only — no ``U_complete``, loc, groups).
 3. **Common candidates** — top BM25 K ∩ top cosine K, union fallback below ``min_common``.
 4. **Fusion (only method)** — on that pool:
@@ -60,11 +60,11 @@ from app.services.cosine_similarity.run_cosine_matching import (
     load_jobs as load_jobs_cosine,
     _load_users,
 )
-from app.services.cosine_similarity.skill_score import (
+from app.ranking.skill_matcher import (
     CosineSkillMatcher,
     compact_cosine_matched_skill_lines,
 )
-from app.services.education_eligibility import (
+from app.ranking.education import (
     job_requires_post_secondary,
     user_lacks_post_secondary,
 )
@@ -540,7 +540,9 @@ def get_cosine_matcher_singleton() -> CosineSkillMatcher:
 
     global _cosine_matcher_singleton
     if _cosine_matcher_singleton is None:
-        _cosine_matcher_singleton = CosineSkillMatcher()
+        from app.server_dependencies.model_dependencies import build_skill_matcher
+
+        _cosine_matcher_singleton = build_skill_matcher()
     return _cosine_matcher_singleton
 
 

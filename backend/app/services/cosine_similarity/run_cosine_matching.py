@@ -33,7 +33,6 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from app.config import EMBEDDING_MODEL_PATH, SKILLS_CSV_PATH, SKILL_TO_ROW_PATH
 
-from .skill_score import CosineSkillMatcher
 
 
 def _backend_root() -> Path:
@@ -163,7 +162,9 @@ def run(
 
     jobs, mongo_timing = load_jobs(jobs_source, jobs_path, users, mongo_filter_by_users)
 
-    matcher = CosineSkillMatcher()
+    from app.server_dependencies.model_dependencies import build_skill_matcher
+
+    matcher = build_skill_matcher()
     print(
         f"[cosine] loaded {len(users)} users, {len(jobs)} jobs "
         f"(embedding dim={matcher.W.shape[1]})",

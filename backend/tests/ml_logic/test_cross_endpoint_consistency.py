@@ -1,6 +1,6 @@
 """Rules that must hold the same across all matching engines."""
 
-from app.services.education_eligibility import filter_jobs_by_education
+from app.ranking.education import filter_jobs_by_education
 from app.services.matching_service import _filter_skill_gap_recommendations
 
 

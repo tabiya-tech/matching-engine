@@ -41,6 +41,7 @@ from app.clients.gemini_embedding_client import (
     TASK_TYPE,
     embed_text_list,
 )
+from app.ranking.vectors import l2_normalize_rows
 
 def _backend_root() -> Path:
     here = Path(__file__).resolve()
@@ -84,12 +85,6 @@ def _npz_job_key_from_row(
         or str(row.get("_id") or "")
     )
     return jid
-
-
-def l2_normalize_rows(mat: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(mat, axis=1, keepdims=True).astype(np.float32)
-    norms = np.where(norms > 0, norms, 1.0).astype(np.float32)
-    return (mat / norms).astype(np.float32)
 
 
 def run(

@@ -21,7 +21,12 @@ from app.languages import (
     get_language_config,
     normalise_language,
 )
-from app.services.skill_label_packs import SkillLabelPacks, oldest_uuid
+from app.artifacts.repository import read_csv_rows
+from app.ranking.skill_label_packs import SkillLabelPacks, oldest_uuid
+
+
+def _read_rows(path):
+    return read_csv_rows(path, newline="")
 
 csv.field_size_limit(10_000_000)
 
@@ -192,7 +197,9 @@ class TestCrossLanguageResolution:
         # Only the sampled English ids are "in the embedding artefact"; that is enough to
         # prove the join and keeps this test fast.
         embedding_ids = {str(r["ID"]) for r in sample_rows}
-        return SkillLabelPacks(embedding_ids, languages=("en", "es"))
+        return SkillLabelPacks(
+            embedding_ids, read_rows=_read_rows, languages=("en", "es")
+        )
 
     def test_both_packs_load(self, packs):
         assert packs.loaded_languages == ["en", "es"]
@@ -282,7 +289,9 @@ class TestPinnedPackOffTheIdSpace:
             "SKILLS_CSV_PATH",
             config.taxonomy_pack_paths("es", ignore_pins=True)["skills"],
         )
-        packs = SkillLabelPacks(embedding_ids, languages=("en", "es"))
+        packs = SkillLabelPacks(
+            embedding_ids, read_rows=_read_rows, languages=("en", "es")
+        )
         assert packs._skills_paths["en"].parent.name == "en"
         assert packs._skills_paths["es"].parent.name == "es"
         # The proof it recovered: labels resolve, in both languages, onto the canonical ids.
@@ -295,7 +304,9 @@ class TestPinnedPackOffTheIdSpace:
         # Scripts pinning the canonical pack itself must be unaffected by the recovery path.
         pinned = config.taxonomy_pack_paths("en", ignore_pins=True)["skills"]
         monkeypatch.setenv("SKILLS_CSV_PATH", pinned)
-        packs = SkillLabelPacks(embedding_ids, languages=("en", "es"))
+        packs = SkillLabelPacks(
+            embedding_ids, read_rows=_read_rows, languages=("en", "es")
+        )
         assert [str(p) for p in packs._skills_paths.values()] == [pinned, pinned]
 
 
@@ -310,18 +321,17 @@ class TestLanguageIsNotPerRequest:
         assert not hasattr(MatchRequest(language="es"), "language")
 
     def test_match_takes_no_language_query_param(self):
-        from app.routes import match
+        from app.main import app
 
+        (match,) = [r.endpoint for r in app.routes if getattr(r, "path", None) == "/match"]
         assert "language" not in inspect.signature(match).parameters
 
     def test_the_engine_takes_no_language_argument(self):
-        from app.services.match_concat_gemini_ce_service import (
-            run_match_concat_gemini_ce,
-        )
+        from app.matching.concat_ce_engine import ConcatCrossEncoderEngine
+        from app.matching.service import MatchingService
         from app.services.match_v3_full_service import run_match_v3_full
-        from app.services.match_v4_full_service import run_match_v4_full
 
-        for fn in (run_match_concat_gemini_ce, run_match_v3_full, run_match_v4_full):
+        for fn in (ConcatCrossEncoderEngine.run, run_match_v3_full, MatchingService.rank):
             assert "language" not in inspect.signature(fn).parameters, fn.__name__
 
 
