@@ -13,7 +13,7 @@ from app.observability import (
     shutdown_tracing,
     tracing_config_from_env,
 )
-from app.routes import router, router_public
+from app.routes import router
 from app.services.match_concat_gemini_ce_service import _get_reranker
 
 load_dotenv()
@@ -103,7 +103,6 @@ else:
 app.add_middleware(MatchTracingMiddleware)
 
 app.include_router(router)
-app.include_router(router_public)
 
 if __name__ == "__main__":
     import uvicorn

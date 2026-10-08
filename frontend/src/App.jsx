@@ -44,15 +44,19 @@ function App() {
         preference_vector: selectedUser.preference_vector
       };
 
+      // POST /match takes and returns a JSON array (one entry per user).
       const response = await fetch('http://127.0.0.1:8000/match', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestPayload)
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': import.meta.env.VITE_MATCHING_API_KEY || ''
+        },
+        body: JSON.stringify([requestPayload])
       });
 
       if (!response.ok) throw new Error("Backend connection failed");
 
-      const result = await response.json();
+      const [result] = await response.json();
 
       // Update global results: replace if user already matched, else add
       setLiveRecommendations(prev => {

@@ -12,6 +12,8 @@ The repository contains:
 
 The backend supports multi-user requests, Mongo-backed job retrieval, and configurable scoring behavior for both quality and latency tuning.
 
+**API reference:** [`backend/API.md`](backend/API.md): request and response fields, query parameters, errors and examples.
+
 ## Core Capabilities
 
 - **User-to-opportunity matching** with ranked recommendations.
@@ -21,29 +23,30 @@ The backend supports multi-user requests, Mongo-backed job retrieval, and config
 
 ## Scoring Model
 
-Default scoring mode is **multiplicative** (`SCORING_MODE=multiplicative`):
+Each user's skills are embedded and compared with jobs and occupations. The closest candidates are re-scored by a cross-encoder and then ranked by:
 
-`S_total = U_hat × P_hat`
+`final_score = u_hat × p_hat × coverage_factor × location_tier_factor`
 
 Where:
 
-- `U_hat` captures utility from skills and preferences.
-- `P_hat` captures success propensity (gate, essential fit, readiness, market opportunity).
+- `u_hat` is preference utility: how well the item matches the user's stated preferences (job attributes and work activities).
+- `p_hat` is success propensity: how likely the user is to succeed in the item, driven by skill fit.
+- `coverage_factor` lowers the score when the user meets few of the item's essential skills.
+- `location_tier_factor` (opportunities only) is 1.0 for jobs in the user's own area and lower for jobs in a regional or national hub.
 
-Legacy additive mode is also available (`SCORING_MODE=additive`) for controlled comparisons.
+`FINAL_SCORE_COMBINER=geometric_mean` combines `u_hat` and `p_hat` as `√(u_hat × p_hat)` instead of their product. Every factor is returned in each recommendation's `score_breakdown`.
 
 ## API
 
-Primary endpoint:
+`POST /match` takes a JSON array of users (with an `x-api-key` header) and returns, for each user:
 
-- `POST /match` — accepts one or more users and returns:
-  - `opportunity_recommendations`
-  - `occupation_recommendations`
-  - `skill_gap_recommendations`
+- `opportunity_recommendations`
+- `occupation_recommendations`
+- `skill_gap_recommendations`
 
-Hybrid diagnostic / alternate ranking:
+Other routes: `GET /jobs`, `GET /jobs/stats`, `GET /health`.
 
-- `POST /match_v2` — same `MatchRequest` body shape as `POST /match` (JSON array); loads **all active jobs** from Mongo **without** the per-user location prefilter used by `POST /match` (`JOBS_RETRIEVAL_FILTER` is effectively bypassed here so hybrid indexes match unrestricted batch runs, e.g. CLI `--mongo-all-active`). Returns **`hybrid_recommendations`** ranked by BM25 × embedding‑cosine **pool fused** scores (optional query: `fusion_top_k`, `alpha_on_cosine`). Does not compute occupations or the full SkillScorer / `p_hat` stack. **`x-api-key` is not required** on this route for now (unlike `/match`).
+See [`backend/API.md`](backend/API.md) for the full reference.
 
 The language a deployment matches in is configured with `TARGET_LANGUAGE` (see
 [Languages](#languages)), not per request. Skill matching itself is language-neutral, so a
@@ -69,8 +72,10 @@ uvicorn app.main:app --reload
 ```bash
 cd frontend
 npm install
-npm run dev
+VITE_MATCHING_API_KEY=<your-api-key> npm run dev
 ```
+
+The frontend calls the backend at `http://127.0.0.1:8000/match` and sends `VITE_MATCHING_API_KEY` as the `x-api-key` header.
 
 ## Languages
 
@@ -81,7 +86,7 @@ is not.
 
 **Skill matching is language-neutral.** Both sides resolve skills by *label* into the
 internal id space of the embedding artefact. Every enabled language's taxonomy label pack
-is loaded into that one resolver and mapped onto the same canonical ids, so a Spanish job
+is loaded into that one resolver and mapped onto the same English skill ids, so a Spanish job
 posting matched against a Spanish user profile scores through exactly the same vectors as
 the English equivalent — **with nothing on the request, and with no Spanish retrain.**
 
@@ -93,7 +98,7 @@ load time (`app/services/skill_label_packs.py`).
 
 | What | Where |
 |---|---|
-| Cross-encoder checkpoint (stage-2 rerank on `/match_v3`, `/match_v4`) | `cross_encoder_model` per language; `CROSS_ENCODER_MODEL_NAME_<LANG>` overrides |
+| Cross-encoder checkpoint (stage-2 rerank on `/match`) | `cross_encoder_model` per language; `CROSS_ENCODER_MODEL_NAME_<LANG>` overrides |
 | BM25 / hybrid stopwords | `stopwords` per language |
 | Labels echoed back in the response | `SkillScorer.display_labels(language)` |
 | Occupation database labels | `resources/occupations/<lang>/`, falling back to `en` |
@@ -128,16 +133,16 @@ python -m scripts.build_language_taxonomy --taxonomy-dir <export-dir> --language
 ```
 
    The script validates the columns the resolver reads by name and — the part that matters
-   — reports how much of the pack joins onto the canonical id space. Anything that does not
+   — reports how much of the pack joins onto the English id space. Anything that does not
    join has no embedding row, so labels resolving to it would be silently dropped at match
    time; that almost always means the two packs came from different taxonomy releases.
 
 `tests/unit/test_language_support.py` guards the invariant: every pack must join onto the
-canonical id space, and a Spanish label must resolve to the same id as its English
+English id space, and a Spanish label must resolve to the same id as its English
 counterpart.
 
 `ENABLED_LANGUAGES` limits which packs are loaded (default: all — it is a CSV parse, not a
-model load). The canonical language is always included; it defines the id space.
+model load). English (`en`) is always included; it defines the id space.
 
 ## Configuration
 
@@ -145,18 +150,16 @@ Backend runtime settings are managed through `backend/.env` (see `backend/.env.e
 
 Key settings include:
 
-- data source and retrieval controls (Mongo collection, retrieval filters, projection, warmup)
+- data source (`MONGO_URL`, `MONGO_DB_NAME`, `MONGO_JOBS_COLLECTION`) and retrieval controls (filters, projection, warmup)
+- `GEMINI_API_KEY`, used to embed users' skills
 - language defaults (`TARGET_LANGUAGE`, `ENABLED_LANGUAGES`, `CROSS_ENCODER_MODEL_NAME_<LANG>`)
-- scoring mode and weights
-- top-k response sizes
-- response skill thresholding (`MATCH_RESPONSE_SKILL_MIN_SCORE`)
-
-If `MATCH_RESPONSE_SKILL_MIN_SCORE` is not set, it falls back to `GATE_SIMILARITY_THRESHOLD`.
+- response sizes: `MATCH_V4_RETRIEVE_TOP_K` (shortlist, default 100), `MATCH_V4_FINAL_TOP_K` (opportunities returned, default 50), `MATCH_V4_TOP_K_OCCUPATIONS` (default 10), `MATCH_TOP_K_SKILL_GAPS` (default 5)
+- scoring: `FINAL_SCORE_COMBINER` (`product` or `geometric_mean`), `PREFERENCE_SCORER_MODE`, `V4_FULL_COVERAGE_GAMMA` / `V4_FULL_COVERAGE_FLOOR`, and location tiers (`LOCATION_TIER_ENABLED`, `LOCATION_TIER_W_REGIONAL`, `LOCATION_TIER_W_NATIONAL`)
+- skill-gap threshold: `MATCH_RESPONSE_SKILL_MIN_SCORE`. Skill gaps whose proximity is below this value are dropped. If it isn't set, it falls back to `GATE_SIMILARITY_THRESHOLD`.
 
 ## Request tracing (Langfuse)
 
-Every matching request — `/match`, `/experiments/v2/match`, `/experiments/v3/match`, `/match_v4`,
-`/experiments/v5/match` (and any future `/match_*`) — can be traced to [Langfuse](https://langfuse.com),
+Every `POST /match` request can be traced to [Langfuse](https://langfuse.com),
 with the same layer the llm-reranker and compass-connect use (`backend/app/observability/`). It is
 **off by default**; a deployment with no Langfuse keys behaves exactly as before.
 
@@ -167,12 +170,12 @@ What one trace holds:
 | root, named after the route | request id, pseudonymous `user_id` (single-user requests; batches list `user_ids`), query params, HTTP status, embedding totals |
 | `retrieval` | Mongo find / build and occupation-cache timings, job and occupation counts |
 | `embedding` → `embed_content` | one Langfuse **embedding** per Gemini call: model, dimensionality, token usage, attempts, retries, per-attempt latency, failure |
-| `shortlist`, `rerank` | stage-1 cosine (or BM25 × cosine for v2) and the cross-encoder, per `corpus` (`jobs` / `occupations`) |
+| `shortlist`, `rerank` | stage-1 cosine and the cross-encoder, per `corpus` (`jobs` / `occupations`) |
 | `preference_scoring`, `formatting`, `skill_gaps` | u_hat × p_hat scoring, row building, skill-gap analysis |
 
-Stage names are the same on every route, so a Langfuse dashboard of observation latency
-(p50 / p95 / p99) grouped by name gives per-stage percentiles; filter by the `route:<path>` tag for a
-single route and by **environment** for a deployment (IaC sets it to the Pulumi stack).
+A Langfuse dashboard of observation latency (p50 / p95 / p99) grouped by name gives per-stage
+percentiles. Traces carry the `route:/match` tag, and you can filter by **environment** for a
+deployment (IaC sets it to the Pulumi stack).
 
 - **Find a request:** traced responses carry `X-Request-ID` (a client-sent one is echoed) and
   `X-Trace-ID` — paste the trace id into Langfuse. Or search by the user's id.
