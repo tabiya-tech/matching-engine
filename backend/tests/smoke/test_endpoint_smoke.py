@@ -1,5 +1,5 @@
-"""Smoke tests for match endpoints: payload guards, combiner validation,
-ZQF annotation logic, and the unified MatchResponse contract.
+"""Smoke tests for POST /match: auth, payload guards, combiner validation,
+ZQF annotation logic, and the MatchResponse contract.
 """
 
 from app.routes import _zqf_annotation
@@ -23,17 +23,27 @@ MINIMAL_PAYLOAD = [
 ]
 
 
+AUTH = {"x-api-key": "test-key"}
+
+
+class TestAuth:
+    def test_missing_api_key_returns_403(self, test_client):
+        resp = test_client.post("/match", json=MINIMAL_PAYLOAD)
+        assert resp.status_code == 403
+
+
 class TestPayloadGuards:
     def test_empty_payload_returns_400(self, test_client):
-        resp = test_client.post("/experiments/v2/match", json=[])
+        resp = test_client.post("/match", json=[], headers=AUTH)
         assert resp.status_code == 400
 
 
 class TestCombinerValidation:
     def test_invalid_combiner_returns_400(self, test_client):
         resp = test_client.post(
-            "/match_v4?final_score_combiner=invalid",
+            "/match?final_score_combiner=invalid",
             json=MINIMAL_PAYLOAD,
+            headers=AUTH,
         )
         assert resp.status_code == 400
 
@@ -59,14 +69,10 @@ class TestZqfAnnotation:
 
 
 class TestUnifiedResponseContract:
-    """Every match endpoint must return responses with user_id and 3 list keys."""
+    """POST /match must return responses with user_id and 3 list keys."""
 
     MATCH_ENDPOINTS = [
-        ("/match", {"headers": {"x-api-key": "test-key"}}),
-        ("/experiments/v2/match", {}),
-        ("/experiments/v3/match", {}),
-        ("/match_v4", {}),
-        ("/experiments/v5/match", {}),
+        ("/match", {"headers": AUTH}),
     ]
 
     REQUIRED_TOP_LEVEL_KEYS = (

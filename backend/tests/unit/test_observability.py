@@ -418,19 +418,10 @@ def test_unsampled_request_records_nothing_beneath_it(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/match",
-        "/experiments/v2/match",
-        "/experiments/v3/match",
-        "/match_v4",
-        "/experiments/v5/match",
-    ],
-)
-def test_every_match_route_is_traced(test_client, path):
+def test_match_route_is_traced(test_client):
+    path = "/match"
     body = [{"user_id": "u1", "skills_vector": {"top_skills": []}}]
-    headers = {"x-api-key": "k"} if path == "/match" else {}
+    headers = {"x-api-key": "k"}
     with in_memory_tracing() as spans:
         resp = test_client.post(path, json=body, headers=headers)
         assert resp.status_code == 200, resp.text
