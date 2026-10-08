@@ -1,5 +1,5 @@
 # Vendor one cross-encoder checkpoint per language, each in its own directory named after the
-# HF repo. app/services/cross_encoder/reranker.py looks the checkpoint up by that name, so the
+# HF repo. app/clients/cross_encoder_client.py looks the checkpoint up by that name, so the
 # layout here must stay `$MODEL_DIR/<repo-name>` (see _vendored_model_dirs).
 MODEL_DIR="./resources/models/cross-encoder"
 
