@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from .reranker import CrossEncoderReranker, rerank_cosine_recommendations
+from .reranker import rerank_cosine_recommendations
 
-__all__ = ["CrossEncoderReranker", "rerank_cosine_recommendations"]
+__all__ = ["rerank_cosine_recommendations"]
