@@ -29,14 +29,14 @@ from app.config import (
     JOBS_PAGE_MAX_LIMIT,
     DEBUG_MODE,
 )
-from app.database import (
+from app.jobs.get_jobs_repository import get_jobs_repository
+from app.jobs.pagination import InvalidCursor
+from app.jobs.repository import IJobsRepository
+from app.occupations.loader import (
     attach_occupation_embeddings,
-    get_all_jobs_with_timing,
     get_all_occupations_with_timing,
-    get_jobs_page_with_timing,
-    get_jobs_stats,
-    InvalidCursor,
 )
+from app.services.job_retrieval import retrieve_jobs_with_timing
 from app import observability
 from app.match_timing_log import log_match_step
 from app.services.matching_service import match_user_with_data
@@ -261,6 +261,7 @@ async def list_jobs(
     skills: Optional[str] = Query(None, description="Case-insensitive filter on a skill label of the opportunity."),
     days: Optional[int] = Query(None, ge=1, le=3650, description="Only jobs posted within the last N days."),
     include_total: bool = Query(False, description="When true, include the total count of jobs matching the filters."),
+    jobs_repository: IJobsRepository = Depends(get_jobs_repository),
 ):
     """
     Browse active jobs with cursor-based pagination and optional filters.
@@ -273,7 +274,7 @@ async def list_jobs(
     """
     try:
         t_req = time.perf_counter()
-        jobs, next_cursor, total, timing = await get_jobs_page_with_timing(
+        jobs, next_cursor, total, timing = await jobs_repository.get_jobs_page_with_timing(
             cursor=cursor,
             limit=limit,
             search=search,
@@ -320,11 +321,13 @@ async def list_jobs(
         },
     },
 )
-async def jobs_stats() -> JobsStats:
+async def jobs_stats(
+    jobs_repository: IJobsRepository = Depends(get_jobs_repository),
+) -> JobsStats:
     """Aggregate counts over the active jobs catalog: total jobs, distinct sectors, distinct platforms."""
     try:
         t_req = time.perf_counter()
-        stats = await get_jobs_stats()
+        stats = await jobs_repository.get_jobs_stats()
         log_match_step(
             "http /jobs/stats",
             "request (summary)",
@@ -347,6 +350,7 @@ async def match_legacy(
         List[MatchRequest],
         Body(..., description=_MATCH_BODY_DESCRIPTION, example=_MATCH_BODY_EXAMPLE),
     ],
+    jobs_repository: IJobsRepository = Depends(get_jobs_repository),
 ):
     """Match one or more users. Body is a JSON array of MatchRequest (use length 1 for a single user)."""
 
@@ -358,11 +362,11 @@ async def match_legacy(
         n_users = len(users)
         observability.set_request_users(users)
 
-        # Mongo ping runs at app startup (warmup_on_startup), not here — avoids multi-second noise per request.
+        # Mongo ping runs at app startup (app.warmup), not here — avoids multi-second noise per request.
         t_fetch = time.perf_counter()
         with observability.stage("retrieval") as span:
             (jobs, jobs_timing), (occ, occ_timing) = await asyncio.gather(
-                get_all_jobs_with_timing(users=users),
+                retrieve_jobs_with_timing(jobs_repository, users),
                 get_all_occupations_with_timing(),
             )
             observability.update_observation(
@@ -428,6 +432,7 @@ async def match_v2(
         le=50,
         description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
     ),
+    jobs_repository: IJobsRepository = Depends(get_jobs_repository),
 ):
     """Hybrid BM25 × cosine-skill embeddings, returned in the full ``MatchResponse`` shape.
 
@@ -479,7 +484,7 @@ async def match_v2(
         # Full active catalog (no union location filter) + occupation corpus, in parallel.
         with observability.stage("retrieval") as span:
             (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
-                get_all_jobs_with_timing(users=None),
+                retrieve_jobs_with_timing(jobs_repository, None),
                 get_all_occupations_with_timing(),
             )
             observability.update_observation(
@@ -569,6 +574,7 @@ async def match_v3(
         le=50,
         description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
     ),
+    jobs_repository: IJobsRepository = Depends(get_jobs_repository),
 ):
     """Gemini concat-cosine → CE rerank, returned in the full ``MatchResponse`` shape.
 
@@ -611,7 +617,7 @@ async def match_v3(
         t_fetch = time.perf_counter()
         with observability.stage("retrieval") as span:
             (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
-                get_all_jobs_with_timing(users=users),
+                retrieve_jobs_with_timing(jobs_repository, users),
                 get_all_occupations_with_timing(),
             )
             occ = attach_occupation_embeddings(occ)
@@ -729,6 +735,7 @@ async def match(
         le=50,
         description=f"Number of skill-gap recommendations per user. Default: {MATCH_TOP_K_SKILL_GAPS}.",
     ),
+    jobs_repository: IJobsRepository = Depends(get_jobs_repository),
 ):
     """Match one or more users to occupations, job opportunities and skill gaps.
 
@@ -776,7 +783,7 @@ async def match(
         t_fetch = time.perf_counter()
         with observability.stage("retrieval") as span:
             (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
-                get_all_jobs_with_timing(users=users),
+                retrieve_jobs_with_timing(jobs_repository, users),
                 _load_v4_occupations(),
             )
             observability.update_observation(
@@ -886,6 +893,7 @@ async def match_v5(
         le=50,
         description="Number of skill-gap recommendations.",
     ),
+    jobs_repository: IJobsRepository = Depends(get_jobs_repository),
 ):
     """Experiment: matching with ZQF education annotation on opportunities.
 
@@ -925,7 +933,7 @@ async def match_v5(
         t_fetch = time.perf_counter()
         with observability.stage("retrieval") as span:
             (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
-                get_all_jobs_with_timing(users=users),
+                retrieve_jobs_with_timing(jobs_repository, users),
                 _load_v4_occupations(),
             )
             observability.update_observation(
