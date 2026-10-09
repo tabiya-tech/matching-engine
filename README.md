@@ -157,7 +157,10 @@ connection lifecycle, collections and indexes, and how to add a query.
 
 ## Configuration
 
-Backend runtime settings are managed through `backend/.env` (see `backend/.env.example`).
+Backend runtime settings are managed through `backend/.env` (see `backend/.env.example`) and
+validated at import time by `app.config.Settings` (pydantic-settings). See
+[`backend/app/SETTINGS.md`](backend/app/SETTINGS.md) for the full settings reference: every
+field's type and default, and which variables each deployment stack overrides.
 
 Key settings include:
 
