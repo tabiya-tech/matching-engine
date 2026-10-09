@@ -202,7 +202,7 @@ def build_job_dict_from_ranked(rd: dict[str, Any]) -> dict[str, Any] | None:
         "optional_skills": optional_skills,
         "skill_groups_origin_uuids": skill_groups,
         "attributes": attributes,
-        # Post-secondary education gate (see app.services.education_eligibility).
+        # Post-secondary education gate (see app.ranking.retrieval).
         # llm_job_attributes is fully projected, so this subfield is already loaded.
         "requires_post_secondary": attributes.get("requires_post_secondary"),
         # ZQF education annotation (Zambia): classifier_metadata (two naming conventions) or root.

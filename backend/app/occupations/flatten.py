@@ -44,7 +44,7 @@ def flatten_occupations(raw_occupations: list[dict[str, Any]]) -> list[dict[str,
         label = occ.get("preferred_label", "Unknown")
         description = occ.get("description", "")
 
-        # Post-secondary education gate (see app.services.education_eligibility):
+        # Post-secondary education gate (see app.ranking.retrieval):
         # occupation-level flag, applied to all of this occupation's county rows.
         requires_post_secondary = occ.get("requires_post_secondary")
         if requires_post_secondary is None:

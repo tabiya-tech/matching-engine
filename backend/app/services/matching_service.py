@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from app import observability
 from app.config import (
@@ -14,22 +14,28 @@ from app.config import (
     MATCH_TOP_K_OPPORTUNITIES,
     MATCH_TOP_K_SKILL_GAPS,
     SCORING_MODE,
+    SKILL_RESCALE_TARGET,
 )
 from app.match_timing_log import log_match_step
-from app.services.education_eligibility import filter_jobs_by_education
-from app.services.preference_score_v1 import get_preference_scorer
-from app.services.skill_gap_analysis import analyze_skill_gaps
-from app.services.skill_score import SkillScorer
-from app.services.success_propensity import SuccessPropensityScorer
+from app.ranking.retrieval import filter_jobs_by_education
+from app.ranking.retrieval import (
+    job_matches_user_location as _job_matches_user_location,
+)
+from app.ranking.skill_gaps import (
+    analyze_skill_gaps,
+    filter_skill_gap_recommendations as _filter_skill_gap_recommendations,
+    skill_gap_candidate_pool_k as _skill_gap_candidate_pool_k,
+)
+from app.ranking.scoring import SuccessPropensityScorer
+from app.server_dependencies.model_dependencies import (
+    get_preference_scorer,
+    get_skill_scorer,
+)
 
 # Initialize scorers once at module level
-scorer_skill = SkillScorer()
+scorer_skill = get_skill_scorer()
 scorer_pref = get_preference_scorer()
 scorer_success = SuccessPropensityScorer()
-
-
-def _norm(v: Optional[str]) -> str:
-    return str(v).strip().casefold() if v is not None else ""
 
 
 def _split_pref_details(pref_details: list) -> tuple:
@@ -64,65 +70,6 @@ def _filter_essential_skill_matches(match_details: dict) -> list[dict]:
         for m in essential
         if float(m.get("similarity", 0.0)) >= MATCH_RESPONSE_SKILL_MIN_SCORE
     ]
-
-
-def _skill_gap_candidate_pool_k(requested_top_k: int) -> int:
-    """How many ranked candidates to generate before the proximity threshold filter.
-
-    ``analyze_skill_gaps`` ranks by combined score (proximity + job unlock). A small
-    ``top_k`` can surface a high-unlock skill whose proximity is below
-    ``MATCH_RESPONSE_SKILL_MIN_SCORE``; widening the pool first lets the filter
-    return up to ``requested_top_k`` rows that pass the threshold.
-    """
-    return max(requested_top_k * 10, MATCH_TOP_K_SKILL_GAPS, 20)
-
-
-def _filter_skill_gap_recommendations(
-    skill_gaps: list[dict], *, top_k: int | None = None
-) -> list[dict]:
-    """Keep only skill-gap rows whose proximity passes response threshold."""
-    limit = MATCH_TOP_K_SKILL_GAPS if top_k is None else max(1, int(top_k))
-    return [
-        g
-        for g in skill_gaps
-        if float(g.get("proximity_score", 0.0)) >= MATCH_RESPONSE_SKILL_MIN_SCORE
-    ][:limit]
-
-
-def _job_matches_user_location(job: Dict[str, Any], user: Dict[str, Any]) -> bool:
-    """Lenient location match.
-    - Always matches 'Remote' jobs
-    - Matches if city or province match (case-insensitive, substring)
-    """
-    user_city = _norm(user.get("city"))
-    user_province = _norm(user.get("province"))
-
-    job_city = _norm(job.get("city"))
-    job_province = _norm(job.get("province"))
-    job_loc = _norm(job.get("location"))
-
-    #  Always include Remote jobs
-    if "remote" in job_city or "remote" in job_province or "remote" in job_loc:
-        return True
-
-    if not user_city or not user_province:
-        return False
-
-    # Check City Match (Lenient)
-    if job_city and (user_city in job_city or job_city in user_city):
-        return True
-
-    # Check Province Match (Lenient)
-    if job_province and (
-        user_province in job_province or job_province in user_province
-    ):
-        return True
-
-    # Fallback to location string match
-    if job_loc:
-        return user_city in job_loc or user_province in job_loc
-
-    return False
 
 
 def _build_justification(
@@ -512,7 +459,7 @@ def _match_items(
     # In legacy mode, import DemandScorer once (not per-item)
     _demand_scorer = None
     if scoring_mode != "multiplicative":
-        from app.services.demand_score import DemandScorer
+        from app.ranking.scoring import DemandScorer
 
         _demand_scorer = DemandScorer()
 
@@ -713,6 +660,7 @@ def match_user_with_data(
             top_k=_skill_gap_candidate_pool_k(MATCH_TOP_K_SKILL_GAPS),
             resolve_id=scorer_skill._resolve_label,
             timing_out=None,
+            rescale_target=SKILL_RESCALE_TARGET,
         )
         skill_gaps = _filter_skill_gap_recommendations(
             skill_gaps, top_k=MATCH_TOP_K_SKILL_GAPS
