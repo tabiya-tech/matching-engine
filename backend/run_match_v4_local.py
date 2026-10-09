@@ -20,11 +20,11 @@ the local output is identical to what that endpoint's consumers receive(d):
     shape (opportunities + occupations + skill-gaps), so all the CSV/manifest outputs below apply; the
     v4-only u_hat/p_hat/demand columns are simply empty.
 
-The only swap is the Mongo job read: ``app.database.get_all_jobs_with_timing`` is monkeypatched
-to serve jobs from a local JSON file instead of MongoDB (occupations always load from local resource
-files). With ``--live-jobs`` even the job read goes to MongoDB.
+The only swap is the Mongo job read: jobs are served from a local JSON file instead of MongoDB
+(occupations always load from local resource files). With ``--live-jobs`` even the job read goes to
+MongoDB.
 
-Live jobs (``--live-jobs``): skip the monkeypatch and read jobs straight from the MongoDB
+Live jobs (``--live-jobs``): read jobs straight from the MongoDB
 configured in ``backend/.env`` (``MONGO_URL`` / ``MONGO_DB_NAME`` / ``MONGO_JOBS_COLLECTION``) —
 useful when the live corpus carries ``requires_post_secondary``. Needs ``motor`` installed and
 network access. Defaults to the full active corpus; ``--jobs-location-filter`` enables the
@@ -82,7 +82,6 @@ import asyncio
 import argparse
 import datetime as _dt
 from pathlib import Path
-from unittest.mock import MagicMock
 
 from dotenv import load_dotenv
 
@@ -94,20 +93,12 @@ load_dotenv(BACKEND_ROOT / ".env")
 # ── 1. Fix OpenMP conflict on Windows with multiple conda packages ────────────
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-# ── 2. DB access mode (decided here, before ANY app import, because app.database builds the
-# Mongo client at import time and argparse runs too late — so we pre-scan sys.argv). ──
-#   * default       : mock motor + inject a placeholder MONGO_URL → no DB is ever touched; jobs
-#                     come from the local --jobs JSON file.
-#   * --live-jobs   : leave motor real and DO NOT inject a placeholder → app.database connects to
-#                     the Mongo configured in backend/.env (MONGO_URL / MONGO_DB_NAME /
-#                     MONGO_JOBS_COLLECTION) and jobs are read live (incl. requires_post_secondary).
+# ── 2. DB access mode (pre-scanned from sys.argv so it is known before argparse runs). ──
+#   * default       : no DB is ever touched; jobs come from the local --jobs JSON file.
+#   * --live-jobs   : a standalone jobs repository connects to the Mongo configured in backend/.env
+#                     (MONGO_URL / MONGO_DB_NAME / MONGO_JOBS_COLLECTION) and jobs are read live
+#                     (incl. requires_post_secondary).
 USE_LIVE_JOBS = "--live-jobs" in sys.argv
-if not USE_LIVE_JOBS:
-    os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
-    os.environ.setdefault("MONGO_DB_NAME", "test")
-    _motor_mock = MagicMock()
-    sys.modules["motor"] = _motor_mock
-    sys.modules["motor.motor_asyncio"] = _motor_mock
 
 # Named dataset presets for --dataset (users file per dataset; jobs corpus is shared unless --jobs given).
 # njila users carry no BWS, so the BWS requirement auto-relaxes for it (see _resolve_require_bws).
@@ -415,7 +406,12 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    import app.database as db_module
+    from app.jobs.get_jobs_repository import standalone_jobs_repository
+    from app.occupations.loader import (
+        attach_occupation_embeddings,
+        get_all_occupations_with_timing,
+    )
+    from app.services.job_retrieval import retrieve_jobs_with_timing
     import app.services.preference_score  # noqa: F401
     import app.services.demand_score  # noqa: F401
     import app.services.skill_score  # noqa: F401
@@ -454,9 +450,9 @@ def main() -> None:
     # v3 keeps the route's own shortlist defaults (retrieve=50/final=30); v4/v5 use the wider 100/50.
     V3_DEFAULT_FINAL_TOP_K = 30
 
-    # ── 4. Job source. Offline (default): patch the Mongo job loader to serve the local JSON corpus
-    # (full active set; ignore users=). Live (--live-jobs): leave app.database's real Mongo-backed
-    # loader in place — no patching. Either way the run goes through db_module.get_all_jobs_with_timing. ──
+    # ── 4. Job source. Offline (default): serve the local JSON corpus (full active set; ignore users).
+    # Live (--live-jobs): read through a standalone jobs repository, with the same location prefilter
+    # policy as the routes (app.services.job_retrieval). ──
     if not USE_LIVE_JOBS:
         jobs = _load_jobs(args.jobs)
         jobs_timing = {
@@ -472,14 +468,14 @@ def main() -> None:
             "path": str(args.jobs.resolve()),
         }
 
-        async def _get_all_jobs_with_timing(users=None):  # noqa: ANN001 — signature matches production
+        async def _fetch_jobs(users):  # noqa: ANN001
             return list(jobs), dict(jobs_timing)
 
-        async def _get_all_jobs(users=None):  # noqa: ANN001
-            return list(jobs)
+    else:
 
-        db_module.get_all_jobs_with_timing = _get_all_jobs_with_timing
-        db_module.get_all_jobs = _get_all_jobs
+        async def _fetch_jobs(users):  # noqa: ANN001
+            async with standalone_jobs_repository() as jobs_repository:
+                return await retrieve_jobs_with_timing(jobs_repository, users)
 
     # ── 5. Load + filter users ────────────────────────────────────────────────
     all_users = _load_users_jsonl(args.users)
@@ -550,8 +546,8 @@ def main() -> None:
     )
 
     # Validate users once (production parity), then fetch jobs from the active source. Both modes
-    # go through db_module.get_all_jobs_with_timing — offline it's the local JSON closure patched
-    # above; with --live-jobs it's the real Mongo-backed loader. Done before the banner so the
+    # go through _fetch_jobs — offline it's the local JSON closure defined above; with --live-jobs
+    # it's the real Mongo-backed repository. Done before the banner so the
     # n_jobs count and all downstream lookups reflect the corpus actually used. v5 validates with
     # MatchRequestV5 so the user's optional ``zqf_level`` survives model_dump into the engine.
     request_model = MatchRequestV5 if args.version == "v5" else MatchRequest
@@ -560,7 +556,7 @@ def main() -> None:
     t0 = _dt.datetime.now()
     try:
         jobs_list, mongo_timing = asyncio.run(
-            db_module.get_all_jobs_with_timing(users=users_dicts)
+            _fetch_jobs(users_dicts)
         )
     except Exception as e:  # noqa: BLE001 — surface live-DB failures with an actionable hint
         if USE_LIVE_JOBS:
@@ -614,15 +610,15 @@ def main() -> None:
         )
 
     # ── 6. Run the chosen endpoint's code path — mirrors the matching app.routes EXACTLY ──────
-    # Occupations load from local resource files via app.database (works offline and with --live-jobs).
-    occ_corpus, _occ_timing = asyncio.run(db_module.get_all_occupations_with_timing())
+    # Occupations load from local resource files via app.occupations (works offline and with --live-jobs).
+    occ_corpus, _occ_timing = asyncio.run(get_all_occupations_with_timing())
 
     if IS_GEMINI:
         # v3/v4/v5 route bodies all: validate -> model_dump -> (jobs, occ) ->
         # attach_occupation_embeddings -> run_match_v{3,4}_full -> [MatchResponse(**row)]. We call the
         # same engine function the live route calls, so opportunities, occupations (county-scoped +
         # top-k) and skill-gaps are produced identically to live consumers.
-        occ_corpus = db_module.attach_occupation_embeddings(occ_corpus)
+        occ_corpus = attach_occupation_embeddings(occ_corpus)
 
     if args.version == "v3":
         # /match_v3: Gemini concat-cosine -> cross-encoder rerank. final_score is the concat
@@ -1044,7 +1040,7 @@ def main() -> None:
             "n_jobs": len(jobs),
             "n_occupation_rows_corpus": len(occ_corpus),
             "job_loader": (
-                f"live_mongo (app.database.get_all_jobs_with_timing; JOBS_RETRIEVAL_FILTER={os.getenv('JOBS_RETRIEVAL_FILTER')})"
+                f"live_mongo (app.services.job_retrieval.retrieve_jobs_with_timing; JOBS_RETRIEVAL_FILTER={os.getenv('JOBS_RETRIEVAL_FILTER')})"
                 if USE_LIVE_JOBS
                 else "local_json (full active corpus; users= location prefilter intentionally ignored)"
             ),
