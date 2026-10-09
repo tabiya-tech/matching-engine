@@ -68,7 +68,6 @@ def test_client(mocked_jobs_repository):
     # Import target modules first so patch() can resolve the attribute paths.
     import app.main  # noqa: F401
     import app.routes  # noqa: F401
-    import app.services.match_concat_gemini_ce_service  # noqa: F401
     import app.services.matching_service  # noqa: F401
     from app.jobs.get_jobs_repository import get_jobs_repository
     from app.server_dependencies.db_dependencies import MatchingDBProvider
@@ -80,10 +79,7 @@ def test_client(mocked_jobs_repository):
             return_value=MagicMock(),
         ),
         patch("app.main.warmup_on_startup", new_callable=AsyncMock),
-        patch(
-            "app.services.match_concat_gemini_ce_service._get_reranker",
-            return_value=MagicMock(),
-        ),
+        patch("app.main.get_cross_encoder_client", return_value=MagicMock()),
         patch(
             "app.routes.get_all_occupations_with_timing", side_effect=_mock_occupations
         ),

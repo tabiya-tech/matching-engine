@@ -8,9 +8,9 @@ final_score = u_hat × p_hat
 
 | Signal | Source |
 |--------|--------|
-| **Stage 1–2 (column 1)** | `run_match_concat_gemini_ce` — Gemini concat user embed × Mongo `job_embedding` / `concat_skill_embedding_gemini` → **`concat_cosine_similarity`**, then CE rerank |
+| **Stage 1–2 (column 1)** | `MatchingService.shortlist_and_rerank` (`app/matching/service.py`) — Gemini concat user embed × Mongo `job_embedding` / `concat_skill_embedding_gemini` → **`concat_cosine_similarity`**, then CE rerank |
 | **p_hat** | Raw **`concat_cosine_similarity`** (not `cross_encoder_score`, which is per-user min–max and often 1.0 on rank #1) |
-| **u_hat** | `get_preference_scorer()` — use **`hybrid_v1`** (`preference_score_v1`) or **`legacy`** (`PreferenceScorer`) |
+| **u_hat** | `get_preference_scorer()` — use **`hybrid_v1`** (`app/ranking/preference.py`) or **`legacy`** (`PreferenceScorer`) |
 
 ## Pipeline order
 
@@ -26,7 +26,7 @@ If the same job appears in both columns, **u_hat is the same** (it depends only 
 - `GEMINI_API_KEY` in `backend/.env`
 - Mongo jobs with `job_embedding` (3072-d) or `concat_skill_embedding_gemini.vector_bin`
 - `MONGO_JOBS_COLLECTION=ranked_jobs_cleansed_v2` (case-sensitive)
-- **`PREFERENCE_SCORER_MODE=hybrid_v1`** for the new preference model (see `preference_score_v1/`)
+- **`PREFERENCE_SCORER_MODE=hybrid_v1`** for the new preference model (see `app/ranking/preference.py` and `docs/preference-scoring.md`)
 
 ## Commands
 
@@ -82,6 +82,5 @@ python3 -m app.services.gemini_ce_preference_matching.build_dashboard_with_wa \
 
 ## Related
 
-- HTTP API: `POST /match_v3` → `app.services.match_concat_gemini_ce_service`
-- HTTP API: `POST /match_v4` → `app.services.match_concat_gemini_ce_preference_service` (v3 + hybrid preference final)
+- HTTP API: `POST /match` → `app.matching.service.MatchingService`
 - Per-skill cosine only (old batch path): `app.services.cross_encoder.run_cosine_then_cross_encoder`

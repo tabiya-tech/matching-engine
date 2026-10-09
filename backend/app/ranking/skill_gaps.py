@@ -8,9 +8,9 @@ Identifies skills that would be most useful for a user to learn based on:
 
 import time
 import numpy as np
-from typing import List, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
-from app.config import SKILL_RESCALE_TARGET
+from app.config import MATCH_RESPONSE_SKILL_MIN_SCORE, MATCH_TOP_K_SKILL_GAPS
 
 
 def _ms(t0: float) -> float:
@@ -25,6 +25,7 @@ def analyze_skill_gaps(
     top_k: int = 5,
     resolve_id=None,
     timing_out: Optional[Dict] = None,
+    rescale_target: float = 0.0,
 ) -> List[Dict]:
     """
     Analyzes skill gaps for a user by finding skills that:
@@ -39,6 +40,8 @@ def analyze_skill_gaps(
         top_k: Number of recommendations to return
         resolve_id: Optional callable to translate external IDs (ESCO)
                      to the embedding model's internal ID space.
+        rescale_target: Per-cosine rescale target for proximity scores; <= 0 disables
+                     rescaling.
 
     Returns:
         List of dicts with skill_id, skill_label, proximity_score,
@@ -121,7 +124,7 @@ def analyze_skill_gaps(
     user_mat = engine._rows(list(user_skill_ids))
     user_skill_ids_list = list(user_skill_ids)
 
-    _target = SKILL_RESCALE_TARGET
+    _target = rescale_target
     _rescale_enabled = _target > 0.0
 
     def _rescale_value(v: float) -> float:
@@ -223,3 +226,48 @@ def analyze_skill_gaps(
             }
         )
     return recommendations
+
+
+def skill_gap_candidate_pool_k(requested_top_k: int) -> int:
+    """How many ranked candidates to generate before the proximity threshold filter.
+
+    ``analyze_skill_gaps`` ranks by combined score (proximity + job unlock). A small
+    ``top_k`` can surface a high-unlock skill whose proximity is below
+    ``MATCH_RESPONSE_SKILL_MIN_SCORE``; widening the pool first lets the filter
+    return up to ``requested_top_k`` rows that pass the threshold.
+    """
+    return max(requested_top_k * 10, MATCH_TOP_K_SKILL_GAPS, 20)
+
+
+def filter_skill_gap_recommendations(
+    skill_gaps: list[dict], *, top_k: int | None = None
+) -> list[dict]:
+    """Keep only skill-gap rows whose proximity passes response threshold."""
+    limit = MATCH_TOP_K_SKILL_GAPS if top_k is None else max(1, int(top_k))
+    return [
+        g
+        for g in skill_gaps
+        if float(g.get("proximity_score", 0.0)) >= MATCH_RESPONSE_SKILL_MIN_SCORE
+    ][:limit]
+
+
+def skill_gaps_for(
+    user: Dict[str, Any],
+    jobs: List[Dict[str, Any]],
+    top_k: int,
+    *,
+    scorer,  # SkillScorer
+    rescale_target: float,
+) -> List[Dict[str, Any]]:
+    """Node2Vec skill-gap analysis over ``jobs``, threshold-filtered to ``top_k`` rows (engine-agnostic)."""
+    gaps = analyze_skill_gaps(
+        user,
+        jobs,
+        scorer.engine,
+        scorer.skill_labels,
+        top_k=skill_gap_candidate_pool_k(top_k),
+        resolve_id=scorer._resolve_label,
+        timing_out=None,
+        rescale_target=rescale_target,
+    )
+    return filter_skill_gap_recommendations(gaps, top_k=top_k)

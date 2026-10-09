@@ -15,7 +15,7 @@ from app.observability import (
 )
 from app.routes import router
 from app.server_dependencies.db_dependencies import MatchingDBProvider
-from app.services.match_concat_gemini_ce_service import _get_reranker
+from app.server_dependencies.model_dependencies import get_cross_encoder_client
 from app.warmup import warmup_on_startup
 
 load_dotenv()
@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
         )
     else:
         await _warmup_safe()
-    _get_reranker()
+    get_cross_encoder_client()
     yield
     # A background warmup still running at shutdown would otherwise use the client after it is closed.
     if warmup_task is not None and not warmup_task.done():

@@ -1,10 +1,11 @@
 import pytest
 
-from app.services.gemini_ce_preference_matching import scoring
-from app.services.gemini_ce_preference_matching.scoring import (
+from app.ranking import scoring
+from app.ranking.scoring import (
     enrich_recommendations_with_preferences,
 )
-from app.services.preference_score_v1 import UnifiedPreferenceScorer
+from app.ranking.preference import UnifiedPreferenceScorer
+from app.artifacts.repository import get_artifacts_repository
 
 
 def _items():
@@ -42,7 +43,9 @@ def _enrich(coverage, **kwargs):
         _user(),
         _recs(),
         _items(),
-        preference_scorer=UnifiedPreferenceScorer(),
+        preference_scorer=UnifiedPreferenceScorer(
+            get_artifacts_repository().load_attribute_schema()
+        ),
         coverage_by_uuid=coverage,
         coverage_gamma=1.0,
         **kwargs,

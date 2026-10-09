@@ -9,14 +9,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.config import FINAL_SCORE_COMBINER, PREFERENCE_SCORER_MODE
-from app.services.gemini_ce_preference_matching.match_v3_bridge import (
-    v3_recommendation_to_rec,
-)
-from app.services.gemini_ce_preference_matching.scoring import (
+from app.ranking.scoring import v3_recommendation_to_rec
+from app.ranking.scoring import (
     enrich_recommendations_with_preferences,
 )
 from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
-from app.services.preference_score_v1 import get_preference_scorer
+from app.server_dependencies.model_dependencies import get_preference_scorer
 
 __all__ = ["run_match_concat_gemini_ce_with_preferences"]
 

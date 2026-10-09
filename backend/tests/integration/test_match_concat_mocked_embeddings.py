@@ -6,8 +6,16 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from app.services.cross_encoder.gemini_embeddings import EMBEDDING_DIM
+from app.clients.gemini_embedding_client import EMBEDDING_DIM
 from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
+
+
+def _passthrough_rerank() -> MagicMock:
+    """A rerank stage that keeps the cosine order."""
+    rerank = MagicMock()
+    rerank.build_pairs.return_value = []
+    rerank.apply.side_effect = lambda recs, _scores, **_kw: list(recs)
+    return rerank
 
 
 def _unit_vector(index: int) -> list[float]:
@@ -29,8 +37,8 @@ def _job(uuid: str, vec_index: int):
 
 
 class TestMatchConcatMockedEmbeddings:
-    @patch("app.services.match_concat_gemini_ce_service._get_matcher")
-    @patch("app.services.match_concat_gemini_ce_service._get_reranker")
+    @patch("app.services.match_concat_gemini_ce_service.get_skill_matcher")
+    @patch("app.services.match_concat_gemini_ce_service.get_cross_encoder_client")
     def test_identical_user_job_vector_ranks_first(self, mock_reranker, mock_matcher):
         """User embedding == Job A vector → Job A must be rank 1 in stage-1 cosine."""
         mock_matcher.return_value.score_pair.return_value = {
@@ -40,8 +48,7 @@ class TestMatchConcatMockedEmbeddings:
         # Pass-through rerank: preserve cosine order
         mock_reranker.return_value = MagicMock()
         with patch(
-            "app.services.match_concat_gemini_ce_service.rerank_cosine_recommendations",
-            side_effect=lambda _labels, recs, **_kw: recs,
+            "app.services.match_concat_gemini_ce_service._RERANK", _passthrough_rerank()
         ):
             jobs = [_job("job-a", 0), _job("job-b", 1)]
             user = {
@@ -68,16 +75,15 @@ class TestMatchConcatMockedEmbeddings:
         assert recs[0]["job_uuid"] == "job-a"
         assert recs[0]["rank"] == 1
 
-    @patch("app.services.match_concat_gemini_ce_service._get_matcher")
-    @patch("app.services.match_concat_gemini_ce_service._get_reranker")
+    @patch("app.services.match_concat_gemini_ce_service.get_skill_matcher")
+    @patch("app.services.match_concat_gemini_ce_service.get_cross_encoder_client")
     def test_education_gate_applied_in_stage1(self, mock_reranker, mock_matcher):
         mock_matcher.return_value.score_pair.return_value = {
             "mean_best_cosine": 0.5,
             "per_job_skill": [],
         }
         with patch(
-            "app.services.match_concat_gemini_ce_service.rerank_cosine_recommendations",
-            side_effect=lambda _labels, recs, **_kw: recs,
+            "app.services.match_concat_gemini_ce_service._RERANK", _passthrough_rerank()
         ):
             jobs = [
                 {

@@ -5,7 +5,7 @@ from app.services.matching_service import (
     _filter_skill_gap_recommendations,
     _skill_gap_candidate_pool_k,
 )
-from app.services.skill_gap_analysis import analyze_skill_gaps
+from app.ranking.skill_gaps import analyze_skill_gaps
 
 
 def _job_with_skills(uuid: str, essential, optional=None):

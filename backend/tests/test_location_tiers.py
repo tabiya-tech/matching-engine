@@ -1,18 +1,17 @@
 """Unit tests for tiered urban-pull location matching (services/location_tiers.py).
 
-Hermetic + torch-free: `tier_factor_for_job` lazily imports
-`matching_service._job_matches_user_location`, so we inject a fake module that mirrors that
-function's lenient casefold-substring + always-remote semantics.
+Hermetic: `tier_factor_for_job` matches regions with `job_matches_user_location`, which we replace
+with a fake that mirrors that function's lenient casefold-substring + always-remote semantics.
 """
 
 import pytest
 
-from app.services import location_tiers
-from app.services.location_tiers import HubChains
+from app.ranking import retrieval as location_tiers
+from app.ranking.retrieval import HubChains
 
 
 def _fake_matches(job, user):
-    """Mirror of matching_service._job_matches_user_location (lenient substring + remote)."""
+    """Mirror of ranking.location.job_matches_user_location (lenient substring + remote)."""
     jc = str(job.get("city") or "").casefold()
     jp = str(job.get("province") or "").casefold()
     jl = str(job.get("location") or "").casefold()
@@ -33,9 +32,8 @@ def _fake_matches(job, user):
 
 @pytest.fixture
 def fake_matching_service(monkeypatch):
-    # Inject the fake straight into the cached matcher slot (avoids importing the torch-heavy
-    # matching_service module). Reset afterwards so the cache doesn't leak across tests.
-    monkeypatch.setattr(location_tiers, "_JMUL", _fake_matches)
+    # monkeypatch restores the real function afterwards so the fake doesn't leak across tests.
+    monkeypatch.setattr(location_tiers, "job_matches_user_location", _fake_matches)
     return _fake_matches
 
 

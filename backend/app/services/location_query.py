@@ -76,9 +76,9 @@ def location_or_clauses_for_one_user(user: dict) -> list[dict[str, Any]]:
         return ors
     needles = {uc, up}
     if LOCATION_TIER_ENABLED:
-        from app.services.location_tiers import load_hub_chains
+        from app.artifacts.repository import get_artifacts_repository
 
-        hc = load_hub_chains(LOCATION_HUB_CHAINS_PATH)
+        hc = get_artifacts_repository().load_hub_chains(LOCATION_HUB_CHAINS_PATH)
         if hc is not None:
             needles.update(hc.chain_for(up))  # local + regional + national hub regions
     for needle in sorted(n for n in needles if n):
