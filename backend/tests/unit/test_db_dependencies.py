@@ -181,7 +181,7 @@ class TestLifespan:
         with (
             patch(_GET_JOBS_DB, return_value=mock_db) as factory,
             patch("app.main.warmup_on_startup", new_callable=AsyncMock) as warmup,
-            patch("app.main._get_reranker"),
+            patch("app.main.get_cross_encoder_client"),
             patch("app.main.shutdown_tracing"),
         ):
 
@@ -210,7 +210,7 @@ class TestLifespan:
         with (
             patch(_GET_JOBS_DB, return_value=mock_db),
             patch("app.main.warmup_on_startup", side_effect=_slow_warmup),
-            patch("app.main._get_reranker"),
+            patch("app.main.get_cross_encoder_client"),
             patch("app.main.shutdown_tracing"),
         ):
 
