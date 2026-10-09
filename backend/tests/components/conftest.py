@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.cosine_similarity.skill_score import CosineSkillMatcher
+from app.server_dependencies.model_dependencies import build_skill_matcher
 
 
 @pytest.fixture(scope="module")
 def cosine_matcher():
     """Load once per module — embedding matrix is large but cached."""
-    return CosineSkillMatcher()
+    return build_skill_matcher()
 
 
 def _user_with_skills(labels):

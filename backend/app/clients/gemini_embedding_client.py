@@ -13,8 +13,9 @@ import sys
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any
 
 import numpy as np
 
@@ -40,13 +41,11 @@ MAX_RETRIES = 5
 TOKEN_COUNT_WAIT_S = 0.2
 
 
-_token_count_pool: Optional[ThreadPoolExecutor] = None
+_token_count_pool: ThreadPoolExecutor | None = None
 _token_count_pool_lock = threading.Lock()
 
 
-def _start_token_count(
-    client: Any, model: str, texts: Sequence[str]
-) -> Optional[Future]:
+def _start_token_count(client: Any, model: str, texts: Sequence[str]) -> Future | None:
     """Count the input tokens alongside the embed call, for the trace's usage (and so its cost).
 
     The Gemini Developer API's ``embed_content`` reports no token counts (only Vertex fills
@@ -69,8 +68,8 @@ def _start_token_count(
 
 
 def _embedding_usage(
-    result: Any, token_count: Optional[Future]
-) -> Tuple[Optional[Dict[str, int]], str]:
+    result: Any, token_count: Future | None
+) -> tuple[dict[str, int] | None, str]:
     """Input tokens for one call and where they came from; never an invented count.
 
     Prefers the per-vector ``statistics.token_count`` (Vertex), else the parallel
@@ -108,9 +107,9 @@ def _embed_chunk(
     from google.genai import types as genai_types
 
     payload = list(texts)
-    last_err: Optional[BaseException] = None
-    attempt_ms: List[float] = []
-    errors: List[str] = []
+    last_err: BaseException | None = None
+    attempt_ms: list[float] = []
+    errors: list[str] = []
     with traced_observation(
         name="embed_content",
         as_type="embedding",
@@ -219,7 +218,7 @@ def _embed_chunk(
 
 
 def embed_text_list(
-    texts: List[str],
+    texts: list[str],
     *,
     api_key: str,
     batch_size: int = DEFAULT_BATCH_SIZE,
@@ -288,7 +287,7 @@ class IGeminiEmbeddingClient(ABC):
     @abstractmethod
     def embed_texts(
         self,
-        texts: List[str],
+        texts: list[str],
         *,
         batch_size: int = DEFAULT_BATCH_SIZE,
         sleep_s: float = DEFAULT_SLEEP_S,
@@ -315,7 +314,7 @@ class GeminiEmbeddingClient(IGeminiEmbeddingClient):
     def __init__(
         self,
         *,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         model_name: str = MODEL_NAME,
         embedding_dim: int = EMBEDDING_DIM,
         task_type: str = TASK_TYPE,
@@ -339,7 +338,7 @@ class GeminiEmbeddingClient(IGeminiEmbeddingClient):
 
     def embed_texts(
         self,
-        texts: List[str],
+        texts: list[str],
         *,
         batch_size: int = DEFAULT_BATCH_SIZE,
         sleep_s: float = DEFAULT_SLEEP_S,

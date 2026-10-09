@@ -68,14 +68,12 @@ def _load_occupation_embeddings() -> dict[str, Any]:
         try:
             import numpy as np
 
-            from app.services.match_concat_gemini_ce_service import (
-                concat_rescale_target,
-                whiten_concat_rows,
-            )
+            from app.server_dependencies.model_dependencies import get_concat_whitener
 
-            if concat_rescale_target() > 0:
+            whitener = get_concat_whitener()
+            if whitener.rescale_target() > 0:
                 codes_list = list(out.keys())
-                wmat = whiten_concat_rows(
+                wmat = whitener.whiten_rows(
                     np.stack([out[c] for c in codes_list], axis=0)
                 ).astype(np.float32)
                 for c, wv in zip(codes_list, wmat):

@@ -25,6 +25,7 @@ from app import observability
 from app.config import (
     MATCH_TOP_K_SKILL_GAPS,
     MATCH_V4_TOP_K_OCCUPATIONS,
+    SKILL_RESCALE_TARGET,
     V4_FULL_MIN_ESS_SHARE,
     V4_FULL_SIM_THRESHOLD,
 )
@@ -33,12 +34,29 @@ from app.services.hybrid_scoring.run_bm25_cosine_hybrid import (
     get_cosine_matcher_singleton,
     hybrid_match_users_with_jobs,
 )
-from app.services.match_v4_full_service import _skill_gaps_for, _user_matches_any_county
-from app.services.matching_service import _job_matches_user_location
+from app.ranking.retrieval import (
+    job_matches_user_location as _job_matches_user_location,
+    user_matches_any_county as _user_matches_any_county,
+)
+from app.ranking.skill_gaps import skill_gaps_for
+from app.server_dependencies.model_dependencies import get_skill_scorer
 
 __all__ = ["run_match_v2_full"]
 
 logger = logging.getLogger(__name__)
+
+
+def _skill_gaps_for(
+    user: Dict[str, Any], jobs: List[Dict[str, Any]], top_k: int
+) -> List[Dict[str, Any]]:
+    """The /match skill-gap analysis (engine-agnostic)."""
+    return skill_gaps_for(
+        user,
+        jobs,
+        top_k,
+        scorer=get_skill_scorer(),
+        rescale_target=SKILL_RESCALE_TARGET,
+    )
 
 
 def _index_by_uuid(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
