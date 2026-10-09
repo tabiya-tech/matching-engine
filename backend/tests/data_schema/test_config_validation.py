@@ -1,8 +1,8 @@
 """Verify that app.config rejects invalid enum values at import time.
 
-Config validates FINAL_SCORE_COMBINER and SCORING_MODE with bare
-if-statements. If those checks are removed, invalid config silently
-flows through scoring and produces wrong results.
+`Settings` validates FINAL_SCORE_COMBINER and SCORING_MODE as `Literal` fields on a
+pydantic-settings model. If those type annotations are loosened to `str`, invalid config
+silently flows through scoring and produces wrong results.
 """
 
 import os
@@ -38,4 +38,4 @@ class TestConfigEnumRejection:
         assert result.returncode != 0, (
             f"import app.config should fail with {env_var}={bad_value}"
         )
-        assert "ValueError" in result.stderr or env_var in result.stderr
+        assert "ValidationError" in result.stderr or bad_value in result.stderr
