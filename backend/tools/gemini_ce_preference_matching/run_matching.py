@@ -8,7 +8,7 @@ Stage 3: :class:`~app.ranking.preference.PreferenceScorer` → ``u_hat``;
 
 Usage (from ``backend/``)::
 
-    python -m app.services.gemini_ce_preference_matching.run_matching \\
+    python -m tools.gemini_ce_preference_matching.run_matching \\
         --users data/njila/njila_match_input.jsonl \\
         --from-mongo \\
         --retrieve-top-k 50 \\

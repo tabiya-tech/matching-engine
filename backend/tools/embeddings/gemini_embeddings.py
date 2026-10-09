@@ -15,7 +15,7 @@ Prereqs: ``pip install google-genai``, ``GEMINI_API_KEY`` in ``backend/.env``.
 Usage::
 
     cd backend
-    python -m app.services.cross_encoder.gemini_embeddings \\
+    python -m tools.embeddings.gemini_embeddings \\
         --input experiments/concat_text/njila_users_jobs_concat.json
 """
 
@@ -49,7 +49,7 @@ def _backend_root() -> Path:
     for parent in here.parents:
         if parent.name == "backend":
             return parent
-    return here.parents[3]
+    return here.parents[2]
 
 
 def load_concat_export(path: Path) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
