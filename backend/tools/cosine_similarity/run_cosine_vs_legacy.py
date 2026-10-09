@@ -15,7 +15,7 @@ Produces JSON; pair with ``build_cosine_legacy_compare_dashboard`` for HTML.
 Usage::
 
     cd backend
-    python -m app.services.cosine_similarity.run_cosine_vs_legacy \\
+    python -m tools.cosine_similarity.run_cosine_vs_legacy \\
         --users …/njila_match_input.resolved.jsonl \\
         --from-mongo \\
         --output …/cosine_vs_legacy_results.json \\
@@ -42,7 +42,7 @@ from app.server_dependencies.model_dependencies import (
     build_skill_scorer,
 )
 
-from .run_cosine_matching import load_jobs, _load_users
+from app.services.cosine_similarity.run_cosine_matching import load_jobs, _load_users
 from app.ranking.skills import CosineSkillMatcher
 
 

@@ -1,14 +1,20 @@
-"""Embed ``cosine_match_*_results.json`` into a standalone HTML dashboard.
+"""Build a self-contained HTML dashboard from ``bm25_*_results.json``.
 
-Same layout pattern as ``bm25_scoring/build_bm25_dashboard.py``:
-sidebar users, expandable job rows, score bar keyed on ``mean_best_cosine``.
+Mirrors the look-and-feel of ``index_based_matching/index_match_*_dashboard.html``
+(dark header, sidebar user list + search, expandable job rows), but visualises
+BM25:
+
+- Combined per-job score with a horizontal bar.
+- Raw component scores (skills-only, full-text) for hybrid runs.
+- ``matched_skills`` / ``matched_skills_detail`` — taxonomy overlaps (phrase
+  tokens plus optional user vs job wording for each overlap).
 
 Usage::
 
     cd backend
-    python -m app.services.cosine_similarity.build_cosine_dashboard \\
-        --input ./path/to/cosine_results.json \\
-        --output ./path/to/cosine_dashboard.html
+    python -m tools.bm25_scoring.build_bm25_dashboard \\
+        --input ./path/to/bm25_catalog_results.json \\
+        --output ./path/to/bm25_dashboard.html
 """
 
 from __future__ import annotations
@@ -19,99 +25,105 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-def _compact_rec(raw: Dict[str, Any], *, max_rows: int) -> Dict[str, Any]:
-    pj_in = raw.get("per_job_skill") or []
-    rows: List[Dict[str, str]] = []
-    for row in pj_in[:max_rows]:
-        if not isinstance(row, dict):
+def _compact_rec(raw: Dict[str, Any], *, max_matched_skills: int) -> Dict[str, Any]:
+    msk_full = [str(x) for x in (raw.get("matched_skills") or [])]
+    msk_take = msk_full[:max_matched_skills]
+    ov_compact: List[Dict[str, str]] = []
+    for d in raw.get("matched_skills_detail") or []:
+        if not isinstance(d, dict):
             continue
-        rows.append(
+        ov_compact.append(
             {
-                "jl": str(row.get("job_skill_label") or "")[:180],
-                "ul": str(row.get("best_user_skill_label") or "")[:180],
-                "c": float(row.get("cosine_similarity") or 0.0),
+                "p": str(d.get("phrase_token") or ""),
+                "u": str(d.get("user_label") or "")[:200],
+                "j": str(d.get("job_label") or "")[:200],
             }
         )
-    full_n = len(pj_in)
+    ov_full_n = len(ov_compact)
+    ov_take = ov_compact[:max_matched_skills]
     return {
         "r": raw.get("rank"),
         "uuid": str(raw.get("job_uuid") or ""),
         "t": str(raw.get("job_title") or "")[:280],
         "e": str(raw.get("employer") or "")[:180],
         "l": str(raw.get("location") or "")[:200],
-        "s": float(raw.get("mean_best_cosine") or 0.0),
-        "mn": float(raw.get("min_best_cosine") or 0.0),
-        "nu": int(raw.get("n_user_skills_embedded") or 0),
-        "nj": int(raw.get("n_job_skills_embedded") or 0),
-        "pj": rows,
-        "n_pj": full_n,
-        "pj_trunc": full_n > max_rows,
+        "s": float(raw.get("bm25_score") or 0.0),
+        "ssr": (
+            float(raw["bm25_skills_score_raw"])
+            if "bm25_skills_score_raw" in raw
+            else None
+        ),
+        "tsr": (
+            float(raw["bm25_text_score_raw"]) if "bm25_text_score_raw" in raw else None
+        ),
+        "sr": (float(raw["bm25_score_raw"]) if "bm25_score_raw" in raw else None),
+        "msk": [s[:120] for s in msk_take],
+        "n_msk": len(msk_full),
+        "msk_trunc": len(msk_full) > max_matched_skills,
+        "ov": ov_take,
+        "n_ov": ov_full_n,
+        "ov_trunc": ov_full_n > max_matched_skills,
     }
 
 
-def _compact_user(
-    row: Dict[str, Any], *, max_rows: int, max_labels: int
-) -> Dict[str, Any]:
-    labs = [str(x) for x in (row.get("resolved_user_skill_labels") or [])]
+def _compact_user(row: Dict[str, Any], *, max_matched_skills: int) -> Dict[str, Any]:
     return {
         "uid": str(row.get("user_id") or ""),
         "city": str(row.get("city") or ""),
         "prov": str(row.get("province") or ""),
-        "ns": int(row.get("n_resolved_user_skills") or 0),
-        "skills": labs[:max_labels],
-        "skills_trunc": len(labs) > max_labels,
-        "n_lab": len(labs),
+        "nq": int(row.get("n_query_tokens") or 0),
+        "q": [str(t) for t in (row.get("query_tokens") or [])],
         "recs": [
-            _compact_rec(r, max_rows=max_rows)
+            _compact_rec(r, max_matched_skills=max_matched_skills)
             for r in (row.get("recommendations") or [])
         ],
     }
 
 
-def build_html(
-    payload_raw: Dict[str, Any],
-    *,
-    max_per_job_skills: int = 80,
-    max_user_skill_labels: int = 120,
-) -> str:
+def build_html(payload_raw: Dict[str, Any], *, max_matched_skills: int = 120) -> str:
     cfg = payload_raw.get("config") or {}
-    idx = payload_raw.get("index_stats") or {}
+    idx_stats = payload_raw.get("index_stats") or {}
     meta = {
         "n_users": payload_raw.get("n_users"),
         "n_jobs": payload_raw.get("n_jobs"),
+        "variant": cfg.get("variant"),
+        "k1": cfg.get("k1"),
+        "b": cfg.get("b"),
+        "skills_weight": cfg.get("skills_weight"),
+        "text_weight": cfg.get("text_weight"),
         "jobs_source": cfg.get("jobs_source"),
         "top_k_stored": cfg.get("top_k"),
         "users_path": cfg.get("users_path"),
         "mongo_filter_by_users": cfg.get("mongo_filter_by_users"),
-        "scorer": cfg.get("scorer"),
-        "embedding_model_path": cfg.get("embedding_model_path"),
-        "embedding_dim": idx.get("embedding_dim"),
-        "max_per_job_skills_in_output": cfg.get("max_per_job_skills_in_output"),
+        "include_programme_context": cfg.get("include_programme_context"),
+        "skills_vocab_size": idx_stats.get("skills_vocab_size"),
+        "full_vocab_size": idx_stats.get("full_vocab_size"),
+        "skills_avg_doc_len": idx_stats.get("skills_avg_doc_len"),
+        "full_avg_doc_len": idx_stats.get("full_avg_doc_len"),
     }
     compact = {
         "meta": meta,
         "users": [
-            _compact_user(
-                u, max_rows=max_per_job_skills, max_labels=max_user_skill_labels
-            )
+            _compact_user(u, max_matched_skills=max_matched_skills)
             for u in payload_raw.get("results") or []
         ],
     }
     data_json = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    # Avoid prematurely closing the embedding <script>: </ -> <\/ in any string.
     safe = data_json.replace("</", "<\\/")
 
     tpl = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Cosine skill match dashboard</title>
+<title>BM25 match dashboard</title>
 <style>
 %(css)s
 </style>
 </head>
 <body>
 <header>
-  <h1>Cosine skill match dashboard</h1>
+  <h1>BM25 match dashboard</h1>
   <span class="pill" id="pillMeta"></span>
   <button id="keyBtn">\u2139 Key</button>
   <span class="stats" id="hdrstats"></span>
@@ -161,8 +173,13 @@ _CSS = r"""
   .userhead { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 12px 16px; margin-bottom: 12px; }
   .userhead h2 { margin: 0 0 4px 0; font-size: 15px; word-break: break-all; }
   .userhead .meta { color: #6b7280; font-size: 11px; margin-bottom: 8px; }
-  .skills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; max-height: 140px; overflow-y: auto; }
-  .skill { background: #eef2ff; color: #3730a3; border-radius: 10px; padding: 1px 8px; font-size: 10px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .skills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; max-height: 120px; overflow-y: auto; }
+  .skill { background: #eef2ff; color: #3730a3; border-radius: 10px; padding: 1px 8px; font-size: 10px; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  table.ov { border-collapse: collapse; width: 100%; font-size: 10px; margin-top: 6px; }
+  table.ov th, table.ov td { border: 1px solid #e5e7eb; padding: 4px 6px; text-align: left; vertical-align: top; }
+  table.ov th { background: #f9fafb; color: #4b5563; font-weight: 600; }
+  table.ov col.phr { width: 28%; }
+  table.ov .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #3730a3; }
   .controls { display: flex; gap: 14px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; font-size: 11px; color: #4b5563; }
   .controls label { display: flex; align-items: center; gap: 6px; }
   .controls input[type=number] { width: 56px; padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 4px; }
@@ -187,10 +204,6 @@ _CSS = r"""
   .components { display: flex; gap: 12px; flex-wrap: wrap; font-size: 10px; color: #4b5563; margin-top: 4px; }
   .components .chip { background: #f3f4f6; padding: 1px 6px; border-radius: 4px; font-variant-numeric: tabular-nums; }
   .components .chip b { color: #111827; }
-  table.pm { border-collapse: collapse; width: 100%; font-size: 10px; margin-top: 6px; }
-  table.pm th, table.pm td { border: 1px solid #e5e7eb; padding: 4px 6px; text-align: left; vertical-align: top; }
-  table.pm th { background: #f9fafb; color: #4b5563; font-weight: 600; }
-  table.pm .c { font-variant-numeric: tabular-nums; text-align: right; width: 56px; }
   .modalbg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 100; padding: 28px; overflow-y: auto; }
   .modalbg.open { display: block; }
   .modal { max-width: 720px; margin: 0 auto; background: #fff; border-radius: 8px; padding: 22px 26px; box-shadow: 0 25px 50px rgba(0,0,0,0.25); position: relative; }
@@ -209,10 +222,11 @@ function esc(s) {
 const usersArr = PAYLOAD.users || [];
 const uidMap = new Map(usersArr.map(u => [u.uid, u]));
 const META = PAYLOAD.meta || {};
+const IS_HYBRID = META.variant === 'hybrid';
 
 function fmt(n, d) {
   if (n == null || isNaN(n)) return '\u2014';
-  return Number(n).toFixed(d == null ? 4 : d);
+  return Number(n).toFixed(d == null ? 3 : d);
 }
 
 function topScoreOf(u) {
@@ -221,11 +235,13 @@ function topScoreOf(u) {
 
 function renderHeader() {
   const m = META;
+  const variantPill = m.variant === 'hybrid'
+    ? `hybrid (skills ${m.skills_weight ?? '?'} / text ${m.text_weight ?? '?'})`
+    : 'single (full-text)';
   document.getElementById('pillMeta').textContent =
-    `${m.n_users ?? '?'} users \u00b7 ${m.jobs_source === 'mongo' ? 'Mongo' : 'file'} \u00b7 ${m.n_jobs ?? '?'} jobs \u00b7 top-${m.top_k_stored ?? '?'}`;
-  const shortMod = (m.embedding_model_path || '').split(/[\\/]/).pop() || '?';
+    `${m.n_users ?? '?'} users \u00b7 ${m.jobs_source === 'mongo' ? 'Mongo' : 'file'} \u00b7 ${m.n_jobs ?? '?'} jobs \u00b7 top-${m.top_k_stored ?? '?'} \u00b7 ${variantPill}`;
   document.getElementById('hdrstats').textContent =
-    `${m.scorer ?? 'cosine'} \u00b7 dim=${m.embedding_dim ?? '?'} \u00b7 model=${shortMod}`;
+    `rank_bm25 k1=${m.k1 ?? '?'} b=${m.b ?? '?'} \u00b7 vocab: skills=${m.skills_vocab_size ?? '?'}, full=${m.full_vocab_size ?? '?'} \u00b7 avg|d|: skills=${m.skills_avg_doc_len ?? '?'}, full=${m.full_avg_doc_len ?? '?'}`;
 }
 
 function renderUserList(q) {
@@ -241,7 +257,7 @@ function renderUserList(q) {
     const top = topScoreOf(u);
     li.innerHTML =
       '<div class="uname">' + esc((u.uid || '').substring(0, 36)) + '</div>' +
-      '<div class="umeta">' + esc(u.city || '?') + ' \u00b7 ' + esc(u.prov || '?') + ' \u00b7 ' + u.ns + ' skills \u00b7 top mean: <b>' + fmt(top, 3) + '</b></div>';
+      '<div class="umeta">' + esc(u.city || '?') + ' \u00b7 ' + esc(u.prov || '?') + ' \u00b7 ' + u.nq + ' tokens \u00b7 top score: <b>' + fmt(top, 3) + '</b></div>';
     li.onclick = () => { activeUid = u.uid; renderUserList(f); renderMain(); };
     ul.appendChild(li);
   }
@@ -250,22 +266,59 @@ function renderUserList(q) {
   }
 }
 
-function renderPerJobTable(rc) {
-  const pj = rc.pj || [];
-  if (!pj.length) {
-    return '<div style="color:#9ca3af;font-style:italic;margin-top:6px;font-size:11px">No job skills embedded (unresolved labels or empty job).</div>';
+function renderMatchedSkills(rc) {
+  const arr = rc.msk || [];
+  const ov = rc.ov || [];
+  if (!arr.length && !ov.length) {
+    return '<div style="color:#9ca3af;font-style:italic;font-size:11px;margin-top:6px">No taxonomy skill phrases overlap between this user\u2019s declared skills and this job\u2019s essential \u222a optional skills.</div>';
   }
-  const ts = rc.pj_trunc ? ` (showing ${pj.length} of ${rc.n_pj})` : '';
-  const rows = pj.map(r =>
-    '<tr><td>' + esc(r.jl) + '</td><td>' + esc(r.ul) + '</td><td class="c">' + fmt(r.c, 3) + '</td></tr>'
-  ).join('');
-  return `<div style="font-size:10px;color:#6b7280;margin:8px 0 4px">Per job requirement: best user skill cosine${ts}</div>` +
-    '<table class="pm"><thead><tr><th>Job skill</th><th>Closest user skill</th><th>cos</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  const suffix = rc.msk_trunc ? ` (showing phrase pills ${arr.length} of ${rc.n_msk})` : '';
+  let pillsHtml = '';
+  if (arr.length) {
+    pillsHtml =
+      '<div style="font-size:10px;color:#6b7280;margin-bottom:4px">Matched phrase tokens (same string on both sides after normalisation) \u2014 '
+      + rc.n_msk + ' total' + suffix + '</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:4px">' +
+      arr.map(x => `<span class="skill">${esc(String(x))}</span>`).join('') +
+      '</div>';
+  }
+  let tableHtml = '';
+  if (ov.length) {
+    const ts = rc.ov_trunc ? ` (showing ${ov.length} of ${rc.n_ov})` : '';
+    const rows = ov.map(r =>
+      '<tr>' +
+      `<td class="mono">${esc(r.p)}</td>` +
+      `<td>${esc(r.u)}</td>` +
+      `<td>${esc(r.j)}</td>` +
+      '</tr>'
+    ).join('');
+    tableHtml =
+      `<div style="font-size:10px;color:#6b7280;margin:10px 0 4px">How each side phrases that overlap${ts}</div>` +
+      '<table class="ov"><colgroup><col class="phr"/><col/><col/></colgroup>' +
+      '<thead><tr><th>Phrase token</th><th>On user profile</th><th>On job posting</th></tr></thead>' +
+      `<tbody>${rows}</tbody></table>` +
+      `<div style="font-size:9px;color:#9ca3af;margin-top:4px">Both columns refer to the same underlying skill key; wording can differ slightly before underscore normalisation.</div>`;
+  }
+  return `<div style="margin-top:6px">${pillsHtml}${tableHtml}</div>`;
 }
 
 function renderRecRow(rc, maxCombined) {
   const zc = rc.s <= 0 ? ' zero-score' : '';
   const barPct = maxCombined > 0 ? Math.min(100, (rc.s / maxCombined) * 100) : 0;
+
+  let compsHtml = '';
+  if (IS_HYBRID) {
+    compsHtml = `<div class="components">
+      <span class="chip">skills raw: <b>${fmt(rc.ssr, 2)}</b></span>
+      <span class="chip">text raw: <b>${fmt(rc.tsr, 2)}</b></span>
+    </div>`;
+  } else if (rc.sr != null) {
+    compsHtml = `<div class="components"><span class="chip">raw BM25: <b>${fmt(rc.sr, 2)}</b></span></div>`;
+  }
+
+  const scoreLabel = IS_HYBRID ? fmt(rc.s, 3) : fmt(rc.s, 2);
+  const mskN = rc.n_msk != null ? rc.n_msk : (rc.msk || []).length;
+
   return `
 <div class="row${zc}" data-uid="">
   <div class="top">
@@ -273,19 +326,15 @@ function renderRecRow(rc, maxCombined) {
       <span style="color:#9ca3af;font-weight:600">#${rc.r}</span>
       <span class="title">${esc(rc.t)}</span>
     </div>
-    <span class="score">${fmt(rc.s, 3)}</span>
+    <span class="score">${scoreLabel}</span>
   </div>
   <div class="submeta">${esc(rc.e)} \u00b7 ${esc(rc.l)}</div>
   <div class="scorebar"><span style="width:${barPct.toFixed(1)}%"></span></div>
-  <div class="components">
-    <span class="chip">min best cosine: <b>${fmt(rc.mn, 3)}</b></span>
-    <span class="chip">user skills in mat: <b>${rc.nu}</b></span>
-    <span class="chip">job skills in mat: <b>${rc.nj}</b></span>
-  </div>
+  ${compsHtml}
   <div class="detail">
     <code class="jobid">job_id: ${esc(rc.uuid)}</code>
-    <details open class="summary-line"><summary>Skill alignment (${rc.n_pj})</summary>
-      ${renderPerJobTable(rc)}
+    <details open class="summary-line"><summary>Matched taxonomy skills (${mskN})</summary>
+      ${renderMatchedSkills(rc)}
     </details>
   </div>
 </div>`;
@@ -302,19 +351,23 @@ function renderMain() {
     panel.innerHTML = '<div class="empty">User not found.</div>';
     return;
   }
-  const labSuffix = u.skills_trunc ? ` (${u.skills.length} shown of ${u.n_lab})` : '';
-  const skillPills = (u.skills || []).map(s => `<span class="skill">${esc(String(s).substring(0, 100))}</span>`).join('');
+  const tokenPills = (u.q || []).slice(0, 200).map(t =>
+    `<span class="skill">${esc(String(t).substring(0, 60))}</span>`
+  ).join('');
+  const ttitle = IS_HYBRID
+    ? 'Recommendations (hybrid BM25: skills + full text, min-max blended)'
+    : 'Recommendations (BM25 over full-text document)';
   panel.innerHTML = `
     <div class="userhead">
       <h2>${esc(u.uid)}</h2>
-      <div class="meta">${esc(u.city || '?')} \u00b7 ${esc(u.prov || '?')} \u00b7 ${u.ns} resolved skills${labSuffix} \u00b7 ${u.recs?.length || 0} recommendations in file</div>
-      <div style="font-size:10px;color:#9ca3af;margin:0 0 4px">User skills embedded for cosine:</div>
-      <div class="skills">${skillPills || '<span style="color:#9ca3af;font-style:italic">no skills</span>'}</div>
+      <div class="meta">${esc(u.city || '?')} \u00b7 ${esc(u.prov || '?')} \u00b7 ${u.nq} BM25 query tokens \u00b7 ${u.recs?.length || 0} recommendations in file</div>
+      <div style="font-size:10px;color:#9ca3af;margin:0 0 4px">Skill phrases sent to BM25${META.include_programme_context ? ' (+ programme words)' : ''}:</div>
+      <div class="skills">${tokenPills || '<span style="color:#9ca3af;font-style:italic">no tokens</span>'}</div>
     </div>
     <div class="controls">
       <label>Show top <input type="number" id="topNinp" min="1" max="500" value="${topN}"> jobs</label>
     </div>
-    <div class="col"><h3>Recommendations (mean best cosine across job requirements)</h3><div id="recsWrap"></div></div>
+    <div class="col"><h3>${esc(ttitle)}</h3><div id="recsWrap"></div></div>
   `;
   document.getElementById('topNinp').onchange = e => {
     topN = Math.max(1, Math.min(500, parseInt(e.target.value, 10) || 50));
@@ -337,19 +390,26 @@ function renderRecs() {
   wrap.innerHTML = slice.map(r => renderRecRow(r, maxCombined)).join('');
   wrap.querySelectorAll('.row').forEach(r => {
     r.onclick = ev => {
-      if (ev.target.closest('details') || ev.target.closest('summary') || ev.target.closest('table')) return;
+      if (ev.target.closest('details') || ev.target.closest('summary')) return;
       r.classList.toggle('expanded');
     };
   });
 }
 
 function openKey() {
+  const m = META;
   document.getElementById('modal').innerHTML =
     `<button type="button" class="closebtn" onclick="document.getElementById('modalbg').classList.remove('open')">Close</button>` +
-    `<h2>Cosine skill matching</h2>` +
-    `<p>Job skills listed (essential + optional order, de-duplicated) are compared against <strong>every</strong> resolved user skill. For each job skill we take <strong>row-wise maximum</strong> cosine. The headline score is the <strong>mean</strong> of those maxima (tie-break: higher min-best-cosine in the runner).</p>` +
-    `<p>This is embedding-only — no BM25 or index-overlap ranking here.</p>` +
-    `<p style="margin-top:12px;color:#6b7280;font-size:11px">${esc(JSON.stringify({ usersPath: META.users_path }))}</p>`;
+    `<h2>BM25 matching</h2>` +
+    `<p>Job documents are indexed by <code>rank_bm25.BM25Okapi</code>. Job skills become phrase tokens (e.g. <code>apply_teaching_strategies</code>); title, employer, location, description are split into words. Programme / institution strings are <strong>not</strong> merged into documents \u2014 only optionally into the <em>query</em> when enabled for that run.</p>` +
+    `<p><strong>k1</strong> controls term-frequency saturation, <strong>b</strong> controls length normalisation (0 = ignore length, 1 = full).</p>` +
+    `<p><strong>Variant:</strong> <code>${esc(m.variant)}</code>. ` +
+    (m.variant === 'hybrid'
+      ? `Two BM25 indexes \u2014 one over skill phrases only, one over title + employer + location + skills + description. Each user's two score vectors are min-max normalised per-user and blended <code>${m.skills_weight ?? '?'}</code> skills + <code>${m.text_weight ?? '?'}</code> text.`
+      : `One BM25 index over title + employer + location + skills + description.`) + `</p>` +
+    `<p><strong>Matched taxonomy skills</strong> lists only overlaps: skills the user declares <em>and</em> the job lists as essential \u222a optional \u2014 after phrase normalisation (\u2264 one token per skill). The optional table repeats the overlap with separate \u201cuser profile\u201d vs \u201cjob posting\u201d wording.</p>` +
+    `<p><strong>BM25 query</strong>: by default this is skill phrase tokens only. <strong>Programme / institution / school year</strong> loose words ${m.include_programme_context === true ? '<b>were added</b> to the query (\u2260 matched skills).' : '<b>were not</b> added to the query (\u2260 matched skills).'}</p>` +
+    `<p style="margin-top:12px;color:#6b7280;font-size:11px">Embedded from rank_bm25 output \u00b7 ${esc(JSON.stringify({ users: m.users_path, src: m.jobs_source }))}</p>`;
   document.getElementById('modalbg').classList.add('open');
 }
 
@@ -366,29 +426,26 @@ renderMain();
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    p = argparse.ArgumentParser(description="Embed cosine match JSON in HTML.")
-    p.add_argument("--input", type=Path, required=True)
-    p.add_argument("--output", type=Path, required=True)
-    p.add_argument(
-        "--max-per-job-skills",
-        type=int,
-        default=80,
-        help="Max per-job skill rows embedded per recommendation",
+    p = argparse.ArgumentParser(
+        description="Embed BM25 results into a standalone HTML dashboard."
     )
     p.add_argument(
-        "--max-user-skill-labels",
+        "--input",
+        type=Path,
+        required=True,
+        help="Path to *_results.json from bm25library",
+    )
+    p.add_argument("--output", type=Path, required=True, help="Output .html path")
+    p.add_argument(
+        "--max-matched-skills",
         type=int,
         default=120,
-        help="Max user skill label pills in embedded payload",
+        help="Max matched taxonomy skill strings to embed per job",
     )
     args = p.parse_args(argv)
 
     payload = json.loads(args.input.read_text(encoding="utf-8"))
-    html_doc = build_html(
-        payload,
-        max_per_job_skills=args.max_per_job_skills,
-        max_user_skill_labels=args.max_user_skill_labels,
-    )
+    html_doc = build_html(payload, max_matched_skills=args.max_matched_skills)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(html_doc, encoding="utf-8")
     print(f"wrote {args.output}")
