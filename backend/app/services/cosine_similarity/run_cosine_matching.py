@@ -17,7 +17,7 @@ Usage::
         --output ./path/to/cosine_results.json \\
         --top-k 10
 
-    python -m app.services.cosine_similarity.build_cosine_dashboard \\
+    python -m tools.cosine_similarity.build_cosine_dashboard \\
         --input ./path/to/cosine_results.json \\
         --output ./path/to/cosine_dashboard.html
 """

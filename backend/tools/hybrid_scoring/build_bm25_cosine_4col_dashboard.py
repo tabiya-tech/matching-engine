@@ -5,7 +5,7 @@ Embeds ``column_fused_weighted_minmax`` only: alpha * pool-normalised cosine plu
 Usage::
 
     cd backend
-    python -m app.services.hybrid_scoring.build_bm25_cosine_4col_dashboard \\
+    python -m tools.hybrid_scoring.build_bm25_cosine_4col_dashboard \\
         --input scripts/results_bm25_cosine_hybrid_njila_full_corpus.json \\
         --output scripts/results_bm25_cosine_hybrid_njila_full_corpus_dashboard.html
 
