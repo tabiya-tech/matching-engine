@@ -1,6 +1,6 @@
 """match_v3 concat cosine + CE → u_hat × p_hat (p_hat = raw cosine, not CE 0–1).
 
-Stage 1–2: same as ``POST /match_v3`` (:func:`~app.services.match_concat_gemini_ce_service.run_match_concat_gemini_ce`):
+Stage 1–2: same as ``POST /match_v3`` (:meth:`~app.matching.service.MatchingService.shortlist_and_rerank`):
 Gemini user concat × Mongo job vectors → **concat_cosine_similarity**, then CE rerank.
 
 Stage 3: :class:`~app.ranking.preference.PreferenceScorer` → ``u_hat``;
@@ -19,6 +19,7 @@ Usage (from ``backend/``)::
 from __future__ import annotations
 
 import argparse
+import asyncio
 import copy
 import json
 import sys
@@ -43,7 +44,8 @@ from app.clients.gemini_embedding_client import (
     EMBEDDING_DIM,
     MODEL_NAME as GEMINI_EMBEDDING_MODEL_NAME,
 )
-from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
+from app.jobs.get_jobs_repository import standalone_jobs_repository
+from app.matching.get_matching_service import create_matching_service
 from app.server_dependencies.model_dependencies import get_preference_scorer
 
 from app.artifacts.repository import get_artifacts_repository
@@ -171,13 +173,17 @@ def run_pipeline(
         file=sys.stderr,
     )
 
-    v3_rows = run_match_concat_gemini_ce(
-        users,
-        jobs,
-        retrieve_top_k=retrieve_top_k,
-        final_top_k=retrieve_top_k,
-        mongo_timing=mongo_timing,
-    )
+    async def _shortlist_and_rerank() -> List[Dict[str, Any]]:
+        async with standalone_jobs_repository() as jobs_repository:
+            return create_matching_service(jobs_repository).shortlist_and_rerank(
+                users,
+                jobs,
+                retrieve_top_k=retrieve_top_k,
+                final_top_k=retrieve_top_k,
+                mongo_timing=mongo_timing,
+            )
+
+    v3_rows = asyncio.run(_shortlist_and_rerank())
 
     results: List[Dict[str, Any]] = []
 
@@ -265,7 +271,7 @@ def run_pipeline(
         "p_hat_source": "concat_cosine_similarity",
         "preference_scorer_mode": PREFERENCE_SCORER_MODE,
         "preference_module": pref_cls,
-        "match_v3_service": "app.services.match_concat_gemini_ce_service",
+        "match_v3_service": "app.matching.service",
         "gemini_user_embed_model": v3_cfg0.get("gemini_user_embed_model")
         or GEMINI_EMBEDDING_MODEL_NAME,
         "cross_encoder_model": v3_cfg0.get("cross_encoder_model")
@@ -277,7 +283,7 @@ def run_pipeline(
         "embedding_dim": v3_cfg0.get("embedding_dim") or EMBEDDING_DIM,
         "n_jobs_with_stage1_embedding": v3_cfg0.get("n_jobs_with_stage1_embedding"),
         "max_per_job_skills_in_output": max_per_job_skills,
-        # run_match_concat_gemini_ce does not emit per-job skill detail nor skip
+        # MatchingService.shortlist_and_rerank does not emit per-job skill detail nor skip
         # skill-less users; labels reflect actual service behaviour.
         "include_per_job_skill_detail": False,
         "skip_users_without_skills": False,

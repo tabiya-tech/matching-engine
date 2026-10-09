@@ -134,7 +134,7 @@ MATCH_V2_MAX_USERS_PER_REQUEST: int = _i("MATCH_V2_MAX_USERS_PER_REQUEST", 32)
 MATCH_APPLY_LOCATION_FILTER: bool = _b("MATCH_APPLY_LOCATION_FILTER", True)
 
 # Per-deployment kill-switch for occupation recommendations on the v4 engine (POST /match, via
-# run_match_v4_full): every user gets an empty occupation_recommendations list AND the whole
+# MatchingService.rank): every user gets an empty occupation_recommendations list AND the whole
 # occupation pipeline is skipped (corpus load, embedding attach, stage-1 retrieval, CE rerank,
 # Phase-2 overrides). Opportunities and skill gaps are unaffected. Default false keeps current
 # behaviour.

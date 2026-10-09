@@ -435,12 +435,15 @@ def test_match_route_is_traced(test_client):
 
 def test_v4_engine_records_shortlist_and_rerank_per_corpus():
     """The real stage-1 → CE engine emits its own spans (engine dependencies stubbed)."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
 
     import numpy as np
 
+    from app.artifacts.repository import get_artifacts_repository
     from app.clients.gemini_embedding_client import EMBEDDING_DIM
-    from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
+    from app.matching.service import MatchingService
+    from app.ranking.retrieval import Stage1Retriever
+    from app.server_dependencies.model_dependencies import get_concat_whitener
 
     def job(uuid, index):
         v = np.zeros(EMBEDDING_DIM, dtype=np.float32)
@@ -455,29 +458,33 @@ def test_v4_engine_records_shortlist_and_rerank_per_corpus():
     rerank = MagicMock()
     rerank.build_pairs.return_value = []
     rerank.apply.side_effect = lambda recs, _scores, **_kw: list(recs)
+    service = MatchingService(
+        jobs_repository=MagicMock(),
+        embedding_client=MagicMock(
+            model_name="gemini-test", embedding_dim=EMBEDDING_DIM
+        ),
+        cross_encoder_provider=lambda: MagicMock(model_name="ce-test"),
+        retrieval_matcher_provider=lambda: matcher,
+        gate_matcher_provider=MagicMock,
+        skill_scorer_provider=MagicMock,
+        preference_scorer_provider=MagicMock,
+        whitener_provider=get_concat_whitener,
+        artifacts_repository=get_artifacts_repository(),
+        retriever=Stage1Retriever(embedding_dim=EMBEDDING_DIM),
+        rerank=rerank,
+    )
 
     async def handler():
-        with (
-            patch(
-                "app.services.match_concat_gemini_ce_service.get_skill_matcher",
-                return_value=matcher,
-            ),
-            patch(
-                "app.services.match_concat_gemini_ce_service.get_cross_encoder_client",
-                return_value=MagicMock(model_name="ce-test"),
-            ),
-            patch("app.services.match_concat_gemini_ce_service._RERANK", rerank),
-        ):
-            for corpus in ("jobs", "occupations"):
-                await asyncio.to_thread(
-                    run_match_concat_gemini_ce,
-                    [user],
-                    [job("a", 0), job("b", 1)],
-                    retrieve_top_k=5,
-                    final_top_k=5,
-                    user_unit_vectors=u_vecs,
-                    corpus=corpus,
-                )
+        for corpus in ("jobs", "occupations"):
+            await asyncio.to_thread(
+                service.shortlist_and_rerank,
+                [user],
+                [job("a", 0), job("b", 1)],
+                retrieve_top_k=5,
+                final_top_k=5,
+                user_unit_vectors=u_vecs,
+                corpus=corpus,
+            )
         return {}
 
     with in_memory_tracing() as spans:
