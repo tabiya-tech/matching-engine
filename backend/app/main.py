@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +14,9 @@ from app.observability import (
     tracing_config_from_env,
 )
 from app.routes import router
+from app.server_dependencies.db_dependencies import MatchingDBProvider
 from app.services.match_concat_gemini_ce_service import _get_reranker
+from app.warmup import warmup_on_startup
 
 load_dotenv()
 init_match_timing_log()
@@ -29,19 +31,25 @@ def _warmup_non_blocking() -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Mongo ping + occupation JSON + WA lookup once at startup so /match does not pay cold-connection cost each time."""
-    from app.database import warmup_on_startup
+    """Owns the MongoDB client for the app's lifetime and runs the one-time warmup.
 
+    The client is created here (before any request) and closed on shutdown; routes reach it only
+    through ``Depends(get_jobs_repository)``. Warmup (ping, indexes, occupation cache, models) runs
+    once so /match does not pay cold-start cost on each request.
+    """
     init_tracing(tracing_config_from_env())
+
+    jobs_db = await MatchingDBProvider.get_jobs_db()
 
     async def _warmup_safe() -> None:
         try:
-            await warmup_on_startup()
+            await warmup_on_startup(jobs_db)
         except Exception:
             logger.exception("Startup warmup failed")
 
+    warmup_task = None
     if _warmup_non_blocking():
-        asyncio.create_task(_warmup_safe())
+        warmup_task = asyncio.create_task(_warmup_safe())
         logger.info(
             "Startup: warmup scheduled in background (WARMUP_NON_BLOCKING=1); "
             "first /match may still pay part of cold cost until warmup finishes"
@@ -50,8 +58,14 @@ async def lifespan(app: FastAPI):
         await _warmup_safe()
     _get_reranker()
     yield
+    # A background warmup still running at shutdown would otherwise use the client after it is closed.
+    if warmup_task is not None and not warmup_task.done():
+        warmup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await warmup_task
     # Flush buffered traces before Cloud Run tears the instance down.
     shutdown_tracing()
+    MatchingDBProvider.close()
 
 
 def _openapi_servers() -> list[dict[str, str]]:

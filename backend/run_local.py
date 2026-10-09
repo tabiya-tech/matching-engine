@@ -17,7 +17,6 @@ import json
 import asyncio
 import argparse
 from pathlib import Path
-from unittest.mock import MagicMock
 
 from dotenv import load_dotenv
 
@@ -27,25 +26,17 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 # ── 0. Fix OpenMP conflict on Windows with multiple conda packages ────────────
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-# ── 1. Fake env vars so database.py doesn't raise at import ──────────────────
-os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
-os.environ.setdefault("MONGO_DB_NAME", "test")
-
-# ── 2. Mock motor so AsyncIOMotorClient doesn't try to connect ────────────────
-motor_mock = MagicMock()
-sys.modules["motor"] = motor_mock
-sys.modules["motor.motor_asyncio"] = motor_mock
-
-# ── 3. Import app modules in the right order (import order matters for DLL loading) ──
+# ── 1. Import app modules in the right order (import order matters for DLL loading) ──
+# No Mongo client is created on import (the app opens it in its lifespan), and this script passes
+# jobs/occupations from local files straight to the matcher, so no database is needed.
 sys.path.insert(0, str(Path(__file__).parent))
-import app.database as db_module  # noqa: E402
 import app.config  # noqa: E402  # must be imported before skill_score/matching_service
 import app.services.preference_score  # noqa: E402
 import app.services.demand_score  # noqa: E402
 import app.services.skill_score  # noqa: E402, F401  # side-effect: DLL/module init
 from app.config import OCCUPATION_JSON_PATH  # noqa: E402
 
-# ── 4. Load local JSONL data (override with SUPPLY_JSONL_PATH / DEMAND_JSONL_PATH) ──
+# ── 2. Load local JSONL data (override with SUPPLY_JSONL_PATH / DEMAND_JSONL_PATH) ──
 REPO_ROOT = Path(__file__).parent.parent
 SUPPLY_PATH = Path(
     os.getenv("SUPPLY_JSONL_PATH", str(REPO_ROOT / "data" / "supply.jsonl"))
@@ -107,31 +98,15 @@ for entry in _raw_occupations:
         )
 
 
-# ── 6. Patch database helpers to use local files ──────────────────────────────
-async def _get_all_jobs():
-    return JOBS
-
-
-async def _get_all_occupations():
-    return OCCUPATIONS
-
-
-db_module.get_all_jobs = _get_all_jobs
-db_module.get_all_occupations = _get_all_occupations
-
-# Re-import matching service AFTER patching so it picks up patched db helpers
-import importlib  # noqa: E402
 import app.services.matching_service as ms_module  # noqa: E402
 
-importlib.reload(ms_module)
-
-# ── 7. Run matching ───────────────────────────────────────────────────────────
+# ── 3. Run matching ───────────────────────────────────────────────────────────
 
 
 async def run(users: list) -> list:
     results = []
     for user in users:
-        result = await ms_module.match_single_user(user)
+        result = await ms_module.match_single_user(user, JOBS, OCCUPATIONS)
         results.append(result)
     return results
 
