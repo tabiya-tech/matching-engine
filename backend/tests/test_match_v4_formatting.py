@@ -3,7 +3,7 @@
 import pytest
 
 from app.schemas import MatchResponse, OccupationRecommendation, OpportunityRecommendation
-from app.services import match_v4_formatting as fmt
+from app.matching import formatting as fmt
 from app.ranking import scoring as coverage
 
 

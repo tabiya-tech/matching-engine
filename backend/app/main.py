@@ -3,8 +3,9 @@ import logging
 import os
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from dotenv import load_dotenv
 from app.match_timing_log import init_match_timing_log
 from app.observability import (
@@ -13,9 +14,14 @@ from app.observability import (
     shutdown_tracing,
     tracing_config_from_env,
 )
-from app.routes import router
+from app.jobs.routes import add_jobs_routes
+from app.matching.routes import add_matching_routes
+from app.server_dependencies.auth import api_key_auth
 from app.server_dependencies.db_dependencies import MatchingDBProvider
-from app.server_dependencies.model_dependencies import get_cross_encoder_client
+from app.server_dependencies.model_dependencies import (
+    get_cross_encoder_client,
+    get_skill_scorer,
+)
 from app.warmup import warmup_on_startup
 
 load_dotenv()
@@ -38,6 +44,8 @@ async def lifespan(app: FastAPI):
     once so /match does not pay cold-start cost on each request.
     """
     init_tracing(tracing_config_from_env())
+    # Load the skill-gap engine before serving so the first /match does not pay the load.
+    get_skill_scorer()
 
     jobs_db = await MatchingDBProvider.get_jobs_db()
 
@@ -116,6 +124,20 @@ else:
 # Added last, so it is outermost and times the whole request.
 app.add_middleware(MatchTracingMiddleware)
 
+router = APIRouter(dependencies=[Depends(api_key_auth)])
+
+
+class Health(BaseModel):
+    status: str
+
+
+@router.get("/health")
+async def health() -> Health:
+    return Health(status="ok")
+
+
+add_jobs_routes(router)
+add_matching_routes(router)
 app.include_router(router)
 
 if __name__ == "__main__":

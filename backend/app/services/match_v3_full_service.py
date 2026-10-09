@@ -1,8 +1,8 @@
 """`/experiments/v3/match` full response: occupations + opportunities + skill-gaps via the v3 engine.
 
 Keeps the v3 **matching logic** unchanged (Gemini concat-cosine shortlist → cross-encoder rerank,
-``run_match_concat_gemini_ce``) but assembles the same ``MatchResponse`` shape ``/match_v4``
-returns. This is ``run_match_v4_full`` *without* the preference (u_hat × p_hat) step.
+``MatchingService.shortlist_and_rerank``) but assembles the same ``MatchResponse`` shape ``/match_v4``
+returns. This is ``MatchingService.rank`` *without* the preference (u_hat × p_hat) step.
 
 By design:
 * ``final_score`` = raw ``concat_cosine_similarity`` (the chosen v3 score); results are ordered by
@@ -29,11 +29,8 @@ from app.config import (
     V4_FULL_MIN_ESS_SHARE,
     V4_FULL_SIM_THRESHOLD,
 )
-from app.services import match_v4_formatting as fmt
-from app.services.match_concat_gemini_ce_service import (
-    embed_user_unit_vectors,
-    run_match_concat_gemini_ce,
-)
+from app.matching import formatting as fmt
+from app.matching.service import IMatchingService
 from app.ranking.retrieval import (
     job_matches_user_location as _job_matches_user_location,
     user_matches_any_county as _user_matches_any_county,
@@ -122,23 +119,26 @@ def run_match_v3_full(
     retrieve_top_k: int,
     final_top_k: int,
     skill_gap_top_k: int = MATCH_TOP_K_SKILL_GAPS,
+    matching_service: IMatchingService,
 ) -> List[Dict[str, Any]]:
     """Return one ``MatchResponse``-shaped dict per user using the v3 matching logic.
 
     The deployment's ``TARGET_LANGUAGE`` selects the cross-encoder checkpoint (see
-    ``run_match_concat_gemini_ce``); skill resolution itself is language-neutral.
+    ``MatchingService.shortlist_and_rerank``); skill resolution itself is language-neutral.
     """
     if not users:
         return []
 
-    u_norm = embed_user_unit_vectors(users)  # embed users ONCE, reuse for both corpora
+    u_norm = matching_service.embed_users(
+        users
+    )  # embed users ONCE, reuse for both corpora
     matcher = get_skill_matcher()
     job_index = _index_by_uuid(jobs)
     occ_index = _index_by_uuid(occupations)
 
     # Opportunities — v3 engine over the active job corpus (engine + education gate unchanged).
     job_v3 = (
-        run_match_concat_gemini_ce(
+        matching_service.shortlist_and_rerank(
             users,
             jobs,
             retrieve_top_k=retrieve_top_k,
@@ -152,7 +152,7 @@ def run_match_v3_full(
     # filter / fallback / dedupe-by-code so ~top_k distinct occupation codes survive.
     occ_breadth = max(retrieve_top_k, final_top_k, MATCH_V4_TOP_K_OCCUPATIONS * 8)
     occ_v3 = (
-        run_match_concat_gemini_ce(
+        matching_service.shortlist_and_rerank(
             users,
             occupations,
             retrieve_top_k=occ_breadth,

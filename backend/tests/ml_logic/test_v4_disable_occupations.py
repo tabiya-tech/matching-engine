@@ -1,20 +1,37 @@
 """MATCH_V4_DISABLE_OCCUPATIONS kill-switch (see config.MATCH_V4_DISABLE_OCCUPATIONS).
 
 The flag must do two things, not one: return an empty ``occupation_recommendations`` list AND skip
-every piece of occupation work (corpus load in the route, stage-1 retrieval + CE rerank in the
-engine). Opportunities and skill gaps must be untouched.
+every piece of occupation work (corpus load, stage-1 retrieval + CE rerank in the engine).
+Opportunities and skill gaps must be untouched.
 """
 
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
 
-from app import routes
-from app.services import match_v4_full_service as svc
+from app.matching import service as svc
+from app.matching.service import MatchingService
+
+
+def _service() -> MatchingService:
+    """MatchingService with the ML stack and the jobs repository faked."""
+    return MatchingService(
+        jobs_repository=MagicMock(),
+        artifacts_repository=MagicMock(),
+        embedding_client=MagicMock(embedding_dim=4),
+        cross_encoder_provider=MagicMock,
+        retrieval_matcher_provider=MagicMock,
+        gate_matcher_provider=MagicMock,
+        whitener_provider=MagicMock,
+        skill_scorer_provider=MagicMock,
+        preference_scorer_provider=MagicMock,
+        retriever=MagicMock(),
+        rerank=MagicMock(),
+    )
 
 
 @pytest.fixture()
@@ -37,23 +54,17 @@ def occupation_rows():
 
 
 def _run(users, jobs, occupations, *, disabled: bool):
-    """run_match_v4_full with the ML stack stubbed; returns (rows, retrieval_mock)."""
+    """MatchingService.rank with the ML stack stubbed; returns (rows, retrieval_mock)."""
+    service = _service()
     retrieval = MagicMock(return_value=[])
     with (
         patch.object(svc, "MATCH_V4_DISABLE_OCCUPATIONS", disabled),
         patch.object(svc, "V4_FULL_RANK_DEMOTE", False),
-        patch.object(svc, "run_match_concat_gemini_ce", retrieval),
-        patch.object(
-            svc, "embed_user_unit_vectors", return_value=np.zeros((len(users), 4))
-        ),
-        patch.object(svc, "get_preference_scorer", return_value=MagicMock()),
-        patch.object(svc, "get_v4_skill_matcher", return_value=MagicMock()),
-        patch.object(svc, "get_skill_matcher", return_value=MagicMock()),
         patch.object(svc, "skill_gaps_for", return_value=[]),
+        patch.object(service, "embed_users", return_value=np.zeros((len(users), 4))),
+        patch.object(service, "shortlist_and_rerank", retrieval),
     ):
-        rows = svc.run_match_v4_full(
-            users, jobs, occupations, retrieve_top_k=10, final_top_k=5
-        )
+        rows = service.rank(users, jobs, occupations, retrieve_top_k=10, final_top_k=5)
     return rows, retrieval
 
 
@@ -84,32 +95,32 @@ class TestEngineKillSwitch:
         assert rows[0]["skill_gap_recommendations"] == []
 
 
-class TestRouteCorpusLoad:
+class TestServiceCorpusLoad:
     def test_disabled_skips_the_corpus_load(self):
-        loader = MagicMock()
+        loader = AsyncMock()
         attach = MagicMock()
         with (
-            patch.object(routes, "MATCH_V4_DISABLE_OCCUPATIONS", True),
-            patch.object(routes, "get_all_occupations_with_timing", loader),
-            patch.object(routes, "attach_occupation_embeddings", attach),
+            patch.object(svc, "MATCH_V4_DISABLE_OCCUPATIONS", True),
+            patch.object(svc, "get_all_occupations_with_timing", loader),
+            patch.object(svc, "attach_occupation_embeddings", attach),
         ):
-            occ, timing = asyncio.run(routes._load_v4_occupations())
+            occ, timing = asyncio.run(_service()._load_occupations())
         assert occ == []
         assert timing == {}
         loader.assert_not_called()
         attach.assert_not_called()
 
     def test_enabled_loads_and_embeds_the_corpus(self):
-        async def _loader():
-            return [{"uuid": "occ-1"}], {"occupation_cache_hit": True}
-
+        loader = AsyncMock(
+            return_value=([{"uuid": "occ-1"}], {"occupation_cache_hit": True})
+        )
         attach = MagicMock(side_effect=lambda rows: rows)
         with (
-            patch.object(routes, "MATCH_V4_DISABLE_OCCUPATIONS", False),
-            patch.object(routes, "get_all_occupations_with_timing", _loader),
-            patch.object(routes, "attach_occupation_embeddings", attach),
+            patch.object(svc, "MATCH_V4_DISABLE_OCCUPATIONS", False),
+            patch.object(svc, "get_all_occupations_with_timing", loader),
+            patch.object(svc, "attach_occupation_embeddings", attach),
         ):
-            occ, timing = asyncio.run(routes._load_v4_occupations())
+            occ, timing = asyncio.run(_service()._load_occupations())
         assert [o["uuid"] for o in occ] == ["occ-1"]
         assert timing["occupation_cache_hit"] is True
         attach.assert_called_once()

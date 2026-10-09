@@ -1,55 +1,53 @@
+"""Retired matching handlers (legacy ``/match``, ``/experiments/v2|v3|v5/match``).
+
+None of these is registered on a router; ``app.matching.routes`` serves ``POST /match``. They are kept
+as they were when retired.
+"""
+
 import asyncio
 import logging
 import time
 from typing import Annotated, Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from fastapi import Body, Depends, HTTPException, Query
 
-from fastapi import APIRouter, Body, HTTPException, Depends, Query
-from fastapi.security import APIKeyHeader
-
-from app.schemas import (
-    MatchRequest,
-    MatchResponse,
-    MatchV2JobRecommendation,
-    MatchRequestV5,
-    MatchResponseV5,
-    JobsPage,
-    JobsStats,
-)
+from app import observability
 from app.config import (
+    COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
+    MATCH_TOP_K_SKILL_GAPS,
     MATCH_V2_HYBRID_TOP_K,
     MATCH_V2_MAX_USERS_PER_REQUEST,
-    COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
-    MATCH_V4_RETRIEVE_TOP_K,
-    MATCH_V4_FINAL_TOP_K,
-    MATCH_TOP_K_SKILL_GAPS,
     MATCH_V4_DISABLE_OCCUPATIONS,
-    JOBS_PAGE_DEFAULT_LIMIT,
-    JOBS_PAGE_MAX_LIMIT,
-    DEBUG_MODE,
+    MATCH_V4_FINAL_TOP_K,
+    MATCH_V4_RETRIEVE_TOP_K,
 )
 from app.jobs.get_jobs_repository import get_jobs_repository
-from app.jobs.pagination import InvalidCursor
 from app.jobs.repository import IJobsRepository
+from app.match_timing_log import log_match_step
+from app.matching.examples import (
+    MATCH_BODY_DESCRIPTION,
+    MATCH_BODY_EXAMPLE,
+    MATCH_V5_BODY_EXAMPLE,
+)
+from app.matching.get_matching_service import get_matching_service
+from app.matching.service import IMatchingService, _retrieval_trace_meta
 from app.occupations.loader import (
     attach_occupation_embeddings,
     get_all_occupations_with_timing,
 )
-from app.services.job_retrieval import retrieve_jobs_with_timing
-from app import observability
-from app.match_timing_log import log_match_step
 from app.ranking.retrieval import zqf_annotation
-from app.services.matching_service import match_user_with_data
+from app.schemas import (
+    MatchRequest,
+    MatchRequestV5,
+    MatchResponse,
+    MatchResponseV5,
+    MatchV2JobRecommendation,
+)
+from app.services.job_retrieval import retrieve_jobs_with_timing
 from app.services.match_v2_full_service import run_match_v2_full
 from app.services.match_v3_full_service import run_match_v3_full
-from app.services.match_v4_full_service import run_match_v4_full
+from app.services.matching_service import match_user_with_data
 
-api_key_auth = APIKeyHeader(
-    scheme_name="gcp_api_key", name="x-api-key", auto_error=True
-)
-
-router = APIRouter(dependencies=[Depends(api_key_auth)])
 logger = logging.getLogger(__name__)
 
 
@@ -68,21 +66,6 @@ async def _load_v4_occupations():
         return [], {}
     occ, timing = await get_all_occupations_with_timing()
     return attach_occupation_embeddings(occ), timing
-
-
-def _retrieval_trace_meta(
-    jobs: List[Dict[str, Any]],
-    jobs_timing: Dict[str, Any],
-    occ: List[Dict[str, Any]],
-    occ_timing: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Counts + Mongo / occupation-cache timings for the ``retrieval`` trace span (no job content)."""
-    meta: Dict[str, Any] = {"n_jobs": len(jobs), "n_occupation_rows": len(occ)}
-    for timing in (jobs_timing or {}, occ_timing or {}):
-        for k, v in timing.items():
-            if isinstance(v, (int, float, bool)):
-                meta[k] = v
-    return meta
 
 
 def _jobs_by_uuid(job_list: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -147,209 +130,11 @@ def _execute_hybrid_http(
     )
 
 
-class Health(BaseModel):
-    status: str
-
-
-# Swagger default request body for POST /match (Kenya, post-secondary user).
-_MATCH_BODY_EXAMPLE: List[Dict[str, Any]] = [
-    {
-        "user_id": "u1",
-        "city": "Nairobi",
-        "province": "Nairobi",
-        "any_post_secondary_educ": 1,
-        "skills_vector": {
-            "top_skills": [
-                {
-                    "originUUID": "00000000-0000-4000-8000-000000000001",
-                    "preferredLabel": "customer service",
-                    "proficiency": 0.8,
-                }
-            ]
-        },
-        "skill_groups_origin_uuids": [],
-        "preference_vector": {
-            "earnings_per_month": 0.7,
-            "physical_demand": 0.4,
-            "social_interaction": 0.6,
-            "career_growth": 0.8,
-        },
-    }
-]
-
-_MATCH_BODY_DESCRIPTION = (
-    "JSON **array** of MatchRequest (one object per user). "
-    "``any_post_secondary_educ``: ``0`` = no post-secondary (jobs with "
-    "``requires_post_secondary`` are filtered out), ``1`` = has post-secondary, "
-    "omit to disable the education gate."
-)
-
-# Swagger default for /experiments/v5/match (Zambia: ZQF annotation on opportunities).
-_MATCH_V5_BODY_EXAMPLE: List[Dict[str, Any]] = [
-    {
-        "user_id": "u1",
-        "city": "Lusaka",
-        "province": "Lusaka",
-        "zqf_level": 4,
-        "skills_vector": {
-            "top_skills": [
-                {
-                    "originUUID": "00000000-0000-4000-8000-000000000001",
-                    "preferredLabel": "prepare bakery products",
-                    "proficiency": 0.85,
-                },
-                {
-                    "originUUID": "00000000-0000-4000-8000-000000000002",
-                    "preferredLabel": "bake goods",
-                    "proficiency": 0.78,
-                },
-            ]
-        },
-        "skill_groups_origin_uuids": [],
-        "preference_vector": {
-            "earnings_per_month": 0.6,
-            "physical_demand": 0.5,
-            "social_interaction": 0.5,
-            "career_growth": 0.6,
-        },
-    }
-]
-
-
-@router.get("/health")
-async def health() -> Health:
-    return Health(status="ok")
-
-
-@router.get(
-    "/jobs",
-    tags=["jobs"],
-    operation_id="list_jobs",
-    response_model=JobsPage,
-    responses={
-        400: {
-            "description": "Bad Request - invalid cursor",
-            "content": {
-                "application/json": {"example": {"detail": "invalid cursor"}}
-            },
-        },
-        500: {
-            "description": "Internal Server Error",
-            "content": {
-                "application/json": {"example": {"detail": "Internal server error"}}
-            },
-        },
-    },
-)
-async def list_jobs(
-    cursor: Optional[str] = Query(
-        None,
-        description=(
-            "Opaque pagination cursor returned as ``next_cursor`` by the previous "
-            "response. Omit to fetch the first page."
-        ),
-    ),
-    limit: int = Query(
-        JOBS_PAGE_DEFAULT_LIMIT,
-        ge=1,
-        le=JOBS_PAGE_MAX_LIMIT,
-        description=f"Page size (1–{JOBS_PAGE_MAX_LIMIT}). Default {JOBS_PAGE_DEFAULT_LIMIT}.",
-    ),
-    search: Optional[str] = Query(None, description="Case-insensitive search on the job title."),
-    category: Optional[str] = Query(None, description="Filter by sector/category (matches category, sector, or ISCO group)."),
-    employment_type: Optional[str] = Query(None, description="Filter by employment type (exact match)."),
-    location: Optional[str] = Query(None, description="Case-insensitive filter on city/county/province."),
-    skills: Optional[str] = Query(None, description="Case-insensitive filter on a skill label of the opportunity."),
-    days: Optional[int] = Query(None, ge=1, le=3650, description="Only jobs posted within the last N days."),
-    include_total: bool = Query(False, description="When true, include the total count of jobs matching the filters."),
-    jobs_repository: IJobsRepository = Depends(get_jobs_repository),
-):
-    """
-    Browse active jobs with cursor-based pagination and optional filters.
-
-    Reads from the same Mongo collection and through the same shaping as the matched-jobs
-    endpoints (CORE-418), so a browsed job and a matched job are the same object minus the
-    per-user scoring fields. Results are ordered newest-first (``_id`` descending) and the
-    keyset cursor is stable under concurrent inserts. Supplied filters are AND-ed together;
-    pass ``include_total=true`` to also receive the total count for the active filter set.
-    """
-    try:
-        t_req = time.perf_counter()
-        jobs, next_cursor, total, timing = await jobs_repository.get_jobs_page_with_timing(
-            cursor=cursor,
-            limit=limit,
-            search=search,
-            category=category,
-            employment_type=employment_type,
-            location=location,
-            skills=skills,
-            days=days,
-            include_total=include_total,
-        )
-        log_match_step(
-            "http /jobs",
-            "request (summary)",
-            n_jobs=len(jobs),
-            has_more=timing.get("has_more"),
-            limit=timing.get("limit"),
-            total=total,
-            request_total_ms=_ms(t_req),
-        )
-        return JobsPage(items=jobs, next_cursor=next_cursor, total=total)
-    except InvalidCursor as e:
-        logger.warning("Invalid /jobs cursor: %s", e)
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(e)
-        raise HTTPException(
-            status_code=500, detail=f"Internal server error: {e.__class__.__name__}"
-        )
-
-
-@router.get(
-    "/jobs/stats",
-    tags=["jobs"],
-    operation_id="jobs_stats",
-    response_model=JobsStats,
-    responses={
-        500: {
-            "description": "Internal Server Error",
-            "content": {
-                "application/json": {"example": {"detail": "Internal server error"}}
-            },
-        },
-    },
-)
-async def jobs_stats(
-    jobs_repository: IJobsRepository = Depends(get_jobs_repository),
-) -> JobsStats:
-    """Aggregate counts over the active jobs catalog: total jobs, distinct sectors, distinct platforms."""
-    try:
-        t_req = time.perf_counter()
-        stats = await jobs_repository.get_jobs_stats()
-        log_match_step(
-            "http /jobs/stats",
-            "request (summary)",
-            total=stats.total,
-            sectors=stats.sectors,
-            platforms=stats.platforms,
-            request_total_ms=_ms(t_req),
-        )
-        return stats
-    except Exception as e:
-        logger.exception(e)
-        raise HTTPException(
-            status_code=500, detail=f"Internal server error: {e.__class__.__name__}"
-        )
-
-
-# Retired: not registered on any router; v4 (``match`` below) serves POST /match.
+# Retired: not registered on any router; ``app.matching.routes`` serves POST /match.
 async def match_legacy(
     payload: Annotated[
         List[MatchRequest],
-        Body(..., description=_MATCH_BODY_DESCRIPTION, example=_MATCH_BODY_EXAMPLE),
+        Body(..., description=MATCH_BODY_DESCRIPTION, example=MATCH_BODY_EXAMPLE),
     ],
     jobs_repository: IJobsRepository = Depends(get_jobs_repository),
 ):
@@ -403,11 +188,11 @@ async def match_legacy(
         )
 
 
-# Retired: not registered on any router; v4 (``match`` below) serves POST /match.
+# Retired: not registered on any router; ``app.matching.routes`` serves POST /match.
 async def match_v2(
     payload: Annotated[
         List[MatchRequest],
-        Body(..., description=_MATCH_BODY_DESCRIPTION, example=_MATCH_BODY_EXAMPLE),
+        Body(..., description=MATCH_BODY_DESCRIPTION, example=MATCH_BODY_EXAMPLE),
     ],
     fusion_top_k: Optional[int] = Query(
         None,
@@ -541,17 +326,17 @@ async def match_v2(
         )
 
 
-# Retired: not registered on any router; v4 (``match`` below) serves POST /match.
+# Retired: not registered on any router; ``app.matching.routes`` serves POST /match.
 async def match_v3(
     payload: Annotated[
         List[MatchRequest],
         Body(
             ...,
             description=(
-                _MATCH_BODY_DESCRIPTION
+                MATCH_BODY_DESCRIPTION
                 + " When JOBS_RETRIEVAL_FILTER is on, city/province must overlap job locations in Mongo."
             ),
-            example=_MATCH_BODY_EXAMPLE,
+            example=MATCH_BODY_EXAMPLE,
         ),
     ],
     retrieve_top_k: Optional[int] = Query(
@@ -576,6 +361,7 @@ async def match_v3(
         description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
     ),
     jobs_repository: IJobsRepository = Depends(get_jobs_repository),
+    matching_service: IMatchingService = Depends(get_matching_service),
 ):
     """Gemini concat-cosine → CE rerank, returned in the full ``MatchResponse`` shape.
 
@@ -639,6 +425,7 @@ async def match_v3(
             skill_gap_top_k=skill_gap_top_k
             if skill_gap_top_k is not None
             else MATCH_TOP_K_SKILL_GAPS,
+            matching_service=matching_service,
         )
         score_ms = _ms(t_score)
 
@@ -669,185 +456,12 @@ async def match_v3(
         ) from e
 
 
-def _error(description: str, detail: str) -> Dict[str, Any]:
-    return {
-        "description": description,
-        "content": {"application/json": {"example": {"detail": detail}}},
-    }
-
-
-@router.post(
-    "/match",
-    tags=["matching"],
-    operation_id="match",
-    summary="Match users to occupations, job opportunities and skill gaps",
-    response_model=List[MatchResponse],
-    responses={
-        400: _error(
-            "Bad Request: empty body, too many users, invalid "
-            "``final_score_combiner``, or an input the engine rejects.",
-            "Request body must be a non-empty JSON array.",
-        ),
-        403: _error("Forbidden: missing ``x-api-key`` header.", "Not authenticated"),
-        500: _error("Internal Server Error.", "Internal server error: RuntimeError"),
-    },
-)
-async def match(
-    payload: Annotated[
-        List[MatchRequest],
-        Body(
-            ...,
-            description=(
-                _MATCH_BODY_DESCRIPTION
-                + f" At most {MATCH_V2_MAX_USERS_PER_REQUEST} users per request."
-            ),
-            example=_MATCH_BODY_EXAMPLE,
-        ),
-    ],
-    retrieve_top_k: Optional[int] = Query(
-        None,
-        ge=1,
-        le=500,
-        description=(
-            "Stage-1 embedding-cosine shortlist size per user, before cross-encoder rerank. "
-            f"Default: {MATCH_V4_RETRIEVE_TOP_K}."
-        ),
-    ),
-    final_top_k: Optional[int] = Query(
-        None,
-        ge=1,
-        le=200,
-        description=(
-            "Cross-encoder pool size and maximum number of opportunities returned per user. "
-            f"Default: {MATCH_V4_FINAL_TOP_K}."
-        ),
-    ),
-    final_score_combiner: Optional[str] = Query(
-        None,
-        description=(
-            "How ``final_score`` combines ``u_hat`` and ``p_hat``: ``product`` (u_hat × p_hat) or "
-            "``geometric_mean`` (√(u_hat × p_hat)). Defaults to the server's FINAL_SCORE_COMBINER "
-            "(``product`` unless overridden)."
-        ),
-    ),
-    skill_gap_top_k: Optional[int] = Query(
-        None,
-        ge=1,
-        le=50,
-        description=f"Number of skill-gap recommendations per user. Default: {MATCH_TOP_K_SKILL_GAPS}.",
-    ),
-    jobs_repository: IJobsRepository = Depends(get_jobs_repository),
-):
-    """Match one or more users to occupations, job opportunities and skill gaps.
-
-    Body is a JSON array of ``MatchRequest`` (use length 1 for a single user); the response is a
-    list of ``MatchResponse`` in the same order. Candidates are shortlisted by skill similarity,
-    re-scored by a cross-encoder, and ranked by ``final_score`` (preference utility × success
-    propensity, adjusted for skill coverage and location); each factor is in ``score_breakdown``.
-
-    Requires the ``x-api-key`` header.
-    """
-    if DEBUG_MODE:
-        print("matching.request=")
-        for item in payload:
-            print(item.model_dump_json())
-    try:
-        t_req = time.perf_counter()
-        if len(payload) > MATCH_V2_MAX_USERS_PER_REQUEST:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Too many users in one request (max {MATCH_V2_MAX_USERS_PER_REQUEST}).",
-            )
-        if not payload:
-            raise HTTPException(
-                status_code=400, detail="Request body must be a non-empty JSON array."
-            )
-
-        users = [u.model_dump() for u in payload]
-        rt = retrieve_top_k if retrieve_top_k is not None else MATCH_V4_RETRIEVE_TOP_K
-        ft = final_top_k if final_top_k is not None else MATCH_V4_FINAL_TOP_K
-        combiner = (final_score_combiner or "").strip().lower() or None
-        if combiner is not None and combiner not in ("product", "geometric_mean"):
-            raise HTTPException(
-                status_code=400,
-                detail="final_score_combiner must be 'product' or 'geometric_mean'",
-            )
-
-        observability.set_request_users(
-            users,
-            retrieve_top_k=rt,
-            final_top_k=ft,
-            final_score_combiner=combiner,
-            skill_gap_top_k=skill_gap_top_k,
-        )
-
-        t_fetch = time.perf_counter()
-        with observability.stage("retrieval") as span:
-            (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
-                retrieve_jobs_with_timing(jobs_repository, users),
-                _load_v4_occupations(),
-            )
-            observability.update_observation(
-                span,
-                metadata=_retrieval_trace_meta(jobs, mongo_timing, occ, occ_timing),
-            )
-        fetch_wall_ms = _ms(t_fetch)
-
-        t_score = time.perf_counter()
-        raw = await asyncio.to_thread(
-            run_match_v4_full,
-            users,
-            jobs,
-            occ,
-            retrieve_top_k=rt,
-            final_top_k=ft,
-            final_score_combiner=combiner,
-            skill_gap_top_k=skill_gap_top_k
-            if skill_gap_top_k is not None
-            else MATCH_TOP_K_SKILL_GAPS,
-            mongo_timing=mongo_timing,
-        )
-        score_ms = _ms(t_score)
-
-        with observability.stage("formatting", step="response_model"):
-            out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
-
-        log_match_step(
-            "http /match",
-            "request (summary)",
-            n_users=len(users),
-            n_jobs=len(jobs),
-            n_occupation_rows=len(occ),
-            fetch_parallel_wall_ms=fetch_wall_ms,
-            scoring_thread_pool_ms=score_ms,
-            request_total_ms=_ms(t_req),
-        )
-
-        if DEBUG_MODE:
-            print("matching.response=")
-            for _item in out:
-                print(_item.model_dump_json())
-
-        return out
-
-    except HTTPException:
-        raise
-    except ValueError as e:
-        logger.exception(e)
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        logger.exception(e)
-        raise HTTPException(
-            status_code=500, detail=f"Internal server error: {e.__class__.__name__}"
-        ) from e
-
-
 # ---------------------------------------------------------------------------
 # Experiment: /experiments/v5/match
 # ---------------------------------------------------------------------------
 
 
-# Retired: not registered on any router; v4 (``match`` below) serves POST /match.
+# Retired: not registered on any router; ``app.matching.routes`` serves POST /match.
 async def match_v5(
     payload: Annotated[
         List[MatchRequestV5],
@@ -860,7 +474,7 @@ async def match_v5(
                 "For Zambia deployments use ``zqf_level`` only; "
                 "``any_post_secondary_educ`` is the Kenya post-secondary gate (optional, omit for Zambia)."
             ),
-            example=_MATCH_V5_BODY_EXAMPLE,
+            example=MATCH_V5_BODY_EXAMPLE,
         ),
     ],
     retrieve_top_k: Optional[int] = Query(
@@ -886,6 +500,7 @@ async def match_v5(
         description="Number of skill-gap recommendations.",
     ),
     jobs_repository: IJobsRepository = Depends(get_jobs_repository),
+    matching_service: IMatchingService = Depends(get_matching_service),
 ):
     """Experiment: matching with ZQF education annotation on opportunities.
 
@@ -938,7 +553,7 @@ async def match_v5(
 
         t_score = time.perf_counter()
         raw = await asyncio.to_thread(
-            run_match_v4_full,
+            matching_service.rank,
             users,
             jobs,
             occ,
