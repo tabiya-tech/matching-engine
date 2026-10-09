@@ -336,7 +336,7 @@ V4_FULL_COVERAGE_FLOOR: float = min(1.0, max(0.0, _f("V4_FULL_COVERAGE_FLOOR", 0
 # coverage ~0.39 (opportunities) / ~0.43 (occupations).
 V4_FULL_UNPARSED_COVERAGE: float = _f("V4_FULL_UNPARSED_COVERAGE", -1.0)
 # Whitening transform for the COMBINED (concat) embedding used by the whitened p_hat skills-fit,
-# built by build_whitened_concat.py (mu, W=Sigma^-1/2, target). Refit on the live corpus for prod.
+# built by tools/embeddings/build_whitened_concat.py (mu, W=Sigma^-1/2, target). Refit on the live corpus for prod.
 V4_FULL_CONCAT_WHITENING_PATH: str = _resolve_under_backend(
     _s(
         "V4_FULL_CONCAT_WHITENING_PATH",
@@ -358,7 +358,7 @@ MATCH_V4_TOP_K_OCCUPATIONS: int = _i("MATCH_V4_TOP_K_OCCUPATIONS", 10)
 # Mirrors the legacy p_hat market factor (PHAT_GAMMA_MARKET=0.3). Set 0.0 to disable.
 MATCH_V4_OCC_DEMAND_GAMMA: float = _f("MATCH_V4_OCC_DEMAND_GAMMA", 0.3)
 # Committed NPZ of occupation concat-Gemini embeddings (codes + float32 vectors), built offline
-# by app.services.cross_encoder.embed_occupations. Missing => occupations skipped (logged).
+# by tools.embeddings.embed_occupations. Missing => occupations skipped (logged).
 OCCUPATION_CONCAT_EMBEDDINGS_PATH: str = _s(
     "OCCUPATION_CONCAT_EMBEDDINGS_PATH",
     str(_RESOURCES / "occupations" / "occupation_concat_embeddings.npz"),

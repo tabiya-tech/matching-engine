@@ -14,8 +14,8 @@ Prereqs: ``pip install google-genai``, ``GEMINI_API_KEY`` in ``backend/.env``.
 Usage::
 
     cd backend
-    python -m app.services.cross_encoder.embed_occupations
-    python -m app.services.cross_encoder.embed_occupations --occupations <path> --output <npz>
+    python -m tools.embeddings.embed_occupations
+    python -m tools.embeddings.embed_occupations --occupations <path> --output <npz>
 """
 
 from __future__ import annotations
