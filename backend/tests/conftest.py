@@ -17,8 +17,8 @@ if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
 # ---------------------------------------------------------------------------
-# Environment: set BEFORE any app module is imported so database.py and
-# config.py don't crash on missing MONGO_URL.
+# Environment: set BEFORE any app module is imported so config.py and the DB
+# provider's settings resolve. No test opens a real Mongo connection.
 # ---------------------------------------------------------------------------
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("MONGO_DB_NAME", "test")
@@ -44,33 +44,46 @@ def _mock_run_match_full(users, *_args, **_kwargs):
     return [_mock_match_response(u) for u in users]
 
 
-async def _mock_jobs(*_a, **_kw):
-    return ([], {})
-
-
 async def _mock_occupations(*_a, **_kw):
     return ([], {})
 
 
 @pytest.fixture()
-def test_client():
+def mocked_jobs_repository():
+    """Stand-in for the jobs repository injected into routes; set side effects per test."""
+    from app.jobs.repository import IJobsRepository
+
+    repository = AsyncMock(spec=IJobsRepository)
+    repository.find_jobs_with_timing.side_effect = lambda *_a, **_kw: ([], {})
+    return repository
+
+
+@pytest.fixture()
+def test_client(mocked_jobs_repository):
     """TestClient with mocked DB, Gemini, and model loading.
 
-    Uses a context-manager so the FastAPI lifespan actually executes.
+    Uses a context-manager so the FastAPI lifespan actually executes. The provider's client factory
+    is patched (no Mongo connection), and routes receive ``mocked_jobs_repository``.
     """
     # Import target modules first so patch() can resolve the attribute paths.
-    import app.database  # noqa: F401
+    import app.main  # noqa: F401
     import app.routes  # noqa: F401
     import app.services.match_concat_gemini_ce_service  # noqa: F401
     import app.services.matching_service  # noqa: F401
+    from app.jobs.get_jobs_repository import get_jobs_repository
+    from app.server_dependencies.db_dependencies import MatchingDBProvider
 
+    MatchingDBProvider.clear_cache()
     patches = [
-        patch("app.database.warmup_on_startup", new_callable=AsyncMock),
+        patch(
+            "app.server_dependencies.db_dependencies._get_jobs_db",
+            return_value=MagicMock(),
+        ),
+        patch("app.main.warmup_on_startup", new_callable=AsyncMock),
         patch(
             "app.services.match_concat_gemini_ce_service._get_reranker",
             return_value=MagicMock(),
         ),
-        patch("app.routes.get_all_jobs_with_timing", side_effect=_mock_jobs),
         patch(
             "app.routes.get_all_occupations_with_timing", side_effect=_mock_occupations
         ),
@@ -86,8 +99,11 @@ def test_client():
     from fastapi.testclient import TestClient
     from app.main import app
 
+    app.dependency_overrides[get_jobs_repository] = lambda: mocked_jobs_repository
     with TestClient(app) as client:
         yield client
+    app.dependency_overrides.pop(get_jobs_repository, None)
 
     for p in patches:
         p.stop()
+    MatchingDBProvider.clear_cache()

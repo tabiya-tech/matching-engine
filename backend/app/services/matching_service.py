@@ -15,7 +15,6 @@ from app.config import (
     MATCH_TOP_K_SKILL_GAPS,
     SCORING_MODE,
 )
-from app.database import get_all_jobs, get_all_occupations
 from app.match_timing_log import log_match_step
 from app.services.education_eligibility import filter_jobs_by_education
 from app.services.preference_score_v1 import get_preference_scorer
@@ -760,13 +759,8 @@ def match_user_opportunities_for_dashboard(
 
 async def match_single_user(
     user: dict,
-    jobs: Optional[List[dict]] = None,
-    occupations: Optional[List[dict]] = None,
+    jobs: List[dict],
+    occupations: List[dict],
 ) -> dict:
-    if jobs is None:
-        jobs = await get_all_jobs()
-    if occupations is None:
-        occupations = await get_all_occupations()
-
     out = await asyncio.to_thread(match_user_with_data, user, jobs, occupations)
     return out

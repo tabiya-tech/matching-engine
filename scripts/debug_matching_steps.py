@@ -2,7 +2,7 @@
 """Run matching-service steps in isolation and write JSON under output_results/.
 
 Step 1 — same parallel fetch as ``POST /match`` (see ``backend/app/routes.py``):
-  ``asyncio.gather(get_all_jobs_with_timing(users=...), get_all_occupations_with_timing())``
+  ``asyncio.gather(retrieve_jobs_with_timing(jobs_repository, users), get_all_occupations_with_timing())``
 
 Requires working ``backend/.env`` (Mongo, collection names, occupation JSON path).
 
@@ -93,7 +93,9 @@ async def step_01_fetch_jobs_and_occupations(
     occ_sample_cap: int = 100,
     jobs_jsonl: Path | None = None,
 ) -> None:
-    from app.database import get_all_jobs_with_timing, get_all_occupations_with_timing
+    from app.jobs.get_jobs_repository import standalone_jobs_repository
+    from app.occupations.loader import get_all_occupations_with_timing
+    from app.services.job_retrieval import retrieve_jobs_with_timing
 
     t0 = time.perf_counter()
     if jobs_jsonl is not None:
@@ -106,16 +108,17 @@ async def step_01_fetch_jobs_and_occupations(
         }
         occ, occ_timing = await get_all_occupations_with_timing()
     else:
-        (jobs, jobs_timing), (occ, occ_timing) = await asyncio.gather(
-            get_all_jobs_with_timing(users=users),
-            get_all_occupations_with_timing(),
-        )
+        async with standalone_jobs_repository() as jobs_repository:
+            (jobs, jobs_timing), (occ, occ_timing) = await asyncio.gather(
+                retrieve_jobs_with_timing(jobs_repository, users),
+                get_all_occupations_with_timing(),
+            )
     wall_ms = (time.perf_counter() - t0) * 1000.0
 
     step_dir = out_dir / STEP_01_DIRNAME
     meta = {
         "description": "Mirrors routes.match() parallel fetch before match_user_with_data",
-        "jobs_source": "jsonl_file" if jobs_jsonl else "mongodb_get_all_jobs_with_timing",
+        "jobs_source": "jsonl_file" if jobs_jsonl else "mongodb_retrieve_jobs_with_timing",
         "n_users_supplied": len(users),
         "user_ids": [str(u.get("user_id")) for u in users],
         "fetch_parallel_wall_ms": round(wall_ms, 2),
