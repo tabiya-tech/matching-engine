@@ -3,7 +3,7 @@
 Stage 1–2: same as ``POST /match_v3`` (:func:`~app.services.match_concat_gemini_ce_service.run_match_concat_gemini_ce`):
 Gemini user concat × Mongo job vectors → **concat_cosine_similarity**, then CE rerank.
 
-Stage 3: :class:`~app.services.preference_score.PreferenceScorer` → ``u_hat``;
+Stage 3: :class:`~app.ranking.preference.PreferenceScorer` → ``u_hat``;
 ``p_hat`` = ``concat_cosine_similarity``; ``final = u_hat × p_hat``.
 
 Usage (from ``backend/``)::
@@ -36,22 +36,90 @@ from app.services.cosine_similarity.run_cosine_matching import (
     _load_users,
     load_jobs,
 )
-from app.services.cross_encoder.concat_embedding_text import (
+from app.ranking.retrieval import (
     user_skill_labels_for_concat,
 )
-from app.services.cross_encoder.gemini_embeddings import (
+from app.clients.gemini_embedding_client import (
     EMBEDDING_DIM,
     MODEL_NAME as GEMINI_EMBEDDING_MODEL_NAME,
 )
 from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
-from app.services.preference_score_v1 import get_preference_scorer
+from app.server_dependencies.model_dependencies import get_preference_scorer
 
-from .match_v3_bridge import v3_recommendation_to_rec
-from .scoring import (
+from app.artifacts.repository import get_artifacts_repository
+from app.ranking.scoring import (
     enrich_recommendations_with_preferences,
-    user_bws_summary,
-    user_preference_factors,
+    v3_recommendation_to_rec,
 )
+from app.ranking.preference import attribute_label
+from app.ranking.preference import PreferenceScorer
+
+
+def user_preference_factors(user: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """User importance weights for dashboard (sorted high → low)."""
+    schema = get_artifacts_repository().load_attribute_schema()
+    pv = user.get("preference_vector") or {}
+    rows: List[Dict[str, Any]] = []
+    for spec in schema.get("attributes", []):
+        if not isinstance(spec, dict):
+            continue
+        name = str(spec.get("name") or "")
+        if not name:
+            continue
+        try:
+            w = float(pv.get(name, 0.0))
+        except (TypeError, ValueError):
+            w = 0.0
+        rows.append(
+            {
+                "attribute": name,
+                "label": attribute_label(name, schema),
+                "importance": round(max(0.0, min(1.0, w)), 4),
+            }
+        )
+    rows.sort(key=lambda r: (-float(r["importance"]), r["label"]))
+    return rows
+
+
+def user_bws_summary(user: Dict[str, Any]) -> Dict[str, Any]:
+    """Top BWS scores on work-activity codes for dashboard header."""
+    pv = user.get("preference_vector") or {}
+    bws_scores = user.get("bws_scores") or pv.get("bws_scores") or {}
+    if not isinstance(bws_scores, dict) or not bws_scores:
+        return {"has_bws": False, "score_type": None, "rows": []}
+
+    score_type = PreferenceScorer.detect_bws_score_type(bws_scores)
+    top_codes = list(user.get("top_10_bws") or pv.get("top_10_bws") or [])
+
+    rows: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _add(code: str) -> None:
+        c = str(code).strip()
+        if not c or c in seen:
+            return
+        seen.add(c)
+        try:
+            score = float(bws_scores.get(c, 0.0))
+        except (TypeError, ValueError):
+            score = 0.0
+        rows.append({"wa_code": c, "bws": round(score, 2)})
+
+    for code in top_codes[:10]:
+        _add(code)
+    for code, val in sorted(
+        bws_scores.items(),
+        key=lambda kv: (-abs(float(kv[1]) if kv[1] is not None else 0), str(kv[0])),
+    ):
+        if len(rows) >= 12:
+            break
+        _add(str(code))
+
+    return {
+        "has_bws": score_type == "work_activity_id",
+        "score_type": score_type,
+        "rows": rows,
+    }
 
 
 def _jobs_by_uuid(jobs: List[dict]) -> Dict[str, dict]:
