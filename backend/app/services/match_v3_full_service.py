@@ -25,25 +25,42 @@ from app import observability
 from app.config import (
     MATCH_TOP_K_SKILL_GAPS,
     MATCH_V4_TOP_K_OCCUPATIONS,
+    SKILL_RESCALE_TARGET,
     V4_FULL_MIN_ESS_SHARE,
     V4_FULL_SIM_THRESHOLD,
 )
 from app.services import match_v4_formatting as fmt
 from app.services.match_concat_gemini_ce_service import (
-    _get_matcher,
     embed_user_unit_vectors,
     run_match_concat_gemini_ce,
 )
-from app.services.match_v4_full_service import (
-    _index_by_uuid,
-    _skill_gaps_for,
-    _user_matches_any_county,
+from app.ranking.retrieval import (
+    job_matches_user_location as _job_matches_user_location,
+    user_matches_any_county as _user_matches_any_county,
 )
-from app.services.matching_service import _job_matches_user_location
+from app.ranking.skill_gaps import skill_gaps_for
+from app.ranking.retrieval import index_by_uuid as _index_by_uuid
+from app.server_dependencies.model_dependencies import (
+    get_skill_matcher,
+    get_skill_scorer,
+)
 
 __all__ = ["run_match_v3_full"]
 
 logger = logging.getLogger(__name__)
+
+
+def _skill_gaps_for(
+    user: Dict[str, Any], jobs: List[Dict[str, Any]], top_k: int
+) -> List[Dict[str, Any]]:
+    """The /match skill-gap analysis (engine-agnostic)."""
+    return skill_gaps_for(
+        user,
+        jobs,
+        top_k,
+        scorer=get_skill_scorer(),
+        rescale_target=SKILL_RESCALE_TARGET,
+    )
 
 
 def _skill_detail(matcher, user: Dict[str, Any], item: Dict[str, Any]):
@@ -115,7 +132,7 @@ def run_match_v3_full(
         return []
 
     u_norm = embed_user_unit_vectors(users)  # embed users ONCE, reuse for both corpora
-    matcher = _get_matcher()
+    matcher = get_skill_matcher()
     job_index = _index_by_uuid(jobs)
     occ_index = _index_by_uuid(occupations)
 

@@ -439,7 +439,7 @@ def test_v4_engine_records_shortlist_and_rerank_per_corpus():
 
     import numpy as np
 
-    from app.services.cross_encoder.gemini_embeddings import EMBEDDING_DIM
+    from app.clients.gemini_embedding_client import EMBEDDING_DIM
     from app.services.match_concat_gemini_ce_service import run_match_concat_gemini_ce
 
     def job(uuid, index):
@@ -452,21 +452,21 @@ def test_v4_engine_records_shortlist_and_rerank_per_corpus():
     user = {"user_id": "u1", "skills_vector": {"top_skills": []}}
     u_vecs = np.zeros((1, EMBEDDING_DIM))
     u_vecs[0, 0] = 1.0
+    rerank = MagicMock()
+    rerank.build_pairs.return_value = []
+    rerank.apply.side_effect = lambda recs, _scores, **_kw: list(recs)
 
     async def handler():
         with (
             patch(
-                "app.services.match_concat_gemini_ce_service._get_matcher",
+                "app.services.match_concat_gemini_ce_service.get_skill_matcher",
                 return_value=matcher,
             ),
             patch(
-                "app.services.match_concat_gemini_ce_service._get_reranker",
+                "app.services.match_concat_gemini_ce_service.get_cross_encoder_client",
                 return_value=MagicMock(model_name="ce-test"),
             ),
-            patch(
-                "app.services.match_concat_gemini_ce_service.rerank_cosine_recommendations",
-                side_effect=lambda _labels, recs, **_kw: recs,
-            ),
+            patch("app.services.match_concat_gemini_ce_service._RERANK", rerank),
         ):
             for corpus in ("jobs", "occupations"):
                 await asyncio.to_thread(

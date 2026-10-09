@@ -39,6 +39,7 @@ from app.occupations.loader import (
 from app.services.job_retrieval import retrieve_jobs_with_timing
 from app import observability
 from app.match_timing_log import log_match_step
+from app.ranking.retrieval import zqf_annotation
 from app.services.matching_service import match_user_with_data
 from app.services.match_v2_full_service import run_match_v2_full
 from app.services.match_v3_full_service import run_match_v3_full
@@ -846,15 +847,6 @@ async def match(
 # ---------------------------------------------------------------------------
 
 
-def _zqf_annotation(user_zqf, job_zqf_min):
-    """(zqf_eligible, zqf_gap) or (None, None) when either side is missing."""
-    if user_zqf is not None and isinstance(job_zqf_min, (int, float)):
-        jmin = int(job_zqf_min)
-        ulevel = int(user_zqf)
-        return (ulevel >= jmin, abs(ulevel - jmin))
-    return (None, None)
-
-
 # Retired: not registered on any router; v4 (``match`` below) serves POST /match.
 async def match_v5(
     payload: Annotated[
@@ -968,7 +960,7 @@ async def match_v5(
                 for opp in row.get("opportunity_recommendations") or []:
                     job = job_uuid_index.get(str(opp.get("uuid") or ""))
                     job_zqf_min = job.get("zqf_min") if job else None
-                    eligible, gap = _zqf_annotation(user_zqf, job_zqf_min)
+                    eligible, gap = zqf_annotation(user_zqf, job_zqf_min)
                     opp["zqf_eligible"] = eligible
                     opp["zqf_gap"] = gap
                     opp["zqf_min_label"] = job.get("zqf_min_label") if job else None

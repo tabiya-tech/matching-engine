@@ -80,12 +80,10 @@ async def warmup_on_startup(jobs_db: AsyncIOMotorDatabase) -> None:
 
     if _env_warmup_flag("WARMUP_MATCH_V3_MODELS", False):
         try:
-            from app.services.match_concat_gemini_ce_service import (
-                preload_match_v3_models,
-            )
+            from app.server_dependencies.model_dependencies import preload_models
 
             t0 = time.perf_counter()
-            timings = await asyncio.to_thread(preload_match_v3_models)
+            timings = await asyncio.to_thread(preload_models)
             logger.info(
                 "/match_v3 model warmup: ok (total %.2f ms; matcher %.2f ms, cross-encoder %.2f ms)",
                 _ms(t0),
