@@ -28,9 +28,9 @@ PREREQ
   * ``GEMINI_API_KEY`` env var (same key already wired into llm-reranker)
 
 USAGE
-  python -m app.services.skills_utility.build_gemini_embedding
+  python -m tools.embeddings.build_gemini_embedding
   # or, from backend/:
-  python app/services/skills_utility/build_gemini_embedding.py
+  python tools/embeddings/build_gemini_embedding.py
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ except ImportError as e:
     sys.exit(1)
 
 
-_BACKEND_ROOT = Path(__file__).resolve().parents[3]  # .../backend
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]  # .../backend
 load_dotenv(_BACKEND_ROOT / ".env")
 # The canonical language pack — the artefact this builds is keyed on its ids
 # (row-aligned with skill_to_row.json). Other languages reuse these vectors.

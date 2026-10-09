@@ -50,7 +50,7 @@ def _load_occupation_embeddings() -> dict[str, Any]:
     except FileNotFoundError:
         logger.warning(
             "Occupation embeddings NPZ not found at %s; /match_v4 occupations will be skipped. "
-            "Build it via `python -m app.services.cross_encoder.embed_occupations`.",
+            "Build it via `python -m tools.embeddings.embed_occupations`.",
             OCCUPATION_CONCAT_EMBEDDINGS_PATH,
         )
     except Exception as e:  # pragma: no cover - defensive

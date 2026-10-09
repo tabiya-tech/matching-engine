@@ -231,7 +231,7 @@ def build_job_dict_from_ranked(rd: dict[str, Any]) -> dict[str, Any] | None:
         out["concat_skill_embedding_gemini"] = gem_sub
     raw_je = rd.get("job_embedding")
     if isinstance(raw_je, list) and raw_je:
-        from app.services.cross_encoder.gemini_embeddings import (
+        from app.clients.gemini_embedding_client import (
             EMBEDDING_DIM as _gem_concat_dim,
         )
 

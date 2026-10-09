@@ -41,14 +41,14 @@ chmod +x run_gemini_ce_hybrid_dashboard.sh
 Or step by step:
 
 ```bash
-python3 -m app.services.gemini_ce_preference_matching.run_matching \
+python3 -m tools.gemini_ce_preference_matching.run_matching \
   --users ../data/njila/njila_match_input.jsonl \
   --from-mongo \
   --retrieve-top-k 50 \
   --final-top-k 10 \
   --output output/results_gemini_ce_hybrid_v1.json
 
-python3 -m app.services.gemini_ce_preference_matching.build_dashboard \
+python3 -m tools.gemini_ce_preference_matching.build_dashboard \
   --input output/results_gemini_ce_hybrid_v1.json \
   --output output/dashboards/results_gemini_ce_hybrid_v1_dual.html \
   --top-k 50
@@ -66,7 +66,7 @@ Open the HTML in a browser: `output/dashboards/results_gemini_ce_hybrid_v1_dual.
 `run_matching` now writes **`recommendations_attrs_only`** (Part A DCE only) and **`recommendations`** (Part A + Part B BWS).
 
 ```bash
-python3 -m app.services.gemini_ce_preference_matching.build_dashboard_with_wa \
+python3 -m tools.gemini_ce_preference_matching.build_dashboard_with_wa \
   --input output/results_gemini_ce_hybrid_v1.json \
   --output output/dashboards/results_gemini_ce_hybrid_v1_with_wa.html \
   --top-k 50
@@ -82,5 +82,5 @@ python3 -m app.services.gemini_ce_preference_matching.build_dashboard_with_wa \
 
 ## Related
 
-- HTTP API: `POST /match` → `app.matching.service.MatchingService`
+- HTTP API: `POST /match` → `app.matching.service.MatchingService` (engine: `app.matching.concat_ce_engine`)
 - Per-skill cosine only (old batch path): `app.services.cross_encoder.run_cosine_then_cross_encoder`

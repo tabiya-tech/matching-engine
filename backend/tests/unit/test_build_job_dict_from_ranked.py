@@ -12,7 +12,7 @@ from typing import Any, Dict
 import pytest
 
 from app.jobs.job_document import build_job_dict_from_ranked
-from app.services.cross_encoder.gemini_embeddings import EMBEDDING_DIM
+from app.clients.gemini_embedding_client import EMBEDDING_DIM
 
 
 def _base_doc() -> Dict[str, Any]:

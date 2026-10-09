@@ -13,7 +13,7 @@ Example::
         --from-mongo \\
         --output ./path/to/results.json
 
-    python -m app.services.hybrid_scoring.build_bm25_cosine_4col_dashboard \\
+    python -m tools.hybrid_scoring.build_bm25_cosine_4col_dashboard \\
         --input ./path/to/results.json \\
         --output ./path/to/dashboard.html
 

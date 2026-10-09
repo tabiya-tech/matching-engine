@@ -10,8 +10,8 @@ normalised user concat and the stored job/occupation concat). Saves an .npz with
     target  : float  p99 of whitened cosine over random pairs (rescale-to-[0,1] target)
 
 Usage (from backend/):
-    python -m app.services.build_whitened_concat                # fits on data/kenya_jobs_for_pipeline.json
-    python -m app.services.build_whitened_concat --jobs <path> --out <npz> --shrinkage 2.0
+    python -m tools.embeddings.build_whitened_concat                # fits on data/kenya_jobs_for_pipeline.json
+    python -m tools.embeddings.build_whitened_concat --jobs <path> --out <npz> --shrinkage 2.0
 NOTE: refit on the FULL/live job corpus before production use (this local fit is a starting point).
 """
 

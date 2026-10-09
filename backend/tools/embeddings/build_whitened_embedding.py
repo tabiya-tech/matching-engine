@@ -40,7 +40,7 @@ OUTPUT
       random-pair (mu, std) on whitened cosines, for audit and gate-tuning.
 
 USAGE
-  python -m app.services.skills_utility.build_whitened_embedding \\
+  python -m tools.embeddings.build_whitened_embedding \\
       --src resources/models/skill_embedding_model_gemini.pt
 """
 
