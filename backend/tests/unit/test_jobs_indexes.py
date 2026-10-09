@@ -1,10 +1,16 @@
 """Tests for the jobs collection index definitions and the idempotent ensure step."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+import logging
+from unittest.mock import AsyncMock, MagicMock
 
-from app import database
-from app.database import JOBS_INDEX_MODELS, ensure_jobs_indexes
+import pytest
+
+from app.server_dependencies.database_collections import Collections
+from app.server_dependencies.db_dependencies import (
+    JOBS_INDEX_MODELS,
+    MatchingDBProvider,
+)
 
 
 class TestJobsIndexModels:
@@ -20,13 +26,19 @@ class TestJobsIndexModels:
 
     def test_browse_index_sorts_by_id_descending(self):
         # The keyset browse (sort _id desc) needs an {is_active: 1, _id: -1} index to avoid a scan.
-        keys = {m.document["name"]: list(m.document["key"].items()) for m in JOBS_INDEX_MODELS}
+        keys = {
+            m.document["name"]: list(m.document["key"].items())
+            for m in JOBS_INDEX_MODELS
+        }
         assert keys["is_active_-_id"] == [("is_active", 1), ("_id", -1)]
 
     def test_employment_type_index_ends_with_id_so_sort_is_index_served(self):
         # A type-filtered browse still sorts by _id desc; the index must end with _id to serve both
         # the equality and the sort (otherwise the planner falls back to the plain {is_active,_id} index).
-        keys = {m.document["name"]: list(m.document["key"].items()) for m in JOBS_INDEX_MODELS}
+        keys = {
+            m.document["name"]: list(m.document["key"].items())
+            for m in JOBS_INDEX_MODELS
+        }
         assert keys["is_active_employment_type_-_id"] == [
             ("is_active", 1),
             ("classifier_metadata.employment_type", 1),
@@ -34,18 +46,39 @@ class TestJobsIndexModels:
         ]
 
 
-class TestEnsureJobsIndexes:
+class TestInitializeJobsMongoDb:
     def test_calls_create_indexes_with_the_models_and_returns_names(self):
-        # GIVEN a collection that reports the created index names
+        # GIVEN a jobs database whose collection reports the created index names
         mock_collection = MagicMock()
-        mock_collection.create_indexes = AsyncMock(return_value=["is_active_-_id", "is_active_category"])
+        mock_collection.create_indexes = AsyncMock(
+            return_value=["is_active_-_id", "is_active_category"]
+        )
         mock_db = MagicMock()
-        mock_db.__getitem__.return_value = mock_collection
+        mock_db.get_collection.return_value = mock_collection
 
-        with patch.object(database, "db", mock_db):
-            # WHEN ensuring indexes
-            actual = asyncio.run(ensure_jobs_indexes())
+        # WHEN initializing the database
+        actual = asyncio.run(
+            MatchingDBProvider.initialize_jobs_mongo_db(
+                mock_db, logging.getLogger(__name__)
+            )
+        )
 
-        # THEN create_indexes is called once with the module's index models, and names returned
+        # THEN create_indexes is called once on the jobs collection with the index models, and names returned
+        mock_db.get_collection.assert_called_once_with(Collections.JOBS)
         mock_collection.create_indexes.assert_awaited_once_with(JOBS_INDEX_MODELS)
         assert actual == ["is_active_-_id", "is_active_category"]
+
+    def test_failure_is_raised_to_the_caller(self):
+        # GIVEN a collection whose index creation fails
+        mock_collection = MagicMock()
+        mock_collection.create_indexes = AsyncMock(side_effect=RuntimeError("boom"))
+        mock_db = MagicMock()
+        mock_db.get_collection.return_value = mock_collection
+
+        # WHEN initializing the database THEN the error propagates (the warmup decides it is non-fatal)
+        with pytest.raises(RuntimeError, match="boom"):
+            asyncio.run(
+                MatchingDBProvider.initialize_jobs_mongo_db(
+                    mock_db, logging.getLogger(__name__)
+                )
+            )

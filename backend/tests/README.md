@@ -172,7 +172,13 @@ tests/
 │   ├── test_startup_smoke.py            # Health endpoint tests (2 tests)
 │   └── test_endpoint_smoke.py           # Endpoint behavior tests (7 tests)
 ├── unit/
-│   └── test_build_job_dict_from_ranked.py  # Mongo job doc → flat dict mapping
+│   ├── test_build_job_dict_from_ranked.py  # Mongo job doc → flat dict mapping
+│   ├── test_db_dependencies.py          # Mongo client lifecycle, client options, lifespan
+│   ├── test_jobs_repository.py          # Repository queries against a fake collection
+│   ├── test_job_retrieval.py            # /match location prefilter policy
+│   ├── test_jobs_indexes.py             # Index definitions + startup index creation
+│   ├── test_jobs_pagination.py          # /jobs cursor codec + endpoint contract
+│   └── test_occupation_flatten.py       # Occupation JSON → per-county rows
 ├── ml_logic/                            # Matching invariants (education, location, skill gaps, ZQF)
 ├── components/                          # Skill scorer + metamorphic tests
 ├── integration/                         # Mocked-embedding v3 pipeline tests
@@ -200,6 +206,7 @@ When adding new endpoints, models, or features:
 3. **New config enum** → Add a parameterized case in `tests/data_schema/test_config_validation.py`
 4. **New endpoint behavior** → Add smoke tests in `tests/smoke/test_endpoint_smoke.py`
 5. **New Mongo field mapping or fallback in `build_job_dict_from_ranked`** → Add cases in `tests/unit/test_build_job_dict_from_ranked.py` (mapping logic) or extend the happy-path test (simple passthrough)
+   **New repository query** → Add cases in `tests/unit/test_jobs_repository.py`; routes get `mocked_jobs_repository` from `conftest.py` (see `app/server_dependencies/README.md`)
 6. **New matching rule or scorer invariant** → Add tests in `tests/ml_logic/`, `tests/components/`, or `tests/integration/` (see `AI_MATCHING_TEST_PLAN.md`)
 
 Always run the full suite after changes to confirm nothing regresses.

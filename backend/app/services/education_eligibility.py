@@ -3,7 +3,7 @@
 A job may declare ``requires_post_secondary`` (boolean) under
 ``llm_job_attributes.attributes`` in Mongo; it is surfaced as a top-level
 ``requires_post_secondary`` key on the flat job dict by
-:func:`app.database.build_job_dict_from_ranked`.
+:func:`app.jobs.job_document.build_job_dict_from_ranked`.
 
 The user side comes from ``MatchRequest.any_post_secondary_educ`` (0/1, optional).
 

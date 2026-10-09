@@ -144,6 +144,17 @@ counterpart.
 `ENABLED_LANGUAGES` limits which packs are loaded (default: all — it is a CSV parse, not a
 model load). English (`en`) is always included; it defines the id space.
 
+## Data access
+
+The backend reads one MongoDB collection: the ranked jobs written by the llm-reranker
+(`MONGO_JOBS_COLLECTION`). A single client is created in the FastAPI lifespan and closed on
+shutdown. Routes receive an `IJobsRepository` (implemented by `MongoJobsRepository`) through `Depends(get_jobs_repository)`. Index creation
+and warmup run once at startup (`app/warmup.py`). Occupations come from local resource files, not
+Mongo.
+
+See [`backend/app/server_dependencies/README.md`](backend/app/server_dependencies/README.md) for the
+connection lifecycle, collections and indexes, and how to add a query.
+
 ## Configuration
 
 Backend runtime settings are managed through `backend/.env` (see `backend/.env.example`).
