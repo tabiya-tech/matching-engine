@@ -29,7 +29,7 @@ from app.config import (
     V4_FULL_MIN_ESS_SHARE,
     V4_FULL_SIM_THRESHOLD,
 )
-from app.services import match_v4_formatting as fmt
+from app.matching import formatting as fmt
 from app.services.hybrid_scoring.run_bm25_cosine_hybrid import (
     get_cosine_matcher_singleton,
     hybrid_match_users_with_jobs,
