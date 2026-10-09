@@ -20,14 +20,16 @@ from app.jobs.repository import JobsRepository
 from app.occupations.get_occupations_repository import get_occupations_repository
 from app.server_dependencies.db_dependencies import get_jobs_db
 from app.match_timing_log import log_match_step
-from app.ranking.education import filter_jobs_by_education
-from app.ranking.location import job_matches_user_location as _job_matches_user_location
+from app.ranking.retrieval import filter_jobs_by_education
+from app.ranking.retrieval import (
+    job_matches_user_location as _job_matches_user_location,
+)
 from app.ranking.skill_gaps import (
     analyze_skill_gaps,
     filter_skill_gap_recommendations as _filter_skill_gap_recommendations,
     skill_gap_candidate_pool_k as _skill_gap_candidate_pool_k,
 )
-from app.ranking.success_propensity import SuccessPropensityScorer
+from app.ranking.scoring import SuccessPropensityScorer
 from app.server_dependencies.model_dependencies import (
     get_preference_scorer,
     get_skill_scorer,
@@ -460,7 +462,7 @@ def _match_items(
     # In legacy mode, import DemandScorer once (not per-item)
     _demand_scorer = None
     if scoring_mode != "multiplicative":
-        from app.ranking.demand import DemandScorer
+        from app.ranking.scoring import DemandScorer
 
         _demand_scorer = DemandScorer()
 

@@ -1,6 +1,6 @@
 """ZQF annotation invariants (v5 opportunities)."""
 
-from app.ranking.education import zqf_annotation as _zqf_annotation
+from app.ranking.retrieval import zqf_annotation as _zqf_annotation
 
 
 class TestZqfAnnotation:

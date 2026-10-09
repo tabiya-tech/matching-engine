@@ -3,7 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from app.jobs.documents import JOBS_INDEX_MODELS
+from app.jobs.repository import JOBS_INDEX_MODELS
 from app.jobs.repository import JobsRepository
 
 

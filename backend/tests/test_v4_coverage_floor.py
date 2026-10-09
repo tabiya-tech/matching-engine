@@ -1,11 +1,11 @@
 import pytest
 
-from app.ranking import enrichment as scoring
-from app.ranking.enrichment import (
+from app.ranking import scoring
+from app.ranking.scoring import (
     enrich_recommendations_with_preferences,
 )
 from app.ranking.preference import UnifiedPreferenceScorer
-from app.artifacts.repository import load_attribute_schema
+from app.artifacts.repository import get_artifacts_repository
 
 
 def _items():
@@ -43,7 +43,9 @@ def _enrich(coverage, **kwargs):
         _user(),
         _recs(),
         _items(),
-        preference_scorer=UnifiedPreferenceScorer(load_attribute_schema()),
+        preference_scorer=UnifiedPreferenceScorer(
+            get_artifacts_repository().load_attribute_schema()
+        ),
         coverage_by_uuid=coverage,
         coverage_gamma=1.0,
         **kwargs,

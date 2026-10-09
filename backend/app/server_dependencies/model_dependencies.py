@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from app.artifacts.get_artifacts_repository import get_artifacts_repository
+from app.artifacts.repository import get_artifacts_repository
 from app.clients.cross_encoder_client import CrossEncoderClient, ICrossEncoderClient
 from app.clients.gemini_embedding_client import (
     EMBEDDING_DIM,
@@ -37,10 +37,10 @@ from app.config import (
 )
 from app.languages import default_language
 from app.ranking.preference import UnifiedPreferenceScorer
-from app.ranking.skill_label_packs import SkillLabelPacks
-from app.ranking.skill_matcher import CosineSkillMatcher
-from app.ranking.skill_scorer import SkillScorer
-from app.ranking.whitening import ConcatWhitener
+from app.ranking.skills import SkillLabelPacks
+from app.ranking.skills import CosineSkillMatcher
+from app.ranking.skills import SkillScorer
+from app.ranking.retrieval import ConcatWhitener
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +215,7 @@ def get_preference_scorer():
     ``legacy`` → the old hardcoded-beta ``PreferenceScorer`` (A/B escape hatch only).
     """
     if PREFERENCE_SCORER_MODE == "legacy":
-        from app.ranking.preference.preference_score import PreferenceScorer
+        from app.ranking.preference import PreferenceScorer
 
         return PreferenceScorer()
     try:

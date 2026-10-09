@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from app.ranking.preference.work_activities import (
+from app.ranking.preference import (
     combine_utilities,
     compute_task_utility,
 )

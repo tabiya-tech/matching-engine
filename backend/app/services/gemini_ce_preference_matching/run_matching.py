@@ -1,9 +1,9 @@
 """match_v3 concat cosine + CE → u_hat × p_hat (p_hat = raw cosine, not CE 0–1).
 
-Stage 1–2: same as ``POST /match_v3`` (:meth:`~app.matching.concat_ce_engine.ConcatCrossEncoderEngine.run`):
+Stage 1–2: same as ``POST /match_v3`` (:meth:`~app.matching.service.MatchingService.shortlist_and_rerank`):
 Gemini user concat × Mongo job vectors → **concat_cosine_similarity**, then CE rerank.
 
-Stage 3: :class:`~app.ranking.preference.preference_score.PreferenceScorer` → ``u_hat``;
+Stage 3: :class:`~app.ranking.preference.PreferenceScorer` → ``u_hat``;
 ``p_hat`` = ``concat_cosine_similarity``; ``final = u_hat × p_hat``.
 
 Usage (from ``backend/``)::
@@ -36,28 +36,30 @@ from app.services.cosine_similarity.run_cosine_matching import (
     _load_users,
     load_jobs,
 )
-from app.ranking.concat_embedding_text import (
+from app.ranking.retrieval import (
     user_skill_labels_for_concat,
 )
 from app.clients.gemini_embedding_client import (
     EMBEDDING_DIM,
     MODEL_NAME as GEMINI_EMBEDDING_MODEL_NAME,
 )
-from app.matching.get_concat_ce_engine import get_concat_ce_engine
+from app.jobs.repository import JobsRepository
+from app.matching.get_matching_service import create_matching_service
+from app.server_dependencies.db_dependencies import get_jobs_db
 from app.server_dependencies.model_dependencies import get_preference_scorer
 
-from app.artifacts.repository import load_attribute_schema
-from app.ranking.enrichment import (
+from app.artifacts.repository import get_artifacts_repository
+from app.ranking.scoring import (
     enrich_recommendations_with_preferences,
     v3_recommendation_to_rec,
 )
-from app.ranking.preference.levels import attribute_label
-from app.ranking.preference.preference_score import PreferenceScorer
+from app.ranking.preference import attribute_label
+from app.ranking.preference import PreferenceScorer
 
 
 def user_preference_factors(user: Dict[str, Any]) -> List[Dict[str, Any]]:
     """User importance weights for dashboard (sorted high → low)."""
-    schema = load_attribute_schema()
+    schema = get_artifacts_repository().load_attribute_schema()
     pv = user.get("preference_vector") or {}
     rows: List[Dict[str, Any]] = []
     for spec in schema.get("attributes", []):
@@ -171,7 +173,9 @@ def run_pipeline(
         file=sys.stderr,
     )
 
-    v3_rows = get_concat_ce_engine().run(
+    v3_rows = create_matching_service(
+        JobsRepository(db=get_jobs_db())
+    ).shortlist_and_rerank(
         users,
         jobs,
         retrieve_top_k=retrieve_top_k,
@@ -265,7 +269,7 @@ def run_pipeline(
         "p_hat_source": "concat_cosine_similarity",
         "preference_scorer_mode": PREFERENCE_SCORER_MODE,
         "preference_module": pref_cls,
-        "match_v3_service": "app.matching.concat_ce_engine",
+        "match_v3_service": "app.matching.service",
         "gemini_user_embed_model": v3_cfg0.get("gemini_user_embed_model")
         or GEMINI_EMBEDDING_MODEL_NAME,
         "cross_encoder_model": v3_cfg0.get("cross_encoder_model")
@@ -277,7 +281,7 @@ def run_pipeline(
         "embedding_dim": v3_cfg0.get("embedding_dim") or EMBEDDING_DIM,
         "n_jobs_with_stage1_embedding": v3_cfg0.get("n_jobs_with_stage1_embedding"),
         "max_per_job_skills_in_output": max_per_job_skills,
-        # ConcatCrossEncoderEngine.run does not emit per-job skill detail nor skip
+        # MatchingService.shortlist_and_rerank does not emit per-job skill detail nor skip
         # skill-less users; labels reflect actual service behaviour.
         "include_per_job_skill_detail": False,
         "skip_users_without_skills": False,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -19,6 +20,8 @@ import numpy as np
 
 from app import observability
 from app.artifacts.repository import IArtifactsRepository
+from app.clients.cross_encoder_client import ICrossEncoderClient
+from app.clients.gemini_embedding_client import IGeminiEmbeddingClient
 from app.config import (
     FINAL_SCORE_COMBINER,
     LOCATION_HUB_CHAINS_PATH,
@@ -41,20 +44,31 @@ from app.config import (
     V4_FULL_WHITENED_GATE,
 )
 from app.jobs.repository import IJobsRepository
+from app.languages import default_language
 from app.match_timing_log import log_match_step
 from app.matching import formatting as fmt
-from app.matching.concat_ce_engine import IConcatCrossEncoderEngine
 from app.matching.errors import InvalidMatchRequestError
 from app.matching.types import MatchOptions
 from app.occupations.repository import IOccupationsRepository
-from app.ranking.enrichment import enriched_recommendations
-from app.ranking.occupations import OccupationSelector, occupation_counties
-from app.ranking.phase2 import RankOverrides, skill_detail
+from app.ranking.rerank import ICrossEncoderRerank
+from app.ranking.retrieval import (
+    ConcatWhitener,
+    IStage1Retriever,
+    index_by_uuid,
+    is_prewhitened,
+    l2_normalize_rows,
+    stage1_vector,
+    user_concat_embedding_text,
+    user_matches_any_county,
+    user_skill_labels_for_concat,
+)
+from app.ranking.scoring import (
+    RankOverrides,
+    enriched_recommendations,
+    skill_detail,
+)
 from app.ranking.skill_gaps import skill_gaps_for
-from app.ranking.skill_matcher import CosineSkillMatcher
-from app.ranking.skill_scorer import SkillScorer
-from app.ranking.vectors import index_by_uuid, is_prewhitened, stage1_vector
-from app.ranking.whitening import ConcatWhitener
+from app.ranking.skills import CosineSkillMatcher, SkillScorer
 from app.schemas import MatchRequest, MatchResponse
 
 logger = logging.getLogger(__name__)
@@ -120,6 +134,49 @@ class IMatchingService(ABC):
         """
         raise NotImplementedError()
 
+    @abstractmethod
+    def embed_users(self, users: list[dict[str, Any]]) -> np.ndarray:
+        """
+        Gemini concat embeddings for users, L2-normalised (float64 ``[n_users, dim]``).
+
+        Lets a caller embed users ONCE and reuse the matrix across corpora (jobs + occupations).
+
+        :raises ValueError: If the embedding client is not configured
+        :raises RuntimeError: If the embedding call fails or returns the wrong row count
+        """
+        raise NotImplementedError()
+
+    @abstractmethod
+    def shortlist_and_rerank(
+        self,
+        users: list[dict[str, Any]],
+        items: list[dict[str, Any]],
+        *,
+        retrieve_top_k: int,
+        final_top_k: int,
+        mongo_timing: dict[str, Any] | None = None,
+        user_unit_vectors: np.ndarray | None = None,
+        apply_location_tier: bool = False,
+        corpus: str = "jobs",
+    ) -> list[dict[str, Any]]:
+        """
+        Shortlists and reranks ``items`` for every user.
+
+        Strips the stage-1 vector fields off ``items`` in place.
+
+        :param users: The users (MatchRequest dicts)
+        :param items: Jobs or occupation rows
+        :param retrieve_top_k: Stage-1 shortlist size per user
+        :param final_top_k: Stage-2 slate size per user
+        :param mongo_timing: Job-load timing echoed into ``config_summary``
+        :param user_unit_vectors: Precomputed ``embed_users`` output; embedded here if omitted
+        :param apply_location_tier: Weight stage-1 by the user's location tier (urban-pull)
+        :param corpus: Labels the ``shortlist`` / ``rerank`` trace spans
+        :return: One result dict per user with ``concat_gemini_ce_recommendations``
+        :raises RuntimeError: If ``user_unit_vectors`` has the wrong shape
+        """
+        raise NotImplementedError()
+
 
 class MatchingService(IMatchingService):
     """The deployment's ``TARGET_LANGUAGE`` selects the stage-2 cross-encoder checkpoint, whose
@@ -136,23 +193,31 @@ class MatchingService(IMatchingService):
         jobs_repository: IJobsRepository,
         occupations_repository: IOccupationsRepository,
         artifacts_repository: IArtifactsRepository,
-        engine: IConcatCrossEncoderEngine,
+        embedding_client: IGeminiEmbeddingClient,
+        cross_encoder_provider: Callable[[], ICrossEncoderClient],
+        retrieval_matcher_provider: Callable[[], CosineSkillMatcher],
         gate_matcher_provider: Callable[[], CosineSkillMatcher],
         whitener_provider: Callable[[], ConcatWhitener],
         skill_scorer_provider: Callable[[], SkillScorer],
         preference_scorer_provider: Callable[[], Any],
-        embedding_dim: int,
+        retriever: IStage1Retriever,
+        rerank: ICrossEncoderRerank,
     ):
         self._jobs_repository = jobs_repository
         self._occupations_repository = occupations_repository
         self._artifacts_repository = artifacts_repository
-        self._engine = engine
+        self._embedding_client = embedding_client
+        self._cross_encoder_provider = cross_encoder_provider
+        # Per-skill detail attached to each stage-1 row (the shared, non-whitened matcher).
+        self._retrieval_matcher_provider = retrieval_matcher_provider
+        # Per-skill GATE for matched skills / coverage (whitened by default).
         self._gate_matcher_provider = gate_matcher_provider
         self._whitener_provider = whitener_provider
         self._skill_scorer_provider = skill_scorer_provider
         self._preference_scorer_provider = preference_scorer_provider
-        self._embedding_dim = embedding_dim
-        self._occupation_selector = OccupationSelector()
+        self._retriever = retriever
+        self._rerank = rerank
+        self._embedding_dim = embedding_client.embedding_dim
         self._logger = logging.getLogger(self.__class__.__name__)
 
     async def _load_occupations(self):
@@ -166,6 +231,189 @@ class MatchingService(IMatchingService):
             return [], {}
         occ, timing = await self._occupations_repository.load_with_timing()
         return self._occupations_repository.attach_embeddings(occ), timing
+
+    def embed_users(self, users: list[dict[str, Any]]) -> np.ndarray:
+        client = self._embedding_client
+        client.ensure_configured()
+        with observability.stage(
+            "embedding", n_users=len(users), model=client.model_name
+        ):
+            texts = []
+            for u in users:
+                t = user_concat_embedding_text(u).strip()
+                texts.append(t if t else " ")
+            u_emb = client.embed_texts(texts, batch_size=100, sleep_s=0.12)
+            if u_emb.shape[0] != len(users):
+                raise RuntimeError("Gemini embed returned unexpected row count")
+            return l2_normalize_rows(u_emb.astype(np.float32)).astype(np.float64)
+
+    def shortlist_and_rerank(
+        self,
+        users: list[dict[str, Any]],
+        items: list[dict[str, Any]],
+        *,
+        retrieve_top_k: int,
+        final_top_k: int,
+        mongo_timing: dict[str, Any] | None = None,
+        user_unit_vectors: np.ndarray | None = None,
+        apply_location_tier: bool = False,
+        corpus: str = "jobs",
+    ) -> list[dict[str, Any]]:
+        if not users:
+            return []
+        rt = max(1, int(retrieve_top_k))
+        fk = max(1, int(final_top_k))
+        embedding_model = self._embedding_client.model_name
+        embedding_dim = self._embedding_client.embedding_dim
+
+        with observability.stage("shortlist", corpus=corpus, n_users=len(users)) as sl:
+            stage1 = self._retriever.prepare(items)
+            n_with_emb = len(stage1.rows)
+            n_active = stage1.n_loaded
+
+            # Tiered urban-pull (v4 opportunities only): weight each job's stage-1 cosine by the user's
+            # location tier (local=1.0 > regional hub > national hub; off-chain=0) BEFORE the retrieve_top_k
+            # cutoff, so relevant local jobs survive the funnel instead of being drowned by the (much larger)
+            # national-hub supply. Off-chain jobs (tier 0) are skipped at retrieval entirely. Soft: an
+            # irrelevant local job still loses to a much-better hub job.
+            _hub_chains = None
+            _loc_w_reg = _loc_w_nat = 1.0
+            if apply_location_tier:
+                _hub_chains = self._artifacts_repository.load_hub_chains(
+                    LOCATION_HUB_CHAINS_PATH
+                )
+                _loc_w_reg, _loc_w_nat = (
+                    LOCATION_TIER_W_REGIONAL,
+                    LOCATION_TIER_W_NATIONAL,
+                )
+
+            if not stage1.rows:
+                empty_summary = {
+                    "stage1": "concat_gemini_cosine_mongo_job_vectors",
+                    "stage2": "cross_encoder_rerank",
+                    "gemini_user_embed_model": embedding_model,
+                    "embedding_dim": embedding_dim,
+                    "n_jobs_with_stage1_embedding": 0,
+                    "n_jobs_with_concat_gemini_embedding": 0,
+                    "n_jobs_active_loaded": n_active,
+                }
+                if mongo_timing:
+                    empty_summary["mongo_ranked_find_ms"] = mongo_timing.get(
+                        "mongo_ranked_find_ms"
+                    )
+                    empty_summary["jobs_retrieval_filter_applied"] = mongo_timing.get(
+                        "jobs_retrieval_filter_applied"
+                    )
+                return [
+                    {
+                        "user_id": str(u.get("user_id") or ""),
+                        "n_jobs_scored": 0,
+                        "n_jobs_active_loaded": n_active,
+                        "concat_gemini_ce_recommendations": [],
+                        "config_summary": empty_summary,
+                    }
+                    for u in users
+                ]
+
+            if user_unit_vectors is not None:
+                u_norm = np.asarray(user_unit_vectors, dtype=np.float64)
+                if (
+                    u_norm.ndim != 2
+                    or u_norm.shape[0] != len(users)
+                    or u_norm.shape[1] != embedding_dim
+                ):
+                    raise RuntimeError(
+                        f"user_unit_vectors shape {u_norm.shape} != ({len(users)}, {embedding_dim})"
+                    )
+            else:
+                u_norm = self.embed_users(users)
+
+            lang = default_language()
+            matcher = self._retrieval_matcher_provider()
+            reranker = self._cross_encoder_provider()
+
+            shortlists = self._retriever.shortlist(
+                users,
+                stage1,
+                u_norm,
+                matcher=matcher,
+                whitener=self._whitener_provider(),
+                retrieve_top_k=rt,
+                hub_chains=_hub_chains,
+                w_regional=_loc_w_reg,
+                w_national=_loc_w_nat,
+            )
+            observability.update_observation(
+                sl,
+                metadata={
+                    "n_candidates_with_embedding": n_with_emb,
+                    "n_candidates_loaded": n_active,
+                },
+            )
+
+        out_results: list[dict[str, Any]] = []
+        with observability.stage(
+            "rerank", corpus=corpus, n_users=len(users), model=reranker.model_name
+        ):
+            for user, cosine_recs in zip(users, shortlists):
+                labels = user_skill_labels_for_concat(user)
+                pairs = self._rerank.build_pairs(labels, cosine_recs, final_top_k=fk)
+                scores = reranker.predict_scores(pairs) if pairs else []
+                reranked = self._rerank.apply(cosine_recs, scores, final_top_k=fk)
+
+                recs: list[dict[str, Any]] = []
+                for row in reranked:
+                    recs.append(
+                        {
+                            "rank": int(row.get("rank") or 0),
+                            "rank_cosine": row.get("rank_cosine"),
+                            "job_uuid": str(row.get("job_uuid") or ""),
+                            "opportunity_title": str(row.get("job_title") or "") or "",
+                            "employer": row.get("employer"),
+                            "location": row.get("location"),
+                            "URL": row.get("url") or row.get("URL"),
+                            "concat_cosine_similarity": row.get(
+                                "concat_cosine_similarity"
+                            ),
+                            "cross_encoder_logit": row.get("cross_encoder_logit"),
+                            "cross_encoder_score": row.get("cross_encoder_score"),
+                        }
+                    )
+
+                uid = str(user.get("user_id") or "")
+                cfg = {
+                    "stage1": "concat_gemini_cosine_mongo_job_vectors",
+                    "stage2": "cross_encoder_rerank",
+                    "gemini_user_embed_model": embedding_model,
+                    "cross_encoder_model": reranker.model_name,
+                    "language": lang,
+                    "embedding_dim": embedding_dim,
+                    "retrieve_top_k": rt,
+                    "final_top_k": fk,
+                    "n_jobs_with_stage1_embedding": n_with_emb,
+                    # Legacy key — counts jobs with BSON ``vector_bin`` or ``job_embedding`` array (same dim).
+                    "n_jobs_with_concat_gemini_embedding": n_with_emb,
+                    "n_jobs_active_loaded": n_active,
+                }
+                if mongo_timing:
+                    cfg["mongo_ranked_find_ms"] = mongo_timing.get(
+                        "mongo_ranked_find_ms"
+                    )
+                    cfg["jobs_retrieval_filter_applied"] = mongo_timing.get(
+                        "jobs_retrieval_filter_applied"
+                    )
+
+                out_results.append(
+                    {
+                        "user_id": uid,
+                        "n_jobs_scored": n_with_emb,
+                        "n_jobs_active_loaded": n_active,
+                        "concat_gemini_ce_recommendations": recs,
+                        "config_summary": cfg,
+                    }
+                )
+
+        return out_results
 
     async def match(
         self, payload: list[MatchRequest], options: MatchOptions
@@ -312,9 +560,7 @@ class MatchingService(IMatchingService):
         if not occupations_enabled:
             occupations = []
 
-        u_norm = self._engine.embed_users(
-            users
-        )  # embed users ONCE, reuse for both corpora
+        u_norm = self.embed_users(users)  # embed users ONCE, reuse for both corpora
         pref_scorer = self._preference_scorer_provider()
         # Per-skill GATE matcher: whitened (default) or — via the kill-switch — the legacy raw matcher.
         matcher = self._gate_matcher_provider()
@@ -369,7 +615,7 @@ class MatchingService(IMatchingService):
                     str(u.get("user_id") or ""): u_white[i] for i, u in enumerate(users)
                 }
 
-        job_v3 = self._engine.run(
+        job_v3 = self.shortlist_and_rerank(
             users,
             jobs,
             retrieve_top_k=retrieve_top_k,
@@ -387,7 +633,7 @@ class MatchingService(IMatchingService):
         # safety net.
         occ_breadth = max(retrieve_top_k, final_top_k, MATCH_V4_TOP_K_OCCUPATIONS * 8)
         occ_v3 = (
-            self._engine.run(
+            self.shortlist_and_rerank(
                 users,
                 occupations,
                 retrieve_top_k=occ_breadth,
@@ -403,7 +649,9 @@ class MatchingService(IMatchingService):
 
         # Available occupation counties (Kilifi/Kitui/Mombasa/Nairobi). Safety net: if a user's province
         # matches none of them, fall back to a random available county so occupations still return.
-        occ_counties = occupation_counties(occupations)
+        occ_counties = sorted(
+            {str(o.get("province")) for o in occupations if o.get("province")}
+        )
 
         def _skill_detail(user, item):
             return skill_detail(
@@ -486,9 +734,21 @@ class MatchingService(IMatchingService):
                             occ_concat,
                             u_white_by_uid.get(uid),
                         )
-                    loc_user = self._occupation_selector.fallback_location(
-                        user, occ_counties
-                    )
+                    loc_user = None
+                    if occ_counties and not user_matches_any_county(user, occ_counties):
+                        fallback = random.choice(occ_counties)
+                        loc_user = {
+                            "city": fallback,
+                            "province": fallback,
+                            "location": fallback,
+                        }
+                        logger.warning(
+                            "User %r province=%r matches no occupation county %s; using random fallback county %r.",
+                            uid,
+                            user.get("province"),
+                            occ_counties,
+                            fallback,
+                        )
                     occ_recs = enriched_recommendations(
                         user,
                         occ_v3_by_uid.get(uid),
@@ -503,9 +763,15 @@ class MatchingService(IMatchingService):
                         coverage_gamma=cov_gamma,
                     )
                 with observability.stage("formatting", corpus="occupations"):
-                    for rec, item in self._occupation_selector.unique_by_code(
-                        occ_recs, occ_index, MATCH_V4_TOP_K_OCCUPATIONS
-                    ):
+                    seen_codes: set = set()
+                    for rec in occ_recs:
+                        item = occ_index.get(str(rec.get("job_uuid") or ""))
+                        if not item:
+                            continue
+                        code = str(item.get("originUuid") or item.get("uuid") or "")
+                        if not code or code in seen_codes:
+                            continue
+                        seen_codes.add(code)
                         per, ess_ids = occ_det.get(
                             str(rec.get("job_uuid") or "")
                         ) or _skill_detail(user, item)
@@ -520,6 +786,8 @@ class MatchingService(IMatchingService):
                                 min_ess_share=V4_FULL_MIN_ESS_SHARE,
                             )
                         )
+                        if len(occupations_out) >= MATCH_V4_TOP_K_OCCUPATIONS:
+                            break
 
             with observability.stage("skill_gaps"):
                 skill_gaps = skill_gaps_for(

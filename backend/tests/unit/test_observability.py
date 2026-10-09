@@ -439,9 +439,9 @@ def test_v4_engine_records_shortlist_and_rerank_per_corpus():
 
     import numpy as np
 
-    from app.artifacts.get_artifacts_repository import get_artifacts_repository
+    from app.artifacts.repository import get_artifacts_repository
     from app.clients.gemini_embedding_client import EMBEDDING_DIM
-    from app.matching.concat_ce_engine import ConcatCrossEncoderEngine
+    from app.matching.service import MatchingService
     from app.ranking.retrieval import Stage1Retriever
     from app.server_dependencies.model_dependencies import get_concat_whitener
 
@@ -458,12 +458,17 @@ def test_v4_engine_records_shortlist_and_rerank_per_corpus():
     rerank = MagicMock()
     rerank.build_pairs.return_value = []
     rerank.apply.side_effect = lambda recs, _scores, **_kw: list(recs)
-    engine = ConcatCrossEncoderEngine(
+    service = MatchingService(
+        jobs_repository=MagicMock(),
+        occupations_repository=MagicMock(),
         embedding_client=MagicMock(
             model_name="gemini-test", embedding_dim=EMBEDDING_DIM
         ),
         cross_encoder_provider=lambda: MagicMock(model_name="ce-test"),
-        matcher_provider=lambda: matcher,
+        retrieval_matcher_provider=lambda: matcher,
+        gate_matcher_provider=MagicMock,
+        skill_scorer_provider=MagicMock,
+        preference_scorer_provider=MagicMock,
         whitener_provider=get_concat_whitener,
         artifacts_repository=get_artifacts_repository(),
         retriever=Stage1Retriever(embedding_dim=EMBEDDING_DIM),
@@ -473,7 +478,7 @@ def test_v4_engine_records_shortlist_and_rerank_per_corpus():
     async def handler():
         for corpus in ("jobs", "occupations"):
             await asyncio.to_thread(
-                engine.run,
+                service.shortlist_and_rerank,
                 [user],
                 [job("a", 0), job("b", 1)],
                 retrieve_top_k=5,

@@ -17,18 +17,21 @@ from app.matching import service as svc
 from app.matching.service import MatchingService
 
 
-def _service(*, engine=None, occupations_repository=None) -> MatchingService:
+def _service(*, occupations_repository=None) -> MatchingService:
     """MatchingService with the ML stack and the repositories faked."""
     return MatchingService(
         jobs_repository=MagicMock(),
         occupations_repository=occupations_repository or MagicMock(),
         artifacts_repository=MagicMock(),
-        engine=engine or MagicMock(),
+        embedding_client=MagicMock(embedding_dim=4),
+        cross_encoder_provider=MagicMock,
+        retrieval_matcher_provider=MagicMock,
         gate_matcher_provider=MagicMock,
         whitener_provider=MagicMock,
         skill_scorer_provider=MagicMock,
         preference_scorer_provider=MagicMock,
-        embedding_dim=4,
+        retriever=MagicMock(),
+        rerank=MagicMock(),
     )
 
 
@@ -53,18 +56,17 @@ def occupation_rows():
 
 def _run(users, jobs, occupations, *, disabled: bool):
     """MatchingService.rank with the ML stack stubbed; returns (rows, retrieval_mock)."""
-    engine = MagicMock()
-    engine.embed_users.return_value = np.zeros((len(users), 4))
-    engine.run.return_value = []
+    service = _service()
+    retrieval = MagicMock(return_value=[])
     with (
         patch.object(svc, "MATCH_V4_DISABLE_OCCUPATIONS", disabled),
         patch.object(svc, "V4_FULL_RANK_DEMOTE", False),
         patch.object(svc, "skill_gaps_for", return_value=[]),
+        patch.object(service, "embed_users", return_value=np.zeros((len(users), 4))),
+        patch.object(service, "shortlist_and_rerank", retrieval),
     ):
-        rows = _service(engine=engine).rank(
-            users, jobs, occupations, retrieve_top_k=10, final_top_k=5
-        )
-    return rows, engine.run
+        rows = service.rank(users, jobs, occupations, retrieve_top_k=10, final_top_k=5)
+    return rows, retrieval
 
 
 class TestEngineKillSwitch:

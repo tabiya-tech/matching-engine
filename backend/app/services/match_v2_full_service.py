@@ -34,7 +34,7 @@ from app.services.hybrid_scoring.run_bm25_cosine_hybrid import (
     get_cosine_matcher_singleton,
     hybrid_match_users_with_jobs,
 )
-from app.ranking.location import (
+from app.ranking.retrieval import (
     job_matches_user_location as _job_matches_user_location,
     user_matches_any_county as _user_matches_any_county,
 )

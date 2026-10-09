@@ -11,15 +11,15 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.artifacts.repository import load_attribute_schema
-from app.ranking.coverage import (
+from app.artifacts.repository import get_artifacts_repository
+from app.ranking.scoring import (
     build_matched_skills,
     essential_coverage,
     is_eligible_from_skills,
     skill_match_level,
 )
-from app.ranking.demand import DemandScorer
-from app.ranking.preference.levels import level_label
+from app.ranking.scoring import DemandScorer
+from app.ranking.preference import level_label
 
 # Engine-agnostic demand scorer (reads item attributes["expected_demand"]); torch-free.
 _DEMAND_SCORER = DemandScorer()
@@ -148,7 +148,9 @@ def _salary_range(item: Dict[str, Any]) -> Optional[str]:
     earn = (item.get("attributes") or {}).get("earnings_per_month")
     if not earn:
         return None
-    lbl = level_label("earnings_per_month", earn, load_attribute_schema())
+    lbl = level_label(
+        "earnings_per_month", earn, get_artifacts_repository().load_attribute_schema()
+    )
     return lbl if lbl and lbl != "—" else None
 
 

@@ -4,7 +4,7 @@ import pytest
 
 from app.schemas import MatchResponse, OccupationRecommendation, OpportunityRecommendation
 from app.matching import formatting as fmt
-from app.ranking import coverage
+from app.ranking import scoring as coverage
 
 
 def _per_job_skill():

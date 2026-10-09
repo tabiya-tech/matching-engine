@@ -1,4 +1,4 @@
-"""Stage-2 cross-encoder rerank of a cosine shortlist (pure: the model call is the caller's)."""
+"""Stage-2 cross-encoder rerank of a cosine shortlist (pure: the model call is the caller's), and the skills-only query/passage text it scores."""
 
 from __future__ import annotations
 
@@ -6,10 +6,67 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any
 
-from app.ranking.text_pairs import (
-    build_job_passage_from_cosine_rec,
-    build_user_query_text,
-)
+# --------------------------------------------------------------------------------------------------
+# text_pairs
+#
+# Build query/passage strings for cross-encoder scoring (skills-only).
+# --------------------------------------------------------------------------------------------------
+
+
+def build_user_query_text(
+    resolved_skill_labels: Sequence[str],
+    *,
+    max_skills: int = 48,
+) -> str:
+    """Preferred skill labels only (same strings ``CosineSkillMatcher`` embedded for cosine).
+
+    Caller should pass ``resolved_user_skill_labels_ordered`` / equivalent preferred labels.
+    """
+
+    skills = [
+        str(s).strip()
+        for s in (resolved_skill_labels or [])[: max(0, int(max_skills))]
+        if s and str(s).strip()
+    ]
+    if not skills:
+        return ""
+    return "; ".join(skills)
+
+
+def build_job_passage_from_cosine_rec(
+    rec: dict[str, Any],
+    *,
+    max_skills: int = 64,
+) -> str:
+    """Job skill labels only, taken from cosine row ``per_job_skill`` (``job_skill_label``)."""
+
+    pj = rec.get("per_job_skill") or []
+    cap = max(0, int(max_skills))
+    seen: set[str] = set()
+    labels: list[str] = []
+    for row in pj:
+        if cap and len(labels) >= cap:
+            break
+        if not isinstance(row, dict):
+            continue
+        jl = str(row.get("job_skill_label") or "").strip()
+        if not jl:
+            continue
+        key = jl.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(jl)
+    if not labels:
+        return ""
+    return "; ".join(labels)
+
+
+# --------------------------------------------------------------------------------------------------
+# rerank
+#
+# Stage-2 cross-encoder rerank of a cosine shortlist (pure: the model call is the caller's).
+# --------------------------------------------------------------------------------------------------
 
 
 def _non_empty_skill_text(raw: str, *, side: str) -> str:

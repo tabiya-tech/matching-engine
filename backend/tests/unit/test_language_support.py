@@ -21,12 +21,12 @@ from app.languages import (
     get_language_config,
     normalise_language,
 )
-from app.artifacts.repository import read_csv_rows
-from app.ranking.skill_label_packs import SkillLabelPacks, oldest_uuid
+from app.artifacts.repository import get_artifacts_repository
+from app.ranking.skills import SkillLabelPacks, oldest_uuid
 
 
 def _read_rows(path):
-    return read_csv_rows(path, newline="")
+    return get_artifacts_repository().read_csv_rows(path, newline="")
 
 
 csv.field_size_limit(10_000_000)
@@ -330,12 +330,11 @@ class TestLanguageIsNotPerRequest:
         assert "language" not in inspect.signature(match).parameters
 
     def test_the_engine_takes_no_language_argument(self):
-        from app.matching.concat_ce_engine import ConcatCrossEncoderEngine
         from app.matching.service import MatchingService
         from app.services.match_v3_full_service import run_match_v3_full
 
         for fn in (
-            ConcatCrossEncoderEngine.run,
+            MatchingService.shortlist_and_rerank,
             run_match_v3_full,
             MatchingService.rank,
         ):

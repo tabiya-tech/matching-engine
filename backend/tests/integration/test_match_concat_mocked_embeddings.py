@@ -6,24 +6,29 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from app.artifacts.get_artifacts_repository import get_artifacts_repository
+from app.artifacts.repository import get_artifacts_repository
 from app.clients.gemini_embedding_client import EMBEDDING_DIM, MODEL_NAME
-from app.matching.concat_ce_engine import ConcatCrossEncoderEngine
+from app.matching.service import MatchingService
 from app.ranking.retrieval import Stage1Retriever
 from app.server_dependencies.model_dependencies import get_concat_whitener
 
 
-def _engine(matcher=None) -> ConcatCrossEncoderEngine:
+def _service(matcher=None) -> MatchingService:
     """Real stage-1 retrieval; mocked matcher, Gemini and cross-encoder; pass-through rerank."""
     rerank = MagicMock()
     rerank.build_pairs.return_value = []
     rerank.apply.side_effect = lambda recs, _scores, **_kw: list(recs)
-    return ConcatCrossEncoderEngine(
+    return MatchingService(
+        jobs_repository=MagicMock(),
+        occupations_repository=MagicMock(),
+        artifacts_repository=get_artifacts_repository(),
         embedding_client=MagicMock(model_name=MODEL_NAME, embedding_dim=EMBEDDING_DIM),
         cross_encoder_provider=MagicMock,
-        matcher_provider=lambda: matcher or MagicMock(),
+        retrieval_matcher_provider=lambda: matcher or MagicMock(),
+        gate_matcher_provider=MagicMock,
         whitener_provider=get_concat_whitener,
-        artifacts_repository=get_artifacts_repository(),
+        skill_scorer_provider=MagicMock,
+        preference_scorer_provider=MagicMock,
         retriever=Stage1Retriever(embedding_dim=EMBEDDING_DIM),
         rerank=rerank,
     )
@@ -56,7 +61,7 @@ class TestMatchConcatMockedEmbeddings:
             "per_job_skill": [],
         }
         # Pass-through rerank: preserve cosine order
-        engine = _engine(matcher)
+        service = _service(matcher)
         jobs = [_job("job-a", 0), _job("job-b", 1)]
         user = {
             "user_id": "u1",
@@ -70,7 +75,7 @@ class TestMatchConcatMockedEmbeddings:
             },
         }
         u_vecs = np.stack([np.asarray(_unit_vector(0), dtype=np.float64)], axis=0)
-        out = engine.run(
+        out = service.shortlist_and_rerank(
             [user],
             jobs,
             retrieve_top_k=5,
@@ -88,7 +93,7 @@ class TestMatchConcatMockedEmbeddings:
             "mean_best_cosine": 0.5,
             "per_job_skill": [],
         }
-        engine = _engine(matcher)
+        service = _service(matcher)
         jobs = [
             {
                 **_job("job-ps", 0),
@@ -104,7 +109,7 @@ class TestMatchConcatMockedEmbeddings:
         }
         # User aligned with job-ps vector — would rank first without gate
         u_vecs = np.stack([np.asarray(_unit_vector(0), dtype=np.float64)], axis=0)
-        out = engine.run(
+        out = service.shortlist_and_rerank(
             [user],
             jobs,
             retrieve_top_k=5,
@@ -118,6 +123,8 @@ class TestMatchConcatMockedEmbeddings:
     def test_no_embeddings_returns_empty_recommendations(self):
         user = {"user_id": "u1", "skills_vector": {"top_skills": []}}
         jobs = [{"uuid": "j1", "opportunity_title": "No embed"}]
-        out = _engine().run([user], jobs, retrieve_top_k=5, final_top_k=5)
+        out = _service().shortlist_and_rerank(
+            [user], jobs, retrieve_top_k=5, final_top_k=5
+        )
         assert out[0]["concat_gemini_ce_recommendations"] == []
         assert out[0]["n_jobs_scored"] == 0

@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from app.ranking.preference.work_activities import compute_dce_utility
+from app.ranking.preference import compute_dce_utility
 
 # Inline schema: levels ordered reference(0) -> target(1).
 SCHEMA = {

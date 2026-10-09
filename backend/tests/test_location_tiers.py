@@ -6,8 +6,8 @@ with a fake that mirrors that function's lenient casefold-substring + always-rem
 
 import pytest
 
-from app.ranking import location as location_tiers
-from app.ranking.location import HubChains
+from app.ranking import retrieval as location_tiers
+from app.ranking.retrieval import HubChains
 
 
 def _fake_matches(job, user):

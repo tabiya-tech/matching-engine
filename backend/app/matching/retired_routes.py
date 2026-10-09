@@ -31,7 +31,7 @@ from app.matching.examples import (
 from app.matching.get_matching_service import get_matching_service
 from app.matching.service import IMatchingService, _retrieval_trace_meta
 from app.occupations.get_occupations_repository import get_occupations_repository
-from app.ranking.education import zqf_annotation
+from app.ranking.retrieval import zqf_annotation
 from app.schemas import (
     MatchRequest,
     MatchRequestV5,
@@ -366,6 +366,7 @@ async def match_v3(
         le=50,
         description="Number of skill-gap recommendations. Default: MATCH_TOP_K_SKILL_GAPS.",
     ),
+    matching_service: IMatchingService = Depends(get_matching_service),
 ):
     """Gemini concat-cosine → CE rerank, returned in the full ``MatchResponse`` shape.
 
@@ -429,6 +430,7 @@ async def match_v3(
             skill_gap_top_k=skill_gap_top_k
             if skill_gap_top_k is not None
             else MATCH_TOP_K_SKILL_GAPS,
+            matching_service=matching_service,
         )
         score_ms = _ms(t_score)
 

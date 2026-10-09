@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 import pytest
 
-from app.jobs.documents import build_job_dict_from_ranked
+from app.jobs.repository import build_job_dict_from_ranked
 from app.clients.gemini_embedding_client import EMBEDDING_DIM
 
 

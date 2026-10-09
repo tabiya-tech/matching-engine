@@ -91,12 +91,15 @@ def test_client(jobs_repository):
         jobs_repository=jobs_repository,
         occupations_repository=_fake_occupations_repository(),
         artifacts_repository=MagicMock(),
-        engine=MagicMock(),
+        embedding_client=MagicMock(embedding_dim=4),
+        cross_encoder_provider=MagicMock,
+        retrieval_matcher_provider=MagicMock,
         gate_matcher_provider=MagicMock,
         whitener_provider=MagicMock,
         skill_scorer_provider=MagicMock,
         preference_scorer_provider=MagicMock,
-        embedding_dim=4,
+        retriever=MagicMock(),
+        rerank=MagicMock(),
     )
     app.dependency_overrides[get_matching_service] = lambda: matching_service
     app.dependency_overrides[get_jobs_service] = lambda: JobsService(

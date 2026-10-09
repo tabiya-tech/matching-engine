@@ -6,7 +6,7 @@ Columns:
    ``run_cosine_matching`` semantics: essential ∪ optional, row-wise max cosine per
    job skill, mean (no rescaling hook in cosine module; embeddings as loaded).
 
-2. **Legacy utility** — :class:`app.ranking.skill_scorer.SkillScorer` /
+2. **Legacy utility** — :class:`app.ranking.skills.SkillScorer` /
    ``compute_U_complete``: location, groups, weighted ess/opt/grp blend, rescaling when
    the scorer hydrates targets from artefact metadata, gap penalty, etc.
 
@@ -36,14 +36,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from app.config import EMBEDDING_MODEL_PATH, SKILLS_CSV_PATH, SKILL_TO_ROW_PATH
-from app.ranking.skill_scorer import SkillScorer
+from app.ranking.skills import SkillScorer
 from app.server_dependencies.model_dependencies import (
     build_skill_matcher,
     build_skill_scorer,
 )
 
 from .run_cosine_matching import load_jobs, _load_users
-from app.ranking.skill_matcher import CosineSkillMatcher
+from app.ranking.skills import CosineSkillMatcher
 
 
 def _attach_global_ranks(

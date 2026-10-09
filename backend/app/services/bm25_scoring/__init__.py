@@ -4,7 +4,7 @@
   with :class:`rank_bm25.BM25Okapi` over skill phrases ± full job text (:mod:`text_builders`).
   There is **no alternate BM25 engine** here.
 - **Hybrid (BM25 + cosine + pool fusion):** ``app.services.hybrid_scoring`` imports this package for
-  corpora/indexes only; cosine scores come from :mod:`app.ranking.skill_matcher`.
+  corpora/indexes only; cosine scores come from :mod:`app.ranking.skills`.
 
 ``legacy_word_tokens`` is archived v1 word tokenisation — not wired into the active path.
 

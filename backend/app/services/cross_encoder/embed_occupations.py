@@ -32,13 +32,13 @@ import numpy as np
 from dotenv import load_dotenv
 
 from app.config import OCCUPATION_JSON_PATH, OCCUPATION_CONCAT_EMBEDDINGS_PATH
-from app.ranking.concat_embedding_text import build_concat_embedding_text
+from app.ranking.retrieval import build_concat_embedding_text
 from app.clients.gemini_embedding_client import (
     EMBEDDING_DIM,
     MODEL_NAME,
     embed_text_list,
 )
-from app.ranking.vectors import l2_normalize_rows
+from app.ranking.retrieval import l2_normalize_rows
 
 
 def _occupation_skill_labels(entry: Dict[str, Any]) -> List[str]:

@@ -41,7 +41,7 @@ from app.clients.gemini_embedding_client import (
     TASK_TYPE,
     embed_text_list,
 )
-from app.ranking.vectors import l2_normalize_rows
+from app.ranking.retrieval import l2_normalize_rows
 
 
 def _backend_root() -> Path:

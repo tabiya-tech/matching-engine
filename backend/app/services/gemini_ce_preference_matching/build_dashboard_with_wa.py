@@ -24,7 +24,7 @@ from .build_dashboard import (
     _b64_utf8,
     _compact_row,
 )
-from app.ranking.enrichment import work_activity_match_for_dashboard
+from app.ranking.scoring import work_activity_match_for_dashboard
 
 SCRIPT_NAME_WA = "app.services.gemini_ce_preference_matching.build_dashboard_with_wa"
 BRAND_WA = f"{BRAND} — with work activities comparison"

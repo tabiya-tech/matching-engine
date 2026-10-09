@@ -425,7 +425,7 @@ class MatchResponse(BaseModel):
 
 class JobListItem(BaseModel):
     """A single browsable job, built from the same source/shape as matched-job
-    opportunities (see app.jobs.documents.build_job_dict_from_ranked) minus the per-user
+    opportunities (see app.jobs.repository.build_job_dict_from_ranked) minus the per-user
     scoring/matching fields, which only exist after a /match request."""
 
     uuid: str
