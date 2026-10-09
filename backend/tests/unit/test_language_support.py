@@ -21,7 +21,13 @@ from app.languages import (
     get_language_config,
     normalise_language,
 )
-from app.services.skill_label_packs import SkillLabelPacks, oldest_uuid
+from app.artifacts.repository import get_artifacts_repository
+from app.ranking.skills import SkillLabelPacks, oldest_uuid
+
+
+def _read_rows(path):
+    return get_artifacts_repository().read_csv_rows(path, newline="")
+
 
 csv.field_size_limit(10_000_000)
 
@@ -192,7 +198,9 @@ class TestCrossLanguageResolution:
         # Only the sampled English ids are "in the embedding artefact"; that is enough to
         # prove the join and keeps this test fast.
         embedding_ids = {str(r["ID"]) for r in sample_rows}
-        return SkillLabelPacks(embedding_ids, languages=("en", "es"))
+        return SkillLabelPacks(
+            embedding_ids, read_rows=_read_rows, languages=("en", "es")
+        )
 
     def test_both_packs_load(self, packs):
         assert packs.loaded_languages == ["en", "es"]
@@ -282,7 +290,9 @@ class TestPinnedPackOffTheIdSpace:
             "SKILLS_CSV_PATH",
             config.taxonomy_pack_paths("es", ignore_pins=True)["skills"],
         )
-        packs = SkillLabelPacks(embedding_ids, languages=("en", "es"))
+        packs = SkillLabelPacks(
+            embedding_ids, read_rows=_read_rows, languages=("en", "es")
+        )
         assert packs._skills_paths["en"].parent.name == "en"
         assert packs._skills_paths["es"].parent.name == "es"
         # The proof it recovered: labels resolve, in both languages, onto the canonical ids.
@@ -295,7 +305,9 @@ class TestPinnedPackOffTheIdSpace:
         # Scripts pinning the canonical pack itself must be unaffected by the recovery path.
         pinned = config.taxonomy_pack_paths("en", ignore_pins=True)["skills"]
         monkeypatch.setenv("SKILLS_CSV_PATH", pinned)
-        packs = SkillLabelPacks(embedding_ids, languages=("en", "es"))
+        packs = SkillLabelPacks(
+            embedding_ids, read_rows=_read_rows, languages=("en", "es")
+        )
         assert [str(p) for p in packs._skills_paths.values()] == [pinned, pinned]
 
 
@@ -379,9 +391,7 @@ class TestCrossEncoderPerLanguage:
         (parent / "ms-marco-MiniLM-L-6-v2" / "config.json").write_text("{}")
 
         assert not CrossEncoderClient._is_checkpoint_dir(parent)
-        assert CrossEncoderClient._is_checkpoint_dir(
-            parent / "ms-marco-MiniLM-L-6-v2"
-        )
+        assert CrossEncoderClient._is_checkpoint_dir(parent / "ms-marco-MiniLM-L-6-v2")
 
     def test_a_custom_org_checkpoint_is_looked_up_by_repo_name(self, monkeypatch):
         from app import languages

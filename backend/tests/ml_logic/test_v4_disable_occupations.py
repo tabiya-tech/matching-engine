@@ -47,9 +47,9 @@ def _run(users, jobs, occupations, *, disabled: bool):
             svc, "embed_user_unit_vectors", return_value=np.zeros((len(users), 4))
         ),
         patch.object(svc, "get_preference_scorer", return_value=MagicMock()),
-        patch.object(svc, "_get_v4_matcher", return_value=MagicMock()),
-        patch.object(svc, "_get_matcher", return_value=MagicMock()),
-        patch.object(svc, "_skill_gaps_for", return_value=[]),
+        patch.object(svc, "get_v4_skill_matcher", return_value=MagicMock()),
+        patch.object(svc, "get_skill_matcher", return_value=MagicMock()),
+        patch.object(svc, "skill_gaps_for", return_value=[]),
     ):
         rows = svc.run_match_v4_full(
             users, jobs, occupations, retrieve_top_k=10, final_top_k=5
