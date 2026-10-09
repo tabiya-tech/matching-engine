@@ -322,18 +322,22 @@ class TestLanguageIsNotPerRequest:
         assert not hasattr(MatchRequest(language="es"), "language")
 
     def test_match_takes_no_language_query_param(self):
-        from app.routes import match
+        from app.main import app
 
+        (match,) = [
+            r.endpoint for r in app.routes if getattr(r, "path", None) == "/match"
+        ]
         assert "language" not in inspect.signature(match).parameters
 
     def test_the_engine_takes_no_language_argument(self):
-        from app.services.match_concat_gemini_ce_service import (
-            run_match_concat_gemini_ce,
-        )
+        from app.matching.service import MatchingService
         from app.services.match_v3_full_service import run_match_v3_full
-        from app.services.match_v4_full_service import run_match_v4_full
 
-        for fn in (run_match_concat_gemini_ce, run_match_v3_full, run_match_v4_full):
+        for fn in (
+            MatchingService.shortlist_and_rerank,
+            run_match_v3_full,
+            MatchingService.rank,
+        ):
             assert "language" not in inspect.signature(fn).parameters, fn.__name__
 
 
