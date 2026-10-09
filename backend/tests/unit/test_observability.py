@@ -98,7 +98,7 @@ class _FakeEmbedModels:
 
 
 def _embed(texts, *, models, monkeypatch, dim=4):
-    from app.services.cross_encoder import gemini_embeddings
+    from app.clients import gemini_embedding_client as gemini_embeddings
 
     monkeypatch.setattr(
         "google.genai.Client", lambda **_: SimpleNamespace(models=models)
