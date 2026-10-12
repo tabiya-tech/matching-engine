@@ -26,12 +26,13 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import List
 
 import numpy as np
 from dotenv import load_dotenv
 
 from app.config import OCCUPATION_JSON_PATH, OCCUPATION_CONCAT_EMBEDDINGS_PATH
+from app.occupations.occupation_file import OCCUPATION_FILE, OccupationFileEntry
 from app.ranking.retrieval import build_concat_embedding_text
 from app.clients.gemini_embedding_client import (
     EMBEDDING_DIM,
@@ -41,34 +42,30 @@ from app.clients.gemini_embedding_client import (
 from app.ranking.retrieval import l2_normalize_rows
 
 
-def _occupation_skill_labels(entry: Dict[str, Any]) -> List[str]:
+def _occupation_skill_labels(entry: OccupationFileEntry) -> List[str]:
     """Essential ∪ optional skill labels for one occupation entry (from the JSON)."""
-    skills = entry.get("skills", {}) or {}
+    skills = entry.skills
     out: List[str] = []
-    for grp in ("essential", "optional"):
-        block = skills.get(grp) or {}
-        labels = block.get("labels") if isinstance(block, dict) else None
-        if isinstance(labels, list):
-            out.extend(str(lab) for lab in labels if lab)
+    if skills is None:
+        return out
+    for block in (skills.essential, skills.optional):
+        if block is not None:
+            out.extend(lab for lab in block.labels if lab)
     return out
 
 
 def build_occupation_texts(occupations_path: Path) -> tuple[List[str], List[str]]:
-    """Return (codes, concat_texts) — one per unique occupation code."""
-    raw = json.loads(occupations_path.read_text(encoding="utf-8"))
-    if not isinstance(raw, list):
-        raise ValueError(
-            f"{occupations_path}: expected a JSON list of occupation entries"
-        )
+    """Return (codes, concat_texts) — one per unique occupation code.
+
+    :raises pydantic.ValidationError: If the file is not a valid occupation file
+    """
+    entries = OCCUPATION_FILE.validate_json(occupations_path.read_bytes())
 
     codes: List[str] = []
     texts: List[str] = []
     seen: set[str] = set()
-    for entry in raw:
-        if not isinstance(entry, dict):
-            continue
-        occ = entry.get("occupation", {}) or {}
-        code = str(occ.get("code") or "").strip()
+    for entry in entries:
+        code = (entry.occupation.code or "").strip()
         if not code or code in seen:
             continue
         seen.add(code)

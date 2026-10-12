@@ -14,17 +14,23 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
-from typing import Any, Dict, List
 
-from .build_dashboard import (
+from pydantic import BaseModel, Field
+
+from tools.gemini_ce_preference_matching.build_dashboard import (
     BRAND,
     _HTML_STYLE,
+    DashboardMeta,
     _b64_utf8,
-    _compact_row,
+    dashboard_meta,
 )
-from app.ranking.scoring import work_activity_match_for_dashboard
+from tools.gemini_ce_preference_matching.run_matching import (
+    CeRow,
+    PreferenceRow,
+    PreferenceRunResult,
+    UserBwsSummary,
+)
 
 SCRIPT_NAME_WA = "app.services.gemini_ce_preference_matching.build_dashboard_with_wa"
 BRAND_WA = f"{BRAND} — with work activities comparison"
@@ -38,73 +44,74 @@ _EXTRA_STYLE = """
 """
 
 
-def build_triple_payload(results: Dict[str, Any], *, top_k: int) -> Dict[str, Any]:
-    cfg = results.get("config") or {}
-    users_out: List[Dict[str, Any]] = []
-    for r in results.get("results") or []:
-        if not isinstance(r, dict):
-            continue
-        uid = str(r.get("user_id") or "").strip()
-        user_skills = list(
-            r.get("user_concat_skills") or r.get("resolved_user_skill_labels") or []
+class TripleRow(PreferenceRow):
+    """A preference row with the work-activity totals the three-column page shows."""
+
+    n_work_activities: int = Field(description="Activities scored.")
+    wa_score_sum: float | None = Field(
+        description="Task utility; None when not scored."
+    )
+
+    @classmethod
+    def from_row(cls, row: PreferenceRow) -> TripleRow:
+        """Add the work-activity totals to a preference row."""
+        return cls(
+            **dict(row),
+            n_work_activities=row.wa_match.n_work_activities,
+            wa_score_sum=row.wa_match.S_wa,
         )
-        ce_rows = [
-            _compact_row(row, include_uxp=False)
-            for row in (r.get("cross_encoder_recommendations") or [])[:top_k]
-            if isinstance(row, dict)
-        ]
-        attrs_rows = [
-            _compact_row_wa(row)
-            for row in (
-                r.get("recommendations_attrs_only") or r.get("recommendations") or []
-            )[:top_k]
-            if isinstance(row, dict)
-        ]
-        full_rows = [
-            _compact_row_wa(row)
-            for row in (r.get("recommendations") or [])[:top_k]
-            if isinstance(row, dict)
-        ]
-        users_out.append(
-            {
-                "uid": uid,
-                "city": r.get("city"),
-                "prov": r.get("province"),
-                "user_skills": user_skills,
-                "has_skills": bool(r.get("has_user_skills", len(user_skills) > 0)),
-                "user_bws": r.get("user_bws") or {"has_bws": False, "rows": []},
-                "ce_final": ce_rows,
-                "attrs_only": attrs_rows,
-                "with_wa": full_rows,
-            }
-        )
-    return {
-        "meta": {
-            "brand": BRAND_WA,
-            "n_users": len(users_out),
-            "n_jobs": results.get("n_jobs"),
-            "rows_per_column": top_k,
-            "final_formula": cfg.get("final_formula") or "u_hat * p_hat",
-            "preference_scorer_mode": cfg.get("preference_scorer_mode"),
-            "preference_module": cfg.get("preference_module"),
-            "stage3_variants": cfg.get("stage3_variants")
-            or ["attrs_only", "attrs_plus_work_activities"],
-            "cross_encoder_model": cfg.get("cross_encoder_model"),
-        },
-        "topN_default": top_k,
-        "users": users_out,
-    }
 
 
-def _compact_row_wa(raw: Dict[str, Any]) -> Dict[str, Any]:
-    row = _compact_row(raw, include_uxp=True)
-    row["S_attrs"] = raw.get("S_attrs")
-    row["S_wa"] = raw.get("S_wa")
-    wa_block = work_activity_match_for_dashboard(raw.get("preference_details"))
-    row["wa_match"] = wa_block
-    row["n_work_activities"] = wa_block.get("n_work_activities")
-    row["wa_score_sum"] = wa_block.get("S_wa")
-    return row
+class TripleUser(BaseModel):
+    """One user of the three-column dashboard."""
+
+    uid: str = Field(description="User id.")
+    city: str = Field(description="City.")
+    prov: str = Field(description="Province.")
+    user_skills: list[str] = Field(description="Concat skill labels.")
+    has_skills: bool = Field(description="The user has skill labels.")
+    user_bws: UserBwsSummary = Field(description="BWS summary.")
+    ce_final: list[CeRow] = Field(description="Column 1: CE order.")
+    attrs_only: list[TripleRow] = Field(description="Column 2: attributes only.")
+    with_wa: list[TripleRow] = Field(
+        description="Column 3: attributes + work activities."
+    )
+
+
+class TriplePayload(BaseModel):
+    """The JSON embedded in the three-column dashboard."""
+
+    meta: DashboardMeta = Field(description="Header facts.")
+    topN_default: int = Field(description="Default rows per column.")
+    users: list[TripleUser] = Field(description="Users.")
+
+
+def build_triple_payload(results: PreferenceRunResult, *, top_k: int) -> TriplePayload:
+    """The three-column dashboard payload."""
+    users_out = [
+        TripleUser(
+            uid=(r.user_id or "").strip(),
+            city=r.city,
+            prov=r.province,
+            user_skills=r.user_concat_skills,
+            has_skills=r.has_user_skills,
+            user_bws=r.user_bws,
+            ce_final=r.cross_encoder_recommendations[:top_k],
+            attrs_only=[
+                TripleRow.from_row(row)
+                for row in (r.recommendations_attrs_only or r.recommendations)[:top_k]
+            ],
+            with_wa=[TripleRow.from_row(row) for row in r.recommendations[:top_k]],
+        )
+        for r in results.results
+    ]
+    return TriplePayload(
+        meta=dashboard_meta(
+            results, brand=BRAND_WA, n_users=len(users_out), top_k=top_k
+        ),
+        topN_default=top_k,
+        users=users_out,
+    )
 
 
 def _triple_js(b64: str) -> str:
@@ -302,7 +309,8 @@ def render_triple_page(b64: str) -> str:
 """
 
 
-def build_html(payload: Dict[str, Any], *, top_k: int = 50) -> str:
+def build_html(payload: PreferenceRunResult, *, top_k: int = 50) -> str:
+    """The dashboard HTML for a run."""
     triple = build_triple_payload(payload, top_k=top_k)
     return render_triple_page(_b64_utf8(triple))
 
@@ -316,9 +324,8 @@ def main() -> int:
     p.add_argument("--top-k", type=int, default=None)
     args = p.parse_args()
 
-    payload = json.loads(args.input.read_text(encoding="utf-8"))
-    cfg = payload.get("config") or {}
-    top_k = args.top_k if args.top_k is not None else int(cfg.get("final_top_k") or 50)
+    payload = PreferenceRunResult.model_validate_json(args.input.read_bytes())
+    top_k = args.top_k if args.top_k is not None else payload.config.final_top_k or 50
     top_k = max(1, min(500, top_k))
 
     html = build_html(payload, top_k=top_k)

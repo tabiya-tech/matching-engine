@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import Any, Dict, List
+from collections.abc import Sequence
 
 from app import observability
 from app.config import (
@@ -29,14 +29,25 @@ from app.config import (
     V4_FULL_MIN_ESS_SHARE,
     V4_FULL_SIM_THRESHOLD,
 )
+from app.domain.job import Job
+from app.domain.occupation import Occupation
+from app.domain.user import UserProfile
 from app.matching import formatting as fmt
 from app.matching.service import IMatchingService
 from app.ranking.retrieval import (
-    job_matches_user_location as _job_matches_user_location,
-    user_matches_any_county as _user_matches_any_county,
+    Place,
+    job_matches_user_location,
+    user_matches_any_county,
 )
+from app.ranking.scoring import skill_detail
 from app.ranking.skill_gaps import skill_gaps_for
-from app.ranking.retrieval import index_by_uuid as _index_by_uuid
+from app.ranking.types import Candidate, UserShortlist
+from app.schemas import (
+    MatchResponse,
+    OccupationRecommendation,
+    OpportunityRecommendation,
+    SkillGapRecommendation,
+)
 from app.server_dependencies.model_dependencies import (
     get_skill_matcher,
     get_skill_scorer,
@@ -48,8 +59,8 @@ logger = logging.getLogger(__name__)
 
 
 def _skill_gaps_for(
-    user: Dict[str, Any], jobs: List[Dict[str, Any]], top_k: int
-) -> List[Dict[str, Any]]:
+    user: UserProfile, jobs: Sequence[Job], top_k: int
+) -> list[SkillGapRecommendation]:
     """The /match skill-gap analysis (engine-agnostic)."""
     return skill_gaps_for(
         user,
@@ -60,71 +71,34 @@ def _skill_gaps_for(
     )
 
 
-def _skill_detail(matcher, user: Dict[str, Any], item: Dict[str, Any]):
-    """(per_job_skill, matcher-resolved essential id set) — same contract as the v4 path."""
-    try:
-        per = matcher.score_pair(user, item).get("per_job_skill", []) or []
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning("score_pair failed for %s: %s", item.get("uuid"), e)
-        per = []
-    ess_ids = set()
-    for s in item.get("essential_skills") or []:
-        lab = s.get("label")
-        rid = matcher._resolve_label(lab) if lab else None
-        if rid:
-            ess_ids.add(rid)
-    return per, ess_ids
+def _by_cosine(slate: UserShortlist | None) -> list[Candidate]:
+    """The slate ordered by concat cosine (the chosen v3 score), best first.
 
-
-def _cosine(ce_row: Dict[str, Any]) -> float:
-    try:
-        v = ce_row.get("concat_cosine_similarity")
-        return float(v) if v is not None else 0.0
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _v3_rec(ce_row: Dict[str, Any]) -> Dict[str, Any]:
-    """Map one CE recommendation row to the generic ``rec`` the v4 formatters consume.
-
-    ``final_score`` is the concat cosine (now whitened — stage-1 ranks in the whitened concat space
-    when the artifact is present); v4-only signals are left empty so the formatter emits null
-    ``u_hat``/``p_hat`` and no preferences (the v3 engine produces none).
+    ``final_score`` is the concat cosine (whitened — stage-1 ranks in the whitened concat space
+    when the artifact is present).
     """
-    return {
-        "final_score": _cosine(ce_row),
-        "u_hat": None,
-        "p_hat": None,
-        "preference_details": [],
-        "score_breakdown": {},
-    }
-
-
-def _ce_rows_by_uid(
-    v3_results: List[Dict[str, Any]],
-) -> Dict[str, List[Dict[str, Any]]]:
-    out: Dict[str, List[Dict[str, Any]]] = {}
-    for r in v3_results or []:
-        out[str(r.get("user_id") or "")] = (
-            r.get("concat_gemini_ce_recommendations") or []
-        )
-    return out
+    if slate is None:
+        return []
+    return sorted(
+        slate.candidates, key=lambda c: c.concat_cosine_similarity, reverse=True
+    )
 
 
 def run_match_v3_full(
-    users: List[Dict[str, Any]],
-    jobs: List[Dict[str, Any]],
-    occupations: List[Dict[str, Any]],
+    users: Sequence[UserProfile],
+    jobs: Sequence[Job],
+    occupations: Sequence[Occupation],
     *,
     retrieve_top_k: int,
     final_top_k: int,
     skill_gap_top_k: int = MATCH_TOP_K_SKILL_GAPS,
     matching_service: IMatchingService,
-) -> List[Dict[str, Any]]:
-    """Return one ``MatchResponse``-shaped dict per user using the v3 matching logic.
+) -> list[MatchResponse]:
+    """One ``MatchResponse`` per user using the v3 matching logic.
 
     The deployment's ``TARGET_LANGUAGE`` selects the cross-encoder checkpoint (see
     ``MatchingService.shortlist_and_rerank``); skill resolution itself is language-neutral.
+    ``u_hat``/``p_hat``/preferences are empty (the v3 engine computes none).
     """
     if not users:
         return []
@@ -133,8 +107,6 @@ def run_match_v3_full(
         users
     )  # embed users ONCE, reuse for both corpora
     matcher = get_skill_matcher()
-    job_index = _index_by_uuid(jobs)
-    occ_index = _index_by_uuid(occupations)
 
     # Opportunities — v3 engine over the active job corpus (engine + education gate unchanged).
     job_v3 = (
@@ -164,35 +136,30 @@ def run_match_v3_full(
         else []
     )
 
-    job_by_uid = _ce_rows_by_uid(job_v3)
-    occ_by_uid = _ce_rows_by_uid(occ_v3)
-    occ_counties = sorted(
-        {str(o.get("province")) for o in occupations if o.get("province")}
-    )
+    job_by_uid = {r.user_id: r for r in job_v3}
+    occ_by_uid = {r.user_id: r for r in occ_v3}
+    occ_counties = sorted({o.province for o in occupations if o.province})
 
-    out: List[Dict[str, Any]] = []
+    out: list[MatchResponse] = []
     for user in users:
-        uid = str(user.get("user_id") or "")
+        uid = user.user_id or ""
+        where = Place.of_user(user)
 
-        # Opportunities ranked by concat cosine (whitened space when the artifact is present; the
-        # chosen v3 score). _cosine reads concat_cosine_similarity from the stage-1 retrieval.
         with observability.stage("formatting", corpus="jobs"):
-            opp_sorted = sorted(job_by_uid.get(uid, []), key=_cosine, reverse=True)
-            opportunities: List[Dict[str, Any]] = []
-            for ce_row in opp_sorted:
-                item = job_index.get(str(ce_row.get("job_uuid") or ""))
-                if not item:
+            opportunities: list[OpportunityRecommendation] = []
+            for c in _by_cosine(job_by_uid.get(uid)):
+                job = c.item
+                if not isinstance(job, Job):
                     continue
-                if not _job_matches_user_location(item, user):
+                if not job_matches_user_location(Place.of_item(job), where):
                     continue  # strict same-location: urban-pull pool broadening is v4-only
-                per, ess_ids = _skill_detail(matcher, user, item)
                 opportunities.append(
                     fmt.build_opportunity_row(
-                        _v3_rec(ce_row),
-                        item,
-                        per,
-                        ess_ids,
+                        job,
+                        skill_detail(matcher, user, job, whitened_gate=False),
                         rank=len(opportunities) + 1,
+                        final_score=c.concat_cosine_similarity,
+                        scored=None,
                         sim_threshold=V4_FULL_SIM_THRESHOLD,
                         min_ess_share=V4_FULL_MIN_ESS_SHARE,
                     )
@@ -201,43 +168,36 @@ def run_match_v3_full(
         # Occupation county scoping (mirrors /match_v4): keep the user's own county row per code;
         # random fallback county if the user's province matches none.
         with observability.stage("formatting", corpus="occupations"):
-            loc_user = None
-            if occ_counties and not _user_matches_any_county(user, occ_counties):
+            loc = where
+            if occ_counties and not user_matches_any_county(user, occ_counties):
                 fallback = random.choice(occ_counties)
-                loc_user = {
-                    "city": fallback,
-                    "province": fallback,
-                    "location": fallback,
-                }
+                loc = Place.region(fallback)
                 logger.warning(
                     "User %r matches no occupation county %s; using random fallback county %r.",
                     uid,
                     occ_counties,
                     fallback,
                 )
-            loc = loc_user or user
 
-            occ_sorted = sorted(occ_by_uid.get(uid, []), key=_cosine, reverse=True)
-            occupations_out: List[Dict[str, Any]] = []
-            seen_codes: set = set()
-            for ce_row in occ_sorted:
-                item = occ_index.get(str(ce_row.get("job_uuid") or ""))
-                if not item:
+            occupations_out: list[OccupationRecommendation] = []
+            seen_codes: set[str] = set()
+            for c in _by_cosine(occ_by_uid.get(uid)):
+                occ = c.item
+                if not isinstance(occ, Occupation):
                     continue
-                if not _job_matches_user_location(item, loc):
+                if not job_matches_user_location(Place.of_item(occ), loc):
                     continue
-                code = str(item.get("originUuid") or item.get("uuid") or "")
+                code = occ.originUuid or occ.uuid
                 if not code or code in seen_codes:
                     continue
                 seen_codes.add(code)
-                per, ess_ids = _skill_detail(matcher, user, item)
                 occupations_out.append(
                     fmt.build_occupation_row(
-                        _v3_rec(ce_row),
-                        item,
-                        per,
-                        ess_ids,
+                        occ,
+                        skill_detail(matcher, user, occ, whitened_gate=False),
                         rank=len(occupations_out) + 1,
+                        final_score=c.concat_cosine_similarity,
+                        scored=None,
                         sim_threshold=V4_FULL_SIM_THRESHOLD,
                         min_ess_share=V4_FULL_MIN_ESS_SHARE,
                     )
@@ -249,12 +209,12 @@ def run_match_v3_full(
             skill_gaps = _skill_gaps_for(user, jobs, skill_gap_top_k)
 
         out.append(
-            {
-                "user_id": uid,
-                "occupation_recommendations": occupations_out,
-                "opportunity_recommendations": opportunities,
-                "skill_gap_recommendations": skill_gaps,
-            }
+            MatchResponse(
+                user_id=uid,
+                occupation_recommendations=occupations_out,
+                opportunity_recommendations=opportunities,
+                skill_gap_recommendations=skill_gaps,
+            )
         )
 
     return out
