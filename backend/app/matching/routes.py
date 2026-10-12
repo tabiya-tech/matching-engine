@@ -1,16 +1,20 @@
 """Route for matching users: ``POST /match``."""
 
 import logging
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.config import (
-    DEBUG_MODE,
     MATCH_TOP_K_SKILL_GAPS,
     MATCH_V2_MAX_USERS_PER_REQUEST,
     MATCH_V4_FINAL_TOP_K,
     MATCH_V4_RETRIEVE_TOP_K,
+)
+from app.constants.errors import (
+    FORBIDDEN_RESPONSE_DOC,
+    INTERNAL_ERROR_RESPONSE_DOC,
+    error_response_doc,
 )
 from app.matching.errors import InvalidMatchRequestError
 from app.matching.examples import MATCH_BODY_DESCRIPTION, MATCH_BODY_EXAMPLE
@@ -20,13 +24,6 @@ from app.matching.types import MatchOptions
 from app.schemas import MatchRequest, MatchResponse
 
 logger = logging.getLogger(__name__)
-
-
-def _error(description: str, detail: str) -> dict[str, Any]:
-    return {
-        "description": description,
-        "content": {"application/json": {"example": {"detail": detail}}},
-    }
 
 
 def add_matching_routes(router: APIRouter) -> None:
@@ -43,17 +40,18 @@ def add_matching_routes(router: APIRouter) -> None:
         summary="Match users to occupations, job opportunities and skill gaps",
         response_model=list[MatchResponse],
         responses={
-            400: _error(
+            400: error_response_doc(
                 "Bad Request: empty body, too many users, invalid "
                 "``final_score_combiner``, or an input the engine rejects.",
                 "Request body must be a non-empty JSON array.",
             ),
-            403: _error(
-                "Forbidden: missing ``x-api-key`` header.", "Not authenticated"
+            403: FORBIDDEN_RESPONSE_DOC,
+            422: error_response_doc(
+                "Unprocessable Entity: the body is not an array, a field has the wrong type, "
+                "or a query parameter is out of range.",
+                "body.0.skills_vector: Field required",
             ),
-            500: _error(
-                "Internal Server Error.", "Internal server error: RuntimeError"
-            ),
+            500: INTERNAL_ERROR_RESPONSE_DOC,
         },
     )
     async def match(
@@ -111,10 +109,6 @@ def add_matching_routes(router: APIRouter) -> None:
 
         Requires the ``x-api-key`` header.
         """
-        if DEBUG_MODE:
-            print("matching.request=")
-            for item in payload:
-                print(item.model_dump_json())
         try:
             out = await matching_service.match(
                 payload,
@@ -125,12 +119,6 @@ def add_matching_routes(router: APIRouter) -> None:
                     skill_gap_top_k=skill_gap_top_k,
                 ),
             )
-
-            if DEBUG_MODE:
-                print("matching.response=")
-                for _item in out:
-                    print(_item.model_dump_json())
-
             return out
 
         except InvalidMatchRequestError as e:

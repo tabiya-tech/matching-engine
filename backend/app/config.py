@@ -523,4 +523,6 @@ SKILLS_CSV_PATH: str = _CANONICAL_TAX["skills"]
 SKILL_GROUPS_CSV_PATH: str = _CANONICAL_TAX["skill_groups"]
 SKILL_HIERARCHY_CSV_PATH: str = _CANONICAL_TAX["skill_hierarchy"]
 
-DEBUG_MODE = True
+# DEBUG_MODE=1 lowers the root log level to DEBUG. It never logs request/response bodies or
+# user profiles; see README "Errors and logging".
+DEBUG_MODE: bool = _b("DEBUG_MODE", False)
