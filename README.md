@@ -167,6 +167,7 @@ Key settings include:
 - response sizes: `MATCH_V4_RETRIEVE_TOP_K` (shortlist, default 100), `MATCH_V4_FINAL_TOP_K` (opportunities returned, default 50), `MATCH_V4_TOP_K_OCCUPATIONS` (default 10), `MATCH_TOP_K_SKILL_GAPS` (default 5)
 - scoring: `FINAL_SCORE_COMBINER` (`product` or `geometric_mean`), `PREFERENCE_SCORER_MODE`, `V4_FULL_COVERAGE_GAMMA` / `V4_FULL_COVERAGE_FLOOR`, and location tiers (`LOCATION_TIER_ENABLED`, `LOCATION_TIER_W_REGIONAL`, `LOCATION_TIER_W_NATIONAL`)
 - skill-gap threshold: `MATCH_RESPONSE_SKILL_MIN_SCORE`. Skill gaps whose proximity is below this value are dropped. If it isn't set, it falls back to `GATE_SIMILARITY_THRESHOLD`.
+- logging: `DEBUG_MODE` (off by default), see [Errors and logging](#errors-and-logging)
 
 ## Request tracing (Langfuse)
 
@@ -213,8 +214,83 @@ MATCHING_TRACING_CONFIG={"sampleRate": 1.0, "recordEmbeddingInput": false}
 
 In GitHub, set `MATCHING_ENABLE_TRACING` (and optionally `MATCHING_LANGFUSE_HOST`,
 `MATCHING_TRACING_CONFIG`) as environment variables and `MATCHING_LANGFUSE_PUBLIC_KEY` /
-`MATCHING_LANGFUSE_SECRET_KEY` as environment secrets. The stderr timing blocks
-(`app/match_timing_log.py`) are unchanged.
+`MATCHING_LANGFUSE_SECRET_KEY` as environment secrets. Tracing is separate from the service logs
+(see [Errors and logging](#errors-and-logging)).
+
+## Errors and logging
+
+### Error responses
+
+Every error the service returns, on every route, has one body: `HTTPErrorResponse`
+(`backend/app/constants/errors.py`).
+
+```json
+{"detail": "Request body must be a non-empty JSON array."}
+```
+
+`detail` is always a string. Routes declare their error statuses with this model, so it shows up in
+`/docs` and `/openapi.json`. Two handlers in `backend/app/main.py` keep it uniform:
+
+- request-validation errors (422) are flattened to one string, `<loc>: <msg>` joined with `; `
+- any exception a route doesn't handle becomes a 500 with `"Internal server error: <ExceptionClass>"`
+
+| Status | Routes | When | `detail` |
+|---|---|---|---|
+| 400 | `POST /match` | Empty array, more than `MATCH_V2_MAX_USERS_PER_REQUEST` users, bad `final_score_combiner`, or an input the engine rejects | e.g. `"Too many users in one request (max 32)."` |
+| 400 | `GET /jobs` | Invalid or tampered `cursor` | `"invalid cursor"` |
+| 403 | all | Missing `x-api-key` header | `"Not authenticated"` |
+| 404 | — | Unknown path | `"Not Found"` |
+| 422 | `POST /match`, `GET /jobs` | Body is not an array, a field has the wrong type, or a query parameter is out of range | e.g. `"body.0.skills_vector: Field required; query.final_top_k: Input should be less than or equal to 200"` |
+| 500 | all | Unexpected server error (logged with its traceback) | `"Internal server error: <ExceptionClass>"` |
+
+401 and 429 come from the API gateway, not the service. See [`backend/API.md`](backend/API.md#errors)
+for the `/match` details.
+
+### Log format
+
+The service logs one JSON object per line to stdout (`backend/app/logging.cfg.yaml`,
+`backend/app/logger.py`). Cloud Logging indexes the fields and reads `severity` as the level. uvicorn's
+own logs go through the same formatter.
+
+| Field | Meaning |
+|---|---|
+| `timestamp` | ISO 8601, UTC |
+| `severity` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `logger` | Logger name (module, or `match_timing`) |
+| `message` | The log message |
+| `exception` | Traceback, when the record carries one |
+
+Pipeline timing records (`log_match_step` in `backend/app/match_timing_log.py`, logger `match_timing`)
+also carry their metrics as top-level fields:
+
+```json
+{"timestamp": "2026-10-12T09:14:03.120+00:00", "severity": "INFO", "logger": "match_timing",
+ "message": "http /match: request (summary)", "component": "http /match", "step": "request (summary)",
+ "n_users": 1, "n_jobs": 812, "n_occupation_rows": 0, "fetch_parallel_wall_ms": 140.2,
+ "scoring_thread_pool_ms": 2105.7, "request_total_ms": 2310.4}
+```
+
+Per-user records add the pseudonymous `user_id`. To add structured fields to your own log call, pass
+`extra={"fields": {...}}`.
+
+`DEBUG_MODE=1` lowers the root log level to `DEBUG`. It is off by default (`INFO`). It does not log
+request or response bodies.
+
+### What must not be logged
+
+These must never be logged, at any level and in `DEBUG_MODE` too. That includes log messages,
+structured fields and exception messages that get logged.
+
+- **User profiles:** skills (`skills_vector`, labels, proficiencies), preferences
+  (`preference_vector`, BWS / DCE answers), location (`city`, `province`), and education
+  (`any_post_secondary_educ`, `zqf_level`)
+- **Request and response bodies** of `/match`, or any part of them beyond counts
+- **Text sent to Gemini, and embedding vectors**
+- **Secrets:** API keys (`x-api-key`, `GEMINI_API_KEY`), Langfuse keys, and `MONGO_URL` (it holds
+  credentials)
+
+You may log counts, timings, ids of jobs and occupations, artifact paths, the pseudonymous `user_id`,
+error class names, and the field locations of a validation error (not its input values).
 
 ## Deployment
 

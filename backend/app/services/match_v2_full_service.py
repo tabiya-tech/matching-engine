@@ -222,9 +222,8 @@ def run_match_v2_full(
                     "location": fallback,
                 }
                 logger.warning(
-                    "User %r province=%r matches no occupation county %s; using random fallback county %r.",
+                    "User %r matches no occupation county %s; using random fallback county %r.",
                     uid,
-                    user.get("province"),
                     occ_counties,
                     fallback,
                 )
