@@ -1,13 +1,22 @@
 import asyncio
 import logging
+import logging.config
 import os
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import APIRouter, Depends, FastAPI
+import yaml
+from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from app.match_timing_log import init_match_timing_log
+from app.config import DEBUG_MODE
+from app.constants.errors import (
+    FORBIDDEN_RESPONSE_DOC,
+    INTERNAL_ERROR_RESPONSE_DOC,
+    HTTPErrorResponse,
+)
 from app.observability import (
     MatchTracingMiddleware,
     init_tracing,
@@ -25,8 +34,18 @@ from app.server_dependencies.model_dependencies import (
 from app.warmup import warmup_on_startup
 
 load_dotenv()
-init_match_timing_log()
 
+
+def setup_logging() -> None:
+    """JSON logs on stdout (``logging.cfg.yaml``); ``DEBUG_MODE`` lowers the root level to DEBUG."""
+    config_file = os.path.join(os.path.dirname(__file__), "logging.cfg.yaml")
+    with open(config_file, encoding="utf-8") as stream:
+        logging.config.dictConfig(yaml.safe_load(stream))
+    if DEBUG_MODE:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+
+setup_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -96,7 +115,40 @@ def _openapi_servers() -> list[dict[str, str]]:
 
 app = FastAPI(title="Matching Service", lifespan=lifespan, servers=_openapi_servers())
 
-logging.basicConfig(level=logging.INFO)
+
+
+def _error_response(status_code: int, detail: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content=HTTPErrorResponse(detail=detail).model_dump(),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    """422 as ``HTTPErrorResponse``: FastAPI's error list flattened to one ``detail`` string.
+
+    Only ``loc`` and ``msg`` are kept — never the rejected ``input``, which can be profile data.
+    """
+    errors = exc.errors()
+    detail = "; ".join(
+        f"{'.'.join(str(part) for part in err.get('loc', ()))}: {err.get('msg', '')}"
+        for err in errors
+    )
+    logger.warning(
+        "Request validation failed {errors=%s}",
+        [(".".join(str(p) for p in err.get("loc", ())), err.get("type")) for err in errors],
+    )
+    return _error_response(422, detail or "Request validation failed.")
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+    """Safety net for anything a route or dependency did not map to an ``HTTPException``.
+
+    Not logged here: Starlette re-raises after this response is sent and uvicorn logs the traceback.
+    """
+    return _error_response(500, f"Internal server error: {exc.__class__.__name__}")
 
 # CORS for browser clients (Swagger /docs, local frontends).
 # Dev: allow any localhost / 127.0.0.1 / 0.0.0.0 origin on any port (regex). Otherwise no Origin = no preflight (curl etc.).
@@ -131,7 +183,10 @@ class Health(BaseModel):
     status: str
 
 
-@router.get("/health")
+@router.get(
+    "/health",
+    responses={403: FORBIDDEN_RESPONSE_DOC, 500: INTERNAL_ERROR_RESPONSE_DOC},
+)
 async def health() -> Health:
     return Health(status="ok")
 

@@ -5,6 +5,11 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.config import JOBS_PAGE_DEFAULT_LIMIT, JOBS_PAGE_MAX_LIMIT
+from app.constants.errors import (
+    FORBIDDEN_RESPONSE_DOC,
+    INTERNAL_ERROR_RESPONSE_DOC,
+    error_response_doc,
+)
 from app.jobs.pagination import InvalidCursor
 from app.jobs.get_jobs_service import get_jobs_service
 from app.jobs.service import IJobsService
@@ -27,18 +32,13 @@ def add_jobs_routes(router: APIRouter) -> None:
         operation_id="list_jobs",
         response_model=JobsPage,
         responses={
-            400: {
-                "description": "Bad Request - invalid cursor",
-                "content": {
-                    "application/json": {"example": {"detail": "invalid cursor"}}
-                },
-            },
-            500: {
-                "description": "Internal Server Error",
-                "content": {
-                    "application/json": {"example": {"detail": "Internal server error"}}
-                },
-            },
+            400: error_response_doc("Bad Request: invalid cursor.", "invalid cursor"),
+            403: FORBIDDEN_RESPONSE_DOC,
+            422: error_response_doc(
+                "Unprocessable Entity: a query parameter has the wrong type or is out of range.",
+                "query.limit: Input should be less than or equal to 100",
+            ),
+            500: INTERNAL_ERROR_RESPONSE_DOC,
         },
     )
     async def list_jobs(
@@ -120,14 +120,7 @@ def add_jobs_routes(router: APIRouter) -> None:
         tags=["jobs"],
         operation_id="jobs_stats",
         response_model=JobsStats,
-        responses={
-            500: {
-                "description": "Internal Server Error",
-                "content": {
-                    "application/json": {"example": {"detail": "Internal server error"}}
-                },
-            },
-        },
+        responses={403: FORBIDDEN_RESPONSE_DOC, 500: INTERNAL_ERROR_RESPONSE_DOC},
     )
     async def jobs_stats(
         jobs_service: IJobsService = Depends(get_jobs_service),
