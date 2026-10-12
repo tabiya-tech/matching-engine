@@ -14,7 +14,7 @@ app/
 │   ├── repository.py            IJobsRepository: the interface routes and services depend on (and tests mock)
 │   ├── mongo_repository.py      MongoJobsRepository: the Mongo implementation, every query on the jobs collection
 │   ├── get_jobs_repository.py   get_jobs_repository (FastAPI dependency), standalone_jobs_repository
-│   ├── job_document.py          projection + build_job_dict_from_ranked (stored doc → flat job dict)
+│   ├── job_document.py          projection + RankedJobDocument + build_job_from_ranked (stored doc → Job)
 │   ├── browse_filter.py         GET /jobs filter builder
 │   └── pagination.py            GET /jobs keyset cursor codec
 ├── services/
@@ -95,14 +95,16 @@ The client is closed when the block exits. Never use this inside the app.
 | `JOBS` | `MONGO_JOBS_COLLECTION` (default `RankedJobsEnriched`) | llm-reranker | `JobsRepository` |
 
 The document shape is the contract with the reranker. Only fields in `RANKED_JOB_FIND_PROJECTION`
-are read (when `JOBS_FIND_USE_PROJECTION` is on), and `build_job_dict_from_ranked` maps them to the
-flat dict every engine consumes. Both live in `app/jobs/job_document.py` and must stay aligned: a new
-reranker field reaches matching only if it is projected and mapped there (tests in
-`tests/unit/test_build_job_dict_from_ranked.py`).
+are read (when `JOBS_FIND_USE_PROJECTION` is on); `RankedJobDocument` validates them and
+`build_job_from_ranked` maps them to the strict `Job` domain model every caller receives. Both live in
+`app/jobs/job_document.py` and must stay aligned with the projection: a new reranker field reaches
+matching only if it is projected, declared and mapped there (tests in
+`tests/unit/test_build_job_from_ranked.py`; field sources in `app/domain/README.md`). A document
+that fails validation is logged and skipped, not raised.
 
-Occupations are **not** in Mongo. They come from `OCCUPATION_JSON_PATH` and the concat-embeddings
-NPZ, are flattened by `app.occupations.flatten`, and are cached in-process by
-`app.occupations.loader`.
+Occupations are **not** in Mongo. They come from `OCCUPATION_JSON_PATH` (validated by
+`app.occupations.occupation_file`) and the concat-embeddings NPZ, are flattened into `Occupation`
+models by `app.occupations.flatten`, and are cached in-process by `app.occupations.loader`.
 
 ### Indexes
 
@@ -127,7 +129,7 @@ Regex filters (title, location, skills) cannot use these and run as residual fil
 2. **Implement it in `MongoJobsRepository`** (`app/jobs/mongo_repository.py`). Use `self._collection`. Do not open a client or reach for
    the provider. Lead the filter with `RANKED_JOBS_ACTIVE_FILTER` unless the query really needs
    inactive jobs, use `self._find(...)` to apply the standard projection, and shape documents with
-   `build_job_dict_from_ranked` so callers get the same job object as /match.
+   `build_job_from_ranked` so callers get the same job object as /match.
 3. **Keep domain rules out of it.** If the filter depends on user profiles or business policy (like
    the location prefilter), build it in `app/services/` and pass it in, as
    `retrieve_jobs_with_timing` does for `find_jobs_with_timing`. Pure filter builders for a single

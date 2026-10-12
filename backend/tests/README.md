@@ -142,7 +142,7 @@ See `tests/AI_MATCHING_TEST_PLAN.md` for full scope.
 python tests/sanity_checks/job_dict_mapping_check.py
 ```
 
-Runs `pytest tests/unit/` which validates `build_job_dict_from_ranked()` — the Mongo ranked-job → flat job dict mapper used by every match endpoint.
+Runs `pytest tests/unit/` which validates `build_job_from_ranked()` — the Mongo ranked-job document → `Job` mapper used by every match endpoint — plus the occupation-file flattening and the jobs repository.
 
 **Coverage strategy** (not every field gets its own test):
 
@@ -172,7 +172,7 @@ tests/
 │   ├── test_startup_smoke.py            # Health endpoint tests (2 tests)
 │   └── test_endpoint_smoke.py           # Endpoint behavior tests (7 tests)
 ├── unit/
-│   ├── test_build_job_dict_from_ranked.py  # Mongo job doc → flat dict mapping
+│   ├── test_build_job_from_ranked.py  # Mongo job doc → Job mapping
 │   ├── test_db_dependencies.py          # Mongo client lifecycle, client options, lifespan
 │   ├── test_jobs_repository.py          # Repository queries against a fake collection
 │   ├── test_job_retrieval.py            # /match location prefilter policy
@@ -205,7 +205,7 @@ When adding new endpoints, models, or features:
 2. **New endpoint** → Add it to `EXPECTED_ENDPOINTS` in `tests/data_schema/test_openapi_schema.py` and to `AUTH_REQUIRED_PATHS` if it requires `x-api-key`
 3. **New config enum** → Add a parameterized case in `tests/data_schema/test_config_validation.py`
 4. **New endpoint behavior** → Add smoke tests in `tests/smoke/test_endpoint_smoke.py`
-5. **New Mongo field mapping or fallback in `build_job_dict_from_ranked`** → Add cases in `tests/unit/test_build_job_dict_from_ranked.py` (mapping logic) or extend the happy-path test (simple passthrough)
+5. **New Mongo field mapping or fallback in `build_job_from_ranked`** → Add the field to `RankedJobDocument` and `Job`, a row to `app/domain/README.md`, and cases in `tests/unit/test_build_job_from_ranked.py` (mapping logic) or extend the happy-path test (simple passthrough)
    **New repository query** → Add cases in `tests/unit/test_jobs_repository.py`; routes get `mocked_jobs_repository` from `conftest.py` (see `app/server_dependencies/README.md`)
 6. **New matching rule or scorer invariant** → Add tests in `tests/ml_logic/`, `tests/components/`, or `tests/integration/` (see `AI_MATCHING_TEST_PLAN.md`)
 

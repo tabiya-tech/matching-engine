@@ -13,6 +13,8 @@ from app.jobs.pagination import (
     decode_jobs_cursor,
     encode_jobs_cursor,
 )
+from app.schemas import JobListItem
+from tests.domain_factories import jobs_page_timing
 
 
 class TestCursorCodec:
@@ -39,7 +41,12 @@ class TestCursorCodec:
 
 def _fake_page(jobs, next_cursor, has_more, total=None):
     async def _impl(cursor=None, limit=20, **kwargs):
-        return jobs, next_cursor, total, {"has_more": has_more, "limit": limit}
+        return (
+            jobs,
+            next_cursor,
+            total,
+            jobs_page_timing(has_more=has_more, limit=limit, total=total),
+        )
 
     return _impl
 
@@ -53,16 +60,13 @@ class TestJobsEndpoint:
 
     def test_first_page_shape(self, test_client, mocked_jobs_repository):
         jobs = [
-            {
-                "uuid": "job-1",
-                "opportunity_title": "Technical Manager",
-                "employer": "RTI International",
-                "location": "Nairobi Nairobi",
-                "url": "https://example.com/job/1",
-                # extra fields from build_job_dict_from_ranked must be ignored
-                "essential_skills": [{"id": "x", "label": "y"}],
-                "job_embedding": [0.1, 0.2],
-            }
+            JobListItem(
+                uuid="job-1",
+                opportunity_title="Technical Manager",
+                employer="RTI International",
+                location="Nairobi Nairobi",
+                url="https://example.com/job/1",
+            )
         ]
         mocked_jobs_repository.get_jobs_page_with_timing.side_effect = _fake_page(
             jobs, "next-cursor-token", True
@@ -115,7 +119,7 @@ class TestJobsEndpoint:
 
         async def _impl(cursor=None, limit=20, **kwargs):
             captured.update(kwargs)
-            return [], None, None, {"has_more": False, "limit": limit}
+            return [], None, None, jobs_page_timing(limit=limit)
 
         mocked_jobs_repository.get_jobs_page_with_timing.side_effect = _impl
         resp = test_client.get(
