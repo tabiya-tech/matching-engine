@@ -18,85 +18,87 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
+
+from pydantic import ValidationError
+
+from app.services.hybrid_scoring.run_bm25_cosine_hybrid import (
+    HybridFusedRow,
+    HybridRunResult,
+    HybridUserBundle,
+)
+
+# The page's embedded JSON (short keys read by the inline script); built from the typed run.
+CompactRow = dict[str, object]
 
 
-def _compact_fused_row(raw: Dict[str, Any], *, max_msk: int) -> Dict[str, Any]:
-    msk = [str(x) for x in (raw.get("matched_skills") or [])][:max_msk]
-    mcs = [str(x) for x in (raw.get("matched_skills_cosine") or [])][:max_msk]
+def _compact_fused_row(row: HybridFusedRow, *, max_msk: int) -> CompactRow:
     return {
-        "r": raw.get("rank"),
-        "uuid": str(raw.get("job_uuid") or ""),
-        "t": str(raw.get("job_title") or "")[:280],
-        "e": str(raw.get("employer") or "")[:180],
-        "l": str(raw.get("location") or "")[:200],
-        "fus": float(
-            raw.get("fusion_score") or raw.get("weighted_minmax_fusion") or 0.0
-        ),
-        "bn": raw.get("bm25_norm_within_candidates"),
-        "cn": raw.get("cos_norm_within_candidates"),
-        "mbr": raw.get("mean_best_cosine_raw"),
-        "bm_raw": raw.get("bm25_score_raw"),
-        "msk": msk,
-        "mcs": mcs,
+        "r": row.rank,
+        "uuid": row.job_uuid,
+        "t": row.job_title[:280],
+        "e": (row.employer or "")[:180],
+        "l": row.location[:200],
+        "fus": row.fusion_score,
+        "bn": row.bm25_norm_within_candidates,
+        "cn": row.cos_norm_within_candidates,
+        "mbr": row.mean_best_cosine_raw,
+        "bm_raw": row.bm25_score_raw,
+        "msk": row.matched_skills[:max_msk],
+        "mcs": row.matched_skills_cosine[:max_msk],
     }
 
 
 def _compact_user(
-    row: Dict[str, Any],
+    row: HybridUserBundle,
     *,
     max_rows: int,
     max_msk: int,
-) -> Dict[str, Any]:
-    labs = (
-        row.get("user_skill_labels_for_display")
-        or row.get("resolved_user_skill_labels")
-        or []
-    )
-    if not labs:
-        labs = []
-    fu = row.get("column_fused_weighted_minmax") or []
+) -> CompactRow:
+    labs = row.user_skill_labels_for_display or row.resolved_user_skill_labels
     return {
-        "uid": str(row.get("user_id") or ""),
-        "city": str(row.get("city") or ""),
-        "prov": str(row.get("province") or ""),
-        "labs": [str(x)[:120] for x in labs[:200]],
-        "fused": [_compact_fused_row(r, max_msk=max_msk) for r in fu[:max_rows]],
+        "uid": row.user_id or "",
+        "city": row.city,
+        "prov": row.province,
+        "labs": [x[:120] for x in labs[:200]],
+        "fused": [
+            _compact_fused_row(r, max_msk=max_msk)
+            for r in row.column_fused_weighted_minmax[:max_rows]
+        ],
     }
 
 
 def build_html(
-    payload: Dict[str, Any],
+    payload: HybridRunResult,
     *,
     max_rows: int,
     max_msk: int,
     max_users: Optional[int],
 ) -> str:
-    cfg = payload.get("config") or {}
-    idx = payload.get("index_stats") or {}
-    meta = {
-        "n_jobs": payload.get("n_jobs"),
-        "jobs_source": cfg.get("jobs_source"),
-        "users_path": cfg.get("users_path"),
-        "alpha_on_cosine": cfg.get("alpha_on_cosine_skill"),
-        "variant_bm25": cfg.get("variant_bm25"),
-        "skills_weight": cfg.get("skills_weight"),
-        "text_weight": cfg.get("text_weight"),
-        "embedding_dim": idx.get("embedding_dim"),
-        "max_rows_compact": max_rows,
-        "max_users_embedded": max_users,
-        "fusion": cfg.get("fusion"),
-    }
-
-    rows = payload.get("results") or []
+    """The dashboard HTML for a hybrid run (fused column only)."""
+    cfg = payload.config
+    rows = payload.results
     if max_users is not None:
         rows = rows[: max(0, int(max_users))]
+    users = [_compact_user(r, max_rows=max_rows, max_msk=max_msk) for r in rows]
 
     compact = {
-        "meta": meta,
-        "users": [_compact_user(r, max_rows=max_rows, max_msk=max_msk) for r in rows],
+        "meta": {
+            "n_jobs": payload.n_jobs,
+            "jobs_source": cfg.jobs_source,
+            "users_path": cfg.users_path,
+            "alpha_on_cosine": cfg.alpha_on_cosine_skill,
+            "variant_bm25": cfg.variant_bm25,
+            "skills_weight": cfg.skills_weight,
+            "text_weight": cfg.text_weight,
+            "embedding_dim": payload.index_stats.embedding_dim,
+            "max_rows_compact": max_rows,
+            "max_users_embedded": max_users,
+            "fusion": cfg.fusion,
+            "n_users": len(users),
+        },
+        "users": users,
     }
-    compact["meta"]["n_users"] = len(compact["users"])
 
     data_json = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     safe = data_json.replace("</", "<\\/")
@@ -373,17 +375,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not inp.is_file():
         print(f"[4col_dashboard] input not found: {inp}", file=sys.stderr)
         return 2
-    payload = json.loads(inp.read_text(encoding="utf-8"))
-    res = payload.get("results") or []
-    if not res:
-        print("[4col_dashboard] JSON has no results[] — wrong file?", file=sys.stderr)
-        return 2
-    first = res[0]
-    if "column_fused_weighted_minmax" not in first:
+    try:
+        payload = HybridRunResult.model_validate_json(inp.read_bytes())
+    except ValidationError as e:
         print(
-            "[4col_dashboard] results[0] missing column_fused_weighted_minmax — pass output from run_bm25_cosine_hybrid",
+            f"[4col_dashboard] not a run_bm25_cosine_hybrid result ({e.error_count()} errors)",
             file=sys.stderr,
         )
+        return 2
+    if not payload.results:
+        print("[4col_dashboard] JSON has no results[] — wrong file?", file=sys.stderr)
         return 2
 
     html_doc = build_html(
