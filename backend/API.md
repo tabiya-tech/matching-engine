@@ -200,7 +200,13 @@ unless you mean a strong aversion.
 
 ### Errors
 
-Errors use FastAPI's shape: `{"detail": ...}`.
+Every error response from the service (4xx and 5xx, including 422) has the same body, `HTTPErrorResponse`:
+
+```json
+{"detail": "Request body must be a non-empty JSON array."}
+```
+
+`detail` is always a string. Gateway errors (401, 429) come from the gateway, not the service, and use its own body. See the [README](../README.md#errors-and-logging) for every route's error codes.
 
 | Status | When | `detail` |
 |--------|------|----------|
@@ -210,7 +216,7 @@ Errors use FastAPI's shape: `{"detail": ...}`.
 | 400 | An input value was rejected during matching | A message describing the problem. |
 | 401 / 403 | Missing or invalid API key (gateway) | Gateway error body. |
 | 403 | Missing `x-api-key` header (direct to service) | `"Not authenticated"` |
-| 422 | Body is not an array, or a field has the wrong type, or a query param is out of range | A list of validation errors (`loc`, `msg`, `type`). |
+| 422 | Body is not an array, or a field has the wrong type, or a query param is out of range | Each problem as `<loc>: <msg>`, joined with `; `, e.g. `"body.0.skills_vector: Field required"`. |
 | 429 | Gateway rate limit exceeded | Gateway error body. |
 | 500 | Unexpected server error | `"Internal server error: <ExceptionClass>"` |
 
