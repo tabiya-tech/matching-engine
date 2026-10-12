@@ -36,7 +36,9 @@ from app.config import (
     V4_FULL_WHITENED_GATE,
 )
 from app.languages import default_language
+from app.artifacts.types import AttributeSchema
 from app.ranking.preference import UnifiedPreferenceScorer
+from app.ranking.scoring import IPreferenceScorer
 from app.ranking.skills import SkillLabelPacks
 from app.ranking.skills import CosineSkillMatcher
 from app.ranking.skills import SkillScorer
@@ -208,7 +210,7 @@ def get_gemini_embedding_client() -> IGeminiEmbeddingClient:
     return _gemini_client
 
 
-def get_preference_scorer():
+def get_preference_scorer() -> IPreferenceScorer:
     """Return a new preference scorer of the configured kind.
 
     Default ``unified`` → ``UnifiedPreferenceScorer`` (DCE attributes + BWS, additive-RUM).
@@ -231,7 +233,7 @@ def get_preference_scorer():
             "(or set HYBRID_PREF_SCHEMA_PATH) to restore.",
             e,
         )
-        schema = {"attributes": []}
+        schema = AttributeSchema(attributes=[])
     return UnifiedPreferenceScorer(schema)
 
 

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Protocol
 
 import numpy as np
+from pydantic import Field
 
 from app.config import (
     DEMAND_SCORE_MAPPING,
@@ -16,13 +17,26 @@ from app.config import (
     V4_FULL_BADGE_STRONG,
     V4_FULL_COVERAGE_FLOOR,
 )
+from app.domain.base import DomainModel
+from app.domain.scores import PHatComponents
+from app.domain.user import UserProfile
 from app.ranking.preference import combine_final_score
-from app.ranking.retrieval import (
-    ConcatWhitener,
-    job_matches_user_location,
-    job_skill_labels_for_concat,
+from app.ranking.retrieval import ConcatWhitener, Place, job_matches_user_location
+from app.ranking.skills import CosineSkillMatcher, Feasibility
+from app.ranking.types import (
+    AttributePreference,
+    Candidate,
+    DemandScore,
+    FinalScoreBreakdown,
+    MatchItem,
+    PreferenceScore,
+    RankOverrideSet,
+    ScoredCandidate,
+    SkillDetail,
+    SkillMatchDetail,
+    WorkActivityContribution,
 )
-from app.ranking.skills import CosineSkillMatcher
+from app.schemas import MatchedSkill, MatchedSkills, OptionalSkillMatch
 
 logger = logging.getLogger(__name__)
 
@@ -30,42 +44,19 @@ logger = logging.getLogger(__name__)
 # demand
 # --------------------------------------------------------------------------------------------------
 
-# src/demand_scorer.py
-
 
 class DemandScorer:
+    """Maps an item's ``attributes.expected_demand`` label to a [0, 1] demand score."""
+
     def __init__(self):
         self.mapping = DEMAND_SCORE_MAPPING
 
-    def calculate_score(self, job_posting: dict) -> dict:
-        """
-        Computes the S_demand score.
-
-        Logic:
-        1. Checks job_posting['attributes']['expected_demand'] -> Maps text to float.
-        2. Fallback to 0.5 if missing.
-        """
-
-        # 1. Safely extract the attributes dictionary
-        attributes = job_posting.get("attributes", {})
-
-        # 2. Get the specific key
-        demand_label = attributes.get("expected_demand")
-
-        # 3. Map label to value
-        if demand_label and demand_label in self.mapping:
-            return {
-                "score": self.mapping[demand_label],
-                "label": demand_label,
-                "present": True,
-            }
-
-        # 4. Fallback / Default
-        return {
-            "score": 0.5,
-            "label": demand_label,
-            "present": False,
-        }
+    def calculate_score(self, item: MatchItem) -> DemandScore:
+        """The item's demand score (0.5 and ``present=False`` when the label is absent or unknown)."""
+        label = item.attributes.expected_demand
+        if label and label in self.mapping:
+            return DemandScore(score=self.mapping[label], label=label, present=True)
+        return DemandScore(score=0.5, label=label, present=False)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -76,12 +67,12 @@ class DemandScorer:
 
 
 def build_matched_skills(
-    per_job_skill: Any,
-    essential_ids: set,
+    per_job_skill: Sequence[SkillMatchDetail],
+    essential_ids: frozenset[str],
     *,
     sim_threshold: float,
-) -> dict[str, list[dict]]:
-    """Build a MatchedSkills-shaped dict from CosineSkillMatcher ``per_job_skill`` rows.
+) -> MatchedSkills:
+    """Split per-skill match rows into the response's ``MatchedSkills``.
 
     ``essential_ids`` MUST be the matcher-RESOLVED ids of the item's essential skills (resolved via
     the same label->id function the matcher uses to populate ``job_skill_id``), so the split is in
@@ -90,52 +81,54 @@ def build_matched_skills(
     (kept as OptionalSkillMatch when cosine clears the threshold). Skill groups are not computed by
     the Gemini engine (empty list).
     """
-    essential: list[dict] = []
-    optional: list[dict] = []
-    for r in per_job_skill or []:
-        if not isinstance(r, dict):
-            continue
-        jid = str(r.get("job_skill_id") or "")
+    essential: list[MatchedSkill] = []
+    optional: list[OptionalSkillMatch] = []
+    for r in per_job_skill:
+        jid = r.job_skill_id
         if not jid:
             continue
-        sim = float(r.get("cosine_similarity") or 0.0)
-        exact = bool(r.get("exact"))
-        meets = exact or (
-            sim >= sim_threshold
-        )  # exact-id overlap always counts as "has it"
-        tier = "exact" if exact else ("embedding" if sim >= sim_threshold else "none")
+        sim = r.cosine_similarity
+        # exact-id overlap always counts as "has it"
+        meets = r.exact or sim >= sim_threshold
+        tier = "exact" if r.exact else ("embedding" if sim >= sim_threshold else "none")
         if jid in essential_ids:
             essential.append(
-                {
-                    "job_skill_id": jid,
-                    "job_skill_label": r.get("job_skill_label"),
-                    "best_user_skill_id": r.get("best_user_skill_id"),
-                    "best_user_skill_label": r.get("best_user_skill_label"),
-                    "similarity": round(sim, 4),
-                    "meets_threshold": meets,
-                    "match_tier": tier,
-                }
+                MatchedSkill(
+                    job_skill_id=jid,
+                    job_skill_label=r.job_skill_label,
+                    best_user_skill_id=r.best_user_skill_id,
+                    best_user_skill_label=r.best_user_skill_label,
+                    similarity=round(sim, 4),
+                    meets_threshold=meets,
+                    match_tier=tier,
+                )
             )
         elif meets:
-            optional.append({"skill_id": jid, "skill_label": r.get("job_skill_label")})
-    return {
-        "essential_skill_matches": essential,
-        "optional_exact_matches": optional,
-        "skill_group_matches": [],
-    }
+            optional.append(
+                OptionalSkillMatch(skill_id=jid, skill_label=r.job_skill_label)
+            )
+    return MatchedSkills(
+        essential_skill_matches=essential,
+        optional_exact_matches=optional,
+        skill_group_matches=[],
+    )
 
 
-def essential_coverage(essential_matches: list[dict], n_essential_total: int) -> float:
+def essential_coverage(
+    essential_matches: Sequence[MatchedSkill], n_essential_total: int
+) -> float:
     """Share of a job's essential skills the user meets, in [0,1]. Denominator is the job's TOTAL
     essential count, so unresolved essentials (absent from ``essential_matches``) count as not-met."""
-    n = max(int(n_essential_total or 0), len(essential_matches or []))
+    n = max(n_essential_total, len(essential_matches))
     if n == 0:
         return 1.0
-    met = sum(1 for m in (essential_matches or []) if m.get("meets_threshold"))
+    met = sum(1 for m in essential_matches if m.meets_threshold)
     return met / n
 
 
-def unparsed_ranking_coverage(parsed_covs: list[float], *, override: float) -> float:
+def unparsed_ranking_coverage(
+    parsed_covs: Sequence[float], *, override: float
+) -> float:
     """Ranking coverage to assign a posting with NO parsed essential skills (unparsed).
 
     ``essential_coverage`` returns 1.0 for such postings, which gives them a demotion-free ride in
@@ -165,7 +158,10 @@ def skill_match_level(coverage: float, n_essential_total: int) -> str:
 
 
 def is_eligible_from_skills(
-    essential_matches: list[dict], *, n_essential_total: int, min_ess_share: float
+    essential_matches: Sequence[MatchedSkill],
+    *,
+    n_essential_total: int,
+    min_ess_share: float,
 ) -> bool:
     """Eligible iff essential-coverage >= min_ess_share. No essential skills -> eligible (nothing to
     gate on). The post-secondary education gate is applied upstream during retrieval.
@@ -184,30 +180,27 @@ def is_eligible_from_skills(
 
 def skill_detail(
     matcher: CosineSkillMatcher,
-    user: dict[str, Any],
-    item: dict[str, Any],
+    user: UserProfile,
+    item: MatchItem,
     *,
     whitened_gate: bool,
-) -> tuple[list[dict[str, Any]], set[str]]:
-    """Return (per_job_skill, matcher-resolved essential id set) for matched_skills.
+) -> SkillDetail:
+    """Per-skill gate rows and the matcher-resolved essential id set of one (user, item) pair.
 
-    Both sides go through CosineSkillMatcher._resolve_label, so the essential id set is in
-    the same (label-resolved) id space as per_job_skill[].job_skill_id — the split is robust
-    to id/label mismatches.
+    Both sides go through the matcher's label resolver, so the essential id set is in the same
+    (label-resolved) id space as ``per_job_skill[].job_skill_id`` — the split is robust to id/label
+    mismatches.
     """
     try:
-        _score = matcher.score_pair_v4 if whitened_gate else matcher.score_pair
-        per = _score(user, item).get("per_job_skill", []) or []
+        per = (
+            matcher.score_pair_v4(user, item)
+            if whitened_gate
+            else matcher.score_pair(user, item).per_job_skill
+        )
     except Exception as e:  # pragma: no cover - defensive
-        logger.warning("score_pair failed for %s: %s", item.get("uuid"), e)
+        logger.warning("score_pair failed for %s: %s", item.uuid, e)
         per = []
-    ess_ids = set()
-    for s in item.get("essential_skills") or []:
-        lab = s.get("label")
-        rid = matcher._resolve_label(lab) if lab else None
-        if rid:
-            ess_ids.add(rid)
-    return per, ess_ids
+    return SkillDetail(per_job_skill=per, essential_ids=matcher.essential_ids(item))
 
 
 class RankOverrides:
@@ -230,32 +223,33 @@ class RankOverrides:
 
     def compute(
         self,
-        user: dict[str, Any],
-        v3_row: dict[str, Any] | None,
-        item_index: dict[str, dict[str, Any]],
-        concat_by_uuid: dict[str, tuple],
+        user: UserProfile,
+        candidates: Sequence[Candidate],
+        concat_by_uuid: Mapping[str, tuple[np.ndarray, bool]],
         u_white_vec: np.ndarray | None,
-    ) -> tuple[dict[str, float], dict[str, float], dict[str, Any]]:
-        """
+    ) -> RankOverrideSet:
+        """Phase-2 inputs for one user's reranked slate.
+
         - p_hat override = whitened+rescaled concat cosine(user, item) in [0,1]
         - coverage = essential-coverage in [0,1] (drives the achievability demotion)
-        - detail cache {uuid: (per_job_skill, essential_ids)} reused by the formatters (no re-score).
+        - skill detail per item, reused by the formatters (no re-score)
+
+        :param user: The user
+        :param candidates: The user's reranked slate
+        :param concat_by_uuid: uuid -> (stage-1 vector, is already whitened), snapshotted before retrieval
+        :param u_white_vec: The user's whitened embedding, or None to skip the p_hat override
         """
         p_over: dict[str, float] = {}
         cov_over: dict[str, float] = {}
-        det_cache: dict[str, Any] = {}
+        details: dict[str, SkillDetail] = {}
         parsed_covs: list[float] = []  # coverages of items WITH parsed essential skills
         unparsed_uuids: list[
             str
         ] = []  # items with no essential skills (back-filled below)
         target = self._whitener.rescale_target()
-        ce = (v3_row or {}).get("concat_gemini_ce_recommendations") or []
-        for r in ce:
-            if not isinstance(r, dict):
-                continue
-            uuid = str(r.get("job_uuid") or "")
-            item = item_index.get(uuid)
-            if not item or uuid in det_cache:
+        for c in candidates:
+            uuid = c.uuid
+            if not uuid or uuid in details:
                 continue
             jrec = concat_by_uuid.get(uuid)
             if jrec is not None and u_white_vec is not None and target > 0:
@@ -270,14 +264,18 @@ class RankOverrides:
                     jw = self._whitener.whiten_rows(jv.reshape(1, -1))[0]
                 cos = float(np.dot(u_white_vec, jw))
                 p_over[uuid] = min(1.0, max(0.0, cos) / target)
-            per, ess_ids = skill_detail(
-                self._matcher, user, item, whitened_gate=self._whitened_gate
+            detail = skill_detail(
+                self._matcher, user, c.item, whitened_gate=self._whitened_gate
             )
-            det_cache[uuid] = (per, ess_ids)
-            ms = build_matched_skills(per, ess_ids, sim_threshold=self._sim_threshold)
-            n_ess = len(item.get("essential_skills") or [])
+            details[uuid] = detail
+            n_ess = len(c.item.essential_skills)
             if n_ess:
-                cov = essential_coverage(ms["essential_skill_matches"], n_ess)
+                ms = build_matched_skills(
+                    detail.per_job_skill,
+                    detail.essential_ids,
+                    sim_threshold=self._sim_threshold,
+                )
+                cov = essential_coverage(ms.essential_skill_matches, n_ess)
                 cov_over[uuid] = cov
                 parsed_covs.append(cov)
             else:
@@ -290,7 +288,7 @@ class RankOverrides:
             )
             for uuid in unparsed_uuids:
                 cov_over[uuid] = fill
-        return p_over, cov_over, det_cache
+        return RankOverrideSet(p_hat=p_over, coverage=cov_over, skill_details=details)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -317,7 +315,19 @@ class RankOverrides:
 # --------------------------------------------------------------------------------------------------
 
 
+class SuccessPropensity(DomainModel):
+    """Legacy success propensity ``p_hat`` of a pair (``SuccessPropensityScorer``)."""
+
+    p_hat: float = Field(description="Success propensity in [0, 1], rounded.")
+    components: PHatComponents = Field(description="The G, E, R, M factors.")
+    demand_label: str = Field(
+        description="The item's demand label; ``Unknown`` when absent."
+    )
+
+
 class SuccessPropensityScorer:
+    """Legacy multiplicative ``p_hat`` from feasibility signals and market demand."""
+
     def __init__(self):
         self.cfg = SUCCESS_PROPENSITY_CONFIG
         self.demand_mapping = DEMAND_SCORE_MAPPING
@@ -325,15 +335,14 @@ class SuccessPropensityScorer:
     # ------------------------------------------------------------------
     # M_ij: market opportunity
     # ------------------------------------------------------------------
-    def _market_opportunity(self, job_posting: dict) -> float:
+    def _market_opportunity(self, item: MatchItem) -> float:
         """Compute market-opportunity signal from demand label.
 
         Currently uses the same demand-label mapping as the legacy DemandScorer.
         When richer market data become available (tightness, penetration,
         absorptive capacity, freshness), this method is the place to extend.
         """
-        attributes = job_posting.get("attributes", {})
-        demand_label = attributes.get("expected_demand")
+        demand_label = item.attributes.expected_demand
         if demand_label and demand_label in self.demand_mapping:
             return self.demand_mapping[demand_label]
         return 0.5  # neutral default
@@ -373,53 +382,34 @@ class SuccessPropensityScorer:
     # public API
     # ------------------------------------------------------------------
     def calculate_score(
-        self,
-        user_profile: dict,
-        job_posting: dict,
-        feasibility: dict,
-    ) -> dict:
+        self, item: MatchItem, feasibility: Feasibility
+    ) -> SuccessPropensity:
         """Compute p_hat from pre-computed feasibility signals.
 
-        Parameters
-        ----------
-        user_profile : dict
-            User profile (currently unused here, but kept for future
-            confidence / shrinkage extensions).
-        job_posting : dict
-            Job or occupation record.
-        feasibility : dict
-            Output of ``compute_feasibility_signals()`` — contains gate,
-            essential fit, optional sim, skill group recall, etc.
-
-        Returns
-        -------
-        dict with keys:
-            p_hat            – float in [0, 1]
-            components       – dict of G, E, R, M values
-            demand_label     – str, the raw demand label (for display)
+        :param item: The job or occupation (its demand label drives M)
+        :param feasibility: ``SkillScorer`` feasibility signals of the pair
+        :return: p_hat, its components and the demand label
         """
         alpha = self.cfg["alpha_essential"]
         beta = self.cfg["beta_readiness"]
         gamma = self.cfg["gamma_market"]
 
         # --- components ---
-        g_ij = 1.0 if feasibility["gate_passed"] else 0.0
-        e_ij = feasibility["essential_fit"]
+        g_ij = 1.0 if feasibility.gate_passed else 0.0
+        e_ij = feasibility.essential_fit
         r_ij = self._recruiter_readiness(
-            feasibility["optional_sim"],
-            feasibility["skill_group_recall"],
-            has_optional_skills=feasibility.get("has_optional_skills", False),
-            has_skill_groups=feasibility.get("has_skill_groups", False),
+            feasibility.optional_sim,
+            feasibility.skill_group_recall,
+            has_optional_skills=feasibility.has_optional_skills,
+            has_skill_groups=feasibility.has_skill_groups,
         )
 
-        attributes = job_posting.get("attributes", {})
-        demand_label = attributes.get("expected_demand")
-        has_demand = demand_label and demand_label in self.demand_mapping
-
-        if has_demand:
-            m_ij = self.demand_mapping[demand_label]
-        else:
-            m_ij = None
+        demand_label = item.attributes.expected_demand
+        m_ij: float | None = (
+            self.demand_mapping[demand_label]
+            if demand_label and demand_label in self.demand_mapping
+            else None
+        )
 
         # --- dynamic exponent redistribution ---
         # When a component's data is absent, redistribute its exponent
@@ -441,16 +431,16 @@ class SuccessPropensityScorer:
 
         p_hat = g_ij * (e_ij**alpha) * (r_ij**beta) * (m_ij**gamma)
 
-        return {
-            "p_hat": round(p_hat, 4),
-            "components": {
-                "gate": round(g_ij, 4),
-                "essential_fit": round(e_ij, 4),
-                "recruiter_readiness": round(r_ij, 4),
-                "market_opportunity": round(m_ij, 4),
-            },
-            "demand_label": demand_label or "Unknown",
-        }
+        return SuccessPropensity(
+            p_hat=round(p_hat, 4),
+            components=PHatComponents(
+                gate=round(g_ij, 4),
+                essential_fit=round(e_ij, 4),
+                recruiter_readiness=round(r_ij, 4),
+                market_opportunity=round(m_ij, 4),
+            ),
+            demand_label=demand_label or "Unknown",
+        )
 
 
 # --------------------------------------------------------------------------------------------------
@@ -459,175 +449,144 @@ class SuccessPropensityScorer:
 # Ranker: combine u_hat (preferences) and p_hat (skill retrieval score).
 # --------------------------------------------------------------------------------------------------
 
-# Engine-agnostic demand scorer (reads item attributes["expected_demand"]); torch-free.
+# Engine-agnostic demand scorer (reads item attributes.expected_demand); torch-free.
 _DEMAND_SCORER = DemandScorer()
 
 
-def work_activity_match_for_dashboard(details: Any) -> dict[str, Any]:
+class IPreferenceScorer(Protocol):
+    """A preference scorer (``UnifiedPreferenceScorer`` or the legacy ``PreferenceScorer``)."""
+
+    def calculate_score(
+        self,
+        user: UserProfile,
+        item: MatchItem,
+        *,
+        include_work_activities: bool = True,
+    ) -> PreferenceScore: ...
+
+
+class WorkActivityDashboard(DomainModel):
+    """Part B (BWS × work activities) of one row, for the offline HTML dashboards."""
+
+    S_wa: float | None = Field(description="Task utility; None when not scored.")
+    n_work_activities: int = Field(description="Activities scored.")
+    wa_aggregation: str = Field(description="Aggregation used.")
+    rows: list[WorkActivityContribution] = Field(
+        description="Up to 25 activities, largest |contribution| first."
+    )
+
+
+def work_activity_match_for_dashboard(pref: PreferenceScore) -> WorkActivityDashboard:
     """Extract Part B (BWS × job work activities) for one job row."""
-    for d in details or []:
-        if not isinstance(d, dict) or d.get("attribute") != "work_activity_bws":
-            continue
-        wa_rows = []
-        for w in d.get("wa_details") or []:
-            if not isinstance(w, dict):
-                continue
-            wa_rows.append(
-                {
-                    "wa_code": w.get("wa_code"),
-                    "wa_label": w.get("wa_label") or w.get("wa_code"),
-                    "user_bws": w.get("user_bws"),
-                    "wa_importance": w.get("wa_importance"),
-                    "wa_level": w.get("wa_level"),
-                    "wa_contribution": w.get("wa_contribution"),
-                }
-            )
-        wa_rows.sort(
-            key=lambda r: (
-                -abs(float(r.get("wa_contribution") or 0)),
-                str(r.get("wa_code") or ""),
-            )
+    wa = pref.work_activities
+    if wa is None:
+        return WorkActivityDashboard(
+            S_wa=None, n_work_activities=0, wa_aggregation="mean", rows=[]
         )
-        return {
-            "S_wa": d.get("wa_score_sum"),
-            "n_work_activities": d.get("n_work_activities") or len(wa_rows),
-            "wa_aggregation": d.get("wa_aggregation") or "mean",
-            "rows": wa_rows[:25],
-        }
-    return {"S_wa": None, "n_work_activities": 0, "wa_aggregation": "mean", "rows": []}
+    rows = sorted(wa.wa_details, key=lambda r: (-abs(r.wa_contribution), r.wa_code))
+    return WorkActivityDashboard(
+        S_wa=wa.wa_score_sum,
+        n_work_activities=wa.n_work_activities or len(rows),
+        wa_aggregation=wa.wa_aggregation or "mean",
+        rows=rows[:25],
+    )
 
 
-def preference_details_for_dashboard(details: Any) -> list[dict[str, Any]]:
-    """Compact attribute-level preference rows for HTML (user weight vs job level)."""
-    out: list[dict[str, Any]] = []
-    for d in details or []:
-        if not isinstance(d, dict):
-            continue
-        if d.get("layer") != "dce_attributes":
-            continue
-        attr = d.get("attribute")
-        if not attr or attr in ("dce_utility",):
-            continue
-        if d.get("on_job") is False:
-            continue
-        out.append(
-            {
-                "attribute": attr,
-                "attr_label": d.get("attr_label") or attr,
-                "user_weight": d.get("user_weight"),
-                "job_value": d.get("job_value"),
-                "job_level_resolved": d.get("job_level_resolved"),
-                "job_level_label": d.get("job_level_label"),
-                "encoded_value": d.get("encoded_value"),
-                "contribution": d.get("contribution"),
-                "orientation": d.get("orientation"),
-            }
-        )
-    out.sort(key=lambda r: (-abs(float(r.get("contribution") or 0)), r["attr_label"]))
-    return out
+def preference_details_for_dashboard(
+    pref: PreferenceScore,
+) -> list[AttributePreference]:
+    """Schema-scored attribute rows (unified scorer), largest |contribution| first."""
+    rows = [r for r in pref.attributes if r.attr_label is not None]
+    rows.sort(key=lambda r: (-abs(r.contribution), r.attr_label or ""))
+    return rows
 
 
-def p_hat_from_skill_rec(rec: dict[str, Any]) -> tuple[float, str]:
+def p_hat_from_candidate(candidate: Candidate) -> tuple[float, str]:
+    """p_hat = raw stage-1 concat cosine (not the CE min–max score).
+
+    ``cross_encoder_score`` is only used for CE *ordering*; it is per-user min–max in [0, 1] so the
+    top row is often 1.0 and must not be used as p_hat.
     """
-    p_hat = raw cosine similarity from match_v3 stage-1 (not CE min–max score).
-
-    ``cross_encoder_score`` is only used for CE *ordering*; it is per-user min–max
-    in [0, 1] so the top row is often 1.0 and must not be used as p_hat.
-    """
-    cos = rec.get("concat_cosine_similarity")
-    if cos is not None:
-        return float(cos), "concat_cosine_similarity"
-    mbc = rec.get("mean_best_cosine")
-    if mbc is not None:
-        return float(mbc), "mean_best_cosine"
-    return 0.0, "mean_best_cosine"
+    return candidate.concat_cosine_similarity, "concat_cosine_similarity"
 
 
 def compute_final_score(
-    pref_result: dict[str, Any],
+    pref: PreferenceScore,
     p_hat: float,
     *,
     p_hat_source: str,
     combiner: str,
-) -> tuple[float, dict[str, Any]]:
+) -> tuple[float, FinalScoreBreakdown]:
     """Compute final score from u_hat and p_hat (configurable)."""
-    u_hat = float(pref_result.get("u_hat", 0.5))
+    u_hat = pref.u_hat
     final = combine_final_score(u_hat, p_hat, combiner=combiner)  # type: ignore[arg-type]
-
-    breakdown = {
-        "scoring_mode": "multiplicative",
-        "final_score_combiner": combiner,
-        "u_hat": round(u_hat, 4),
-        "p_hat": round(p_hat, 4),
-        "p_hat_source": p_hat_source,
-        "final_score": round(final, 4),
-        "preference_score_legacy": round(float(pref_result.get("score", 0.0)), 4),
-    }
-    return final, breakdown
+    return final, FinalScoreBreakdown(
+        final_score_combiner=combiner,
+        u_hat=round(u_hat, 4),
+        p_hat=round(p_hat, 4),
+        p_hat_source=p_hat_source,
+        final_score=round(final, 4),
+        preference_score_legacy=round(pref.score, 4),
+    )
 
 
 def enrich_recommendations_with_preferences(
-    user: dict[str, Any],
-    recs: list[dict[str, Any]],
-    jobs_by_uuid: dict[str, dict[str, Any]],
+    user: UserProfile,
+    candidates: Sequence[Candidate],
     *,
-    preference_scorer,
+    preference_scorer: IPreferenceScorer,
     include_work_activities: bool = True,
     final_score_combiner: str | None = None,
     include_demand: bool = False,
     demand_gamma: float = 0.0,
-    p_hat_by_uuid: dict[str, float] | None = None,
-    coverage_by_uuid: dict[str, float] | None = None,
+    p_hat_by_uuid: Mapping[str, float] | None = None,
+    coverage_by_uuid: Mapping[str, float] | None = None,
     coverage_gamma: float = 0.0,
-    location_tier_by_uuid: dict[str, float] | None = None,
-) -> list[dict[str, Any]]:
-    """
-    Stage 3 only: compute u_hat per job, p_hat from stage 1–2 cosine, re-rank by u_hat × p_hat.
+    location_tier_by_uuid: Mapping[str, float] | None = None,
+) -> list[ScoredCandidate]:
+    """Stage 3 only: compute u_hat per item, p_hat from stage 1–2 cosine, re-rank by u_hat × p_hat.
 
-    Input ``recs`` must stay in CE order for ``cross_encoder_recommendations`` export;
-    this function returns a new list sorted by ``final_score``.
+    ``candidates`` stay in CE order; this returns a new list sorted by ``final_score``.
 
     ``include_demand`` (with ``demand_gamma`` > 0) applies an occupation-only labour-market tilt:
     ``final *= M ** demand_gamma`` where M = expected-demand score in [0,1] (neutral 1.0 when the
     item has no/unknown demand). Opportunities call with ``include_demand=False`` (the default),
     so their ranking is unaffected.
     """
-    scored: list[tuple[float, float, int, dict[str, Any]]] = []
+    combiner = (final_score_combiner or FINAL_SCORE_COMBINER).strip().lower()
+    scored: list[tuple[float, float, int, ScoredCandidate]] = []
 
-    for i, rec in enumerate(recs):
-        uid = str(rec.get("job_uuid") or "")
-        job = jobs_by_uuid.get(uid)
-        if job is None:
-            continue
+    for i, c in enumerate(candidates):
+        uid = c.uuid
+        item = c.item
 
-        calc = preference_scorer.calculate_score
-        if "include_work_activities" in inspect.signature(calc).parameters:
-            pref = calc(user, job, include_work_activities=include_work_activities)
-        else:
-            pref = calc(user, job)
-        p_hat, p_hat_source = p_hat_from_skill_rec(rec)
+        pref = preference_scorer.calculate_score(
+            user, item, include_work_activities=include_work_activities
+        )
+        p_hat, p_hat_source = p_hat_from_candidate(c)
         # Phase-2 (V4_FULL_RANK_DEMOTE): override p_hat's skills-fit with the WHITENED+rescaled concat
         # cosine (de-anisotropised, discriminative). Still in [0,1]; final = u_hat x p_hat unchanged.
         if p_hat_by_uuid is not None and uid in p_hat_by_uuid:
             p_hat = max(0.0, min(1.0, float(p_hat_by_uuid[uid])))
             p_hat_source = "concat_cosine_whitened"
-        combiner = (final_score_combiner or FINAL_SCORE_COMBINER).strip().lower()
         final, breakdown = compute_final_score(
             pref, p_hat, p_hat_source=p_hat_source, combiner=combiner
         )
+        updates: dict[str, float | str | None] = {}
 
         # Occupation-only demand tilt (opportunities pass include_demand=False): multiply the
         # final score by M**gamma — M = expected-demand score in [0,1], neutral 1.0 when the item
         # has no/unknown demand. Mirrors the legacy p_hat market factor; this re-ranks occupations.
         if include_demand and demand_gamma > 0:
-            dres = _DEMAND_SCORER.calculate_score(job)
-            if dres.get("present"):
-                m = max(0.0, min(1.0, float(dres.get("score") or 0.0)))
+            demand = _DEMAND_SCORER.calculate_score(item)
+            if demand.present:
+                m = max(0.0, min(1.0, demand.score))
                 final = final * (m**demand_gamma)
-                breakdown["final_score"] = round(final, 4)
-                breakdown["demand_score"] = round(m, 4)
-                breakdown["demand_label"] = dres.get("label")
-                breakdown["demand_gamma"] = round(float(demand_gamma), 4)
+                updates.update(
+                    demand_score=round(m, 4),
+                    demand_label=demand.label,
+                    demand_gamma=round(float(demand_gamma), 4),
+                )
 
         # Phase-2 achievability demotion: final *= floor + (1-floor) * essential_coverage**gamma (all
         # factors in [0,1], so final stays in range and the combination u_hat x p_hat is preserved —
@@ -642,11 +601,12 @@ def enrich_recommendations_with_preferences(
                 floor = max(0.0, min(1.0, V4_FULL_COVERAGE_FLOOR))
                 factor = floor + (1.0 - floor) * cov**coverage_gamma
                 final = final * factor
-                breakdown["final_score"] = round(final, 4)
-                breakdown["essential_coverage"] = round(cov, 4)
-                breakdown["coverage_gamma"] = round(float(coverage_gamma), 4)
-                breakdown["coverage_floor"] = round(floor, 4)
-                breakdown["coverage_factor"] = round(factor, 4)
+                updates.update(
+                    essential_coverage=round(cov, 4),
+                    coverage_gamma=round(float(coverage_gamma), 4),
+                    coverage_floor=round(floor, 4),
+                    coverage_factor=round(factor, 4),
+                )
 
         # Urban-pull location tier (flat multiply): final *= tier, where tier in {1.0 local,
         # W_REGIONAL, W_NATIONAL, 0.0 off-chain}. The tier values are themselves the tuning knobs, so
@@ -659,119 +619,71 @@ def enrich_recommendations_with_preferences(
                 if tier <= 0.0:
                     continue
                 final = final * tier
-                breakdown["final_score"] = round(final, 4)
-                breakdown["location_tier_factor"] = round(tier, 4)
+                updates["location_tier_factor"] = round(tier, 4)
 
-        row = dict(rec)
-        row["rank_cross_encoder"] = rec.get("rank")
-        row["u_hat"] = pref.get("u_hat")
-        row["preference_score"] = pref.get("score")
-        row["preference_details"] = pref.get("details", [])
-        row["preference_match_rows"] = preference_details_for_dashboard(
-            pref.get("details")
+        updates["final_score"] = round(final, 4)
+        breakdown = breakdown.model_copy(update=updates)
+        scored.append(
+            (
+                final,
+                p_hat,
+                i,
+                ScoredCandidate(
+                    candidate=c,
+                    rank=0,
+                    preference=pref,
+                    p_hat=round(p_hat, 4),
+                    p_hat_source=p_hat_source,
+                    final_score=breakdown.final_score,
+                    breakdown=breakdown,
+                ),
+            )
         )
-        row["work_activity_match"] = work_activity_match_for_dashboard(
-            pref.get("details")
-        )
-        row["S_attrs"] = pref.get("S_attrs")
-        row["S_wa"] = pref.get("S_wa")
-        row["preference_include_work_activities"] = include_work_activities
-        row["p_hat"] = round(p_hat, 4)
-        row["p_hat_source"] = p_hat_source
-        row["score_breakdown"] = breakdown
-        row["final_score"] = breakdown["final_score"]
-        scored.append((final, p_hat, i, row))
 
     scored.sort(key=lambda t: (-t[0], -t[1], t[2]))
-    out: list[dict[str, Any]] = []
-    for rank, (_fs, _ph, _i, row) in enumerate(scored, start=1):
-        row["rank"] = rank
-        out.append(row)
-    return out
-
-
-def v3_recommendation_to_rec(
-    row: dict[str, Any],
-    job_index: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
-    """
-    Map one ``concat_gemini_ce_recommendations`` row to the batch runner shape.
-
-    Scores use raw ``concat_cosine_similarity`` (match_v3). Skill display uses
-    concat label lists only (no per-skill embedding pairs).
-    """
-    jid = str(row.get("job_uuid") or "").strip()
-    cos = row.get("concat_cosine_similarity")
-    try:
-        cos_f = float(cos) if cos is not None else None
-    except (TypeError, ValueError):
-        cos_f = None
-
-    job = job_index.get(jid)
-    job_skills = job_skill_labels_for_concat(job) if job else []
-
-    return {
-        "rank": row.get("rank"),
-        "job_uuid": jid,
-        "job_title": row.get("opportunity_title") or row.get("job_title"),
-        "employer": row.get("employer"),
-        "location": row.get("location"),
-        "concat_cosine_similarity": cos_f,
-        "mean_best_cosine": round(cos_f, 4) if cos_f is not None else None,
-        "cross_encoder_logit": row.get("cross_encoder_logit"),
-        "cross_encoder_score": row.get("cross_encoder_score"),
-        "rank_cosine": row.get("rank_cosine"),
-        "job_concat_skills": job_skills,
-    }
+    return [
+        row.model_copy(update={"rank": rank})
+        for rank, (_fs, _ph, _i, row) in enumerate(scored, start=1)
+    ]
 
 
 def enriched_recommendations(
-    user,
-    v3_row,
-    item_index,
-    pref_scorer,
-    combiner,
+    user: UserProfile,
+    candidates: Sequence[Candidate],
+    pref_scorer: IPreferenceScorer,
+    combiner: str | None,
     *,
-    location_filter=True,
-    location_user=None,
+    location_filter: bool = True,
+    location_user: Place | None = None,
     include_demand: bool = False,
     demand_gamma: float = 0.0,
-    p_hat_by_uuid: dict[str, float] | None = None,
-    coverage_by_uuid: dict[str, float] | None = None,
+    p_hat_by_uuid: Mapping[str, float] | None = None,
+    coverage_by_uuid: Mapping[str, float] | None = None,
     coverage_gamma: float = 0.0,
-    location_tier_by_uuid: dict[str, float] | None = None,
-) -> list[dict[str, Any]]:
-    """CE recs for one user -> preference-enriched, final-score-sorted recs (rich; with details).
+    location_tier_by_uuid: Mapping[str, float] | None = None,
+) -> list[ScoredCandidate]:
+    """CE slate for one user -> preference-enriched, final-score-sorted candidates.
 
-    With ``location_filter`` (default), recs are first restricted to items matching a location via
-    the same lenient rule ``/match`` uses (``job_matches_user_location``). ``location_user`` (a
-    dict with city/province/location) overrides which location to filter by WITHOUT changing the
-    ``user`` whose preferences drive ``u_hat`` — used for the random-county fallback. For
-    occupations this keeps one row/code (a single county) with that county's attributes.
+    With ``location_filter`` (default), candidates are first restricted to items matching a location
+    via the same lenient rule ``/match`` uses (``job_matches_user_location``). ``location_user``
+    overrides which location to filter by WITHOUT changing the ``user`` whose preferences drive
+    ``u_hat`` — used for the random-county fallback. For occupations this keeps one row/code (a
+    single county) with that county's attributes.
 
     Note: the post-secondary education gate is already applied upstream in stage-1 retrieval
     (it skips ineligible items before the top-k cutoff), so no education filtering is needed here.
     """
-    ce_http = (v3_row or {}).get("concat_gemini_ce_recommendations") or []
-    if location_filter and ce_http:
-        loc = location_user or user
-        ce_http = [
-            r
-            for r in ce_http
-            if isinstance(r, dict)
-            and job_matches_user_location(
-                item_index.get(str(r.get("job_uuid") or "")) or {}, loc
-            )
+    slate = list(candidates)
+    if location_filter and slate:
+        where = location_user or Place.of_user(user)
+        slate = [
+            c for c in slate if job_matches_user_location(Place.of_item(c.item), where)
         ]
-    ce_internal = [
-        v3_recommendation_to_rec(r, item_index) for r in ce_http if isinstance(r, dict)
-    ]
-    if not ce_internal:
+    if not slate:
         return []
     return enrich_recommendations_with_preferences(
         user,
-        ce_internal,
-        item_index,
+        slate,
         preference_scorer=pref_scorer,
         include_work_activities=True,
         final_score_combiner=combiner,

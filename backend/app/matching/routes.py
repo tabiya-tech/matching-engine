@@ -99,7 +99,7 @@ def add_matching_routes(router: APIRouter) -> None:
             description=f"Number of skill-gap recommendations per user. Default: {MATCH_TOP_K_SKILL_GAPS}.",
         ),
         matching_service: IMatchingService = Depends(get_matching_service),
-    ):
+    ) -> list[MatchResponse]:
         """Match one or more users to occupations, job opportunities and skill gaps.
 
         Body is a JSON array of ``MatchRequest`` (use length 1 for a single user); the response is a

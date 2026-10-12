@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import Any
+
+from app.ranking.types import Candidate
 
 # --------------------------------------------------------------------------------------------------
 # text_pairs
@@ -33,23 +34,20 @@ def build_user_query_text(
     return "; ".join(skills)
 
 
-def build_job_passage_from_cosine_rec(
-    rec: dict[str, Any],
+def build_job_passage_from_candidate(
+    candidate: Candidate,
     *,
     max_skills: int = 64,
 ) -> str:
-    """Job skill labels only, taken from cosine row ``per_job_skill`` (``job_skill_label``)."""
+    """Item skill labels only, taken from the candidate's ``per_job_skill`` (``job_skill_label``)."""
 
-    pj = rec.get("per_job_skill") or []
     cap = max(0, int(max_skills))
     seen: set[str] = set()
     labels: list[str] = []
-    for row in pj:
+    for row in candidate.per_job_skill:
         if cap and len(labels) >= cap:
             break
-        if not isinstance(row, dict):
-            continue
-        jl = str(row.get("job_skill_label") or "").strip()
+        jl = (row.job_skill_label or "").strip()
         if not jl:
             continue
         key = jl.casefold()
@@ -81,7 +79,7 @@ class ICrossEncoderRerank(ABC):
     def build_pairs(
         self,
         resolved_skill_labels: Sequence[str],
-        cosine_recs: Sequence[dict[str, Any]],
+        candidates: Sequence[Candidate],
         *,
         final_top_k: int,
     ) -> list[tuple[str, str]]:
@@ -89,7 +87,7 @@ class ICrossEncoderRerank(ABC):
         The [query, passage] pairs to score, one per shortlisted row (empty when nothing to rerank).
 
         :param resolved_skill_labels: The user's skill labels (the query)
-        :param cosine_recs: The stage-1 shortlist rows
+        :param candidates: The stage-1 shortlist
         :param final_top_k: Slate size after rerank
         """
         raise NotImplementedError()
@@ -97,19 +95,19 @@ class ICrossEncoderRerank(ABC):
     @abstractmethod
     def apply(
         self,
-        cosine_recs: Sequence[dict[str, Any]],
+        candidates: Sequence[Candidate],
         scores: list[float],
         *,
         final_top_k: int,
-    ) -> list[dict[str, Any]]:
+    ) -> list[Candidate]:
         """
         Orders the shortlist by the scores of ``build_pairs`` and keeps ``final_top_k`` rows.
 
-        :param cosine_recs: The same rows passed to ``build_pairs``
+        :param candidates: The same candidates passed to ``build_pairs``
         :param scores: One cross-encoder logit per pair
         :param final_top_k: Slate size after rerank
-        :return: Reranked rows with ``rank_cosine``, ``cross_encoder_logit``, ``cross_encoder_score``
-            and the new ``rank``
+        :return: Reranked candidates with ``rank_cosine``, ``cross_encoder_logit``,
+            ``cross_encoder_score`` and the new ``rank`` set
         """
         raise NotImplementedError()
 
@@ -118,7 +116,7 @@ class CrossEncoderRerank(ICrossEncoderRerank):
     """Sort cosine-shortlisted rows by cross-encoder relevance; keep ``final_top_k`` results.
 
     Query and passages are **skills-only** strings (preferred user labels vs ``job_skill_label``
-    from each row's ``per_job_skill``).
+    from each candidate's ``per_job_skill``).
 
     The HF cross-encoder returns **ordinal relevance logits**, not cosine similarity—the
     reranker only sorts by descending logit order. Persisted outputs:
@@ -133,12 +131,12 @@ class CrossEncoderRerank(ICrossEncoderRerank):
     def build_pairs(
         self,
         resolved_skill_labels: Sequence[str],
-        cosine_recs: Sequence[dict[str, Any]],
+        candidates: Sequence[Candidate],
         *,
         final_top_k: int,
     ) -> list[tuple[str, str]]:
         k = max(0, int(final_top_k))
-        rows = list(cosine_recs)
+        rows = list(candidates)
         if k == 0 or not rows:
             return []
 
@@ -147,20 +145,20 @@ class CrossEncoderRerank(ICrossEncoderRerank):
             side="User",
         )
         passages = [
-            _non_empty_skill_text(build_job_passage_from_cosine_rec(r), side="Job")
+            _non_empty_skill_text(build_job_passage_from_candidate(r), side="Job")
             for r in rows
         ]
         return [(query, p) for p in passages]
 
     def apply(
         self,
-        cosine_recs: Sequence[dict[str, Any]],
+        candidates: Sequence[Candidate],
         scores: list[float],
         *,
         final_top_k: int,
-    ) -> list[dict[str, Any]]:
+    ) -> list[Candidate]:
         k = max(0, int(final_top_k))
-        rows = list(cosine_recs)
+        rows = list(candidates)
         if k == 0 or not rows:
             return []
 
@@ -170,27 +168,30 @@ class CrossEncoderRerank(ICrossEncoderRerank):
         else:
             scores = scores[:n]
 
-        decorated: list[tuple[float, int, dict[str, Any]]] = []
-        for i, r in enumerate(rows):
-            ce = scores[i] if i < len(scores) else 0.0
-            decorated.append((ce, i, dict(r)))
-
-        decorated.sort(key=lambda t: (-t[0], t[1]))
+        decorated = sorted(
+            ((float(scores[i]), i, r) for i, r in enumerate(rows)),
+            key=lambda t: (-t[0], t[1]),
+        )
         chosen = decorated[:k]
-        logits = [float(ce) for ce, _i, _row in chosen]
+        logits = [ce for ce, _i, _row in chosen]
         lo = min(logits) if logits else 0.0
         hi = max(logits) if logits else 0.0
         span = hi - lo
 
-        out: list[dict[str, Any]] = []
+        out: list[Candidate] = []
         for new_rank, (logit_raw, _i, row) in enumerate(chosen, start=1):
-            row["rank_cosine"] = row.get("rank")
-            row["cross_encoder_logit"] = round(float(logit_raw), 6)
             if span <= 0:
                 ce_pos = 1.0 if logits else 0.0
             else:
-                ce_pos = round((float(logit_raw) - lo) / span, 6)
-            row["cross_encoder_score"] = ce_pos
-            row["rank"] = new_rank
-            out.append(row)
+                ce_pos = round((logit_raw - lo) / span, 6)
+            out.append(
+                row.model_copy(
+                    update={
+                        "rank_cosine": row.rank,
+                        "cross_encoder_logit": round(logit_raw, 6),
+                        "cross_encoder_score": ce_pos,
+                        "rank": new_rank,
+                    }
+                )
+            )
         return out
