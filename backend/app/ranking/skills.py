@@ -9,9 +9,8 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-
 import numpy as np
+from pydantic import Field
 
 from app.config import (
     GATE_SIMILARITY_THRESHOLD,
@@ -26,7 +25,17 @@ from app.config import (
     SKILL_U_W_OPT,
     taxonomy_pack_paths,
 )
+from app.domain.base import DomainModel
+from app.domain.skills import SkillReference
+from app.domain.user import UserProfile
 from app.languages import CANONICAL_LANGUAGE, enabled_languages
+from app.ranking.types import MatchItem, SkillMatchDetail, SkillPairScore
+from app.schemas import (
+    MatchedSkill,
+    MatchedSkills,
+    OptionalSkillMatch,
+    SkillGroupMatch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +82,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Jobseeker:
+    """A user as the legacy skill-utility kernel sees it: resolved skill and group ids, location."""
+
     compass_id: str
     skills_origin_uuids: set[str]
     skill_groups_origin_uuids: set[str]
@@ -82,6 +93,8 @@ class Jobseeker:
 
 @dataclass(frozen=True)
 class Opportunity:
+    """An item as the legacy skill-utility kernel sees it: resolved skill and group ids, location."""
+
     opportunity_id: str
     essential_skill_ids: set[str]
     optional_skill_ids: set[str]
@@ -125,7 +138,7 @@ class SimilarityEngine:
         # Per-rowmax rescale target (> 0 enables rescaling; see _shared_pair_kernel).
         self.rescale_target = float(rescale_target)
 
-    def _rows(self, skill_ids) -> np.ndarray:
+    def _rows(self, skill_ids: Iterable[str]) -> np.ndarray:
         """Retrieves vectors for specific skill IDs from the matrix."""
         idx = [
             self.skill_to_row[str(s)] for s in skill_ids if str(s) in self.skill_to_row
@@ -134,7 +147,7 @@ class SimilarityEngine:
             return np.empty((0, self.W.shape[1]))
         return self.W[np.array(idx), :]
 
-    def _rows_with_ids(self, skill_ids):
+    def _rows_with_ids(self, skill_ids: Iterable[str]) -> tuple[np.ndarray, list[str]]:
         """Retrieves vectors and aligned IDs for a list of skill IDs."""
         valid_ids = [str(s) for s in skill_ids if str(s) in self.skill_to_row]
         if not valid_ids:
@@ -151,15 +164,42 @@ class SimilarityEngine:
         return v / norm if norm > 0 else None
 
 
+@dataclass(frozen=True)
+class _PairKernel:
+    """Intermediates of one (jobseeker, opportunity) pass, shared by U and feasibility."""
+
+    loc_score: float
+    js_ids: list[str]
+    ess_ids: list[str]
+    opt_ids: list[str]
+    js_mat: np.ndarray
+    ess_mat: np.ndarray
+    js_ids_valid: list[str]
+    ess_ids_valid: list[str]
+    S: np.ndarray | None
+    rowmax: np.ndarray | None  # raw rowmax (preserved for diagnostic / response)
+    rowmax_rescaled: (
+        np.ndarray | None
+    )  # rescaled rowmax (used by all gate / GM / mean comparators)
+    argmax: np.ndarray | None
+    ess_sim: float
+    ess_geo: float
+    opt_sim: float
+    grp_sim: float
+    identity_coverage: float
+    ess_sim_raw: float
+    ess_geo_raw: float
+
+
 def _shared_pair_kernel(
     js: Jobseeker,
     op: Opportunity,
     engine: SimilarityEngine,
     geo_floor: float | None = None,
-):
+) -> _PairKernel:
     """Single essential similarity matmul and shared optional/location; used by U and p_hat.
 
-    Returns a dict of intermediates so compute_U and feasibility can share one
+    Returns the intermediates so compute_U and feasibility can share one
     :math:`S = E @ J^\\top` and one match-detail list.
     """
     if geo_floor is None:
@@ -183,7 +223,7 @@ def _shared_pair_kernel(
     target = engine.rescale_target
     rescale_enabled = target > 0.0
 
-    def _rescale(arr):
+    def _rescale(arr: np.ndarray) -> np.ndarray:
         if not rescale_enabled:
             return arr
         return np.minimum(1.0, arr / target)
@@ -279,85 +319,75 @@ def _shared_pair_kernel(
     else:
         grp_sim = 0.0
 
-    return {
-        "loc_score": loc_score,
-        "js_ids": js_ids,
-        "ess_ids": ess_ids,
-        "opt_ids": opt_ids,
-        "js_mat": js_mat,
-        "ess_mat": ess_mat,
-        "js_ids_valid": js_ids_valid,
-        "ess_ids_valid": ess_ids_valid,
-        "S": S,
-        "rowmax": rowmax,  # raw rowmax (preserved for diagnostic / response)
-        "rowmax_rescaled": rowmax_rescaled,  # rescaled rowmax (used by all gate / GM / mean comparators)
-        "argmax": argmax,
-        "ess_sim": ess_sim,
-        "ess_geo": ess_geo,
-        "opt_sim": opt_sim,
-        "grp_sim": grp_sim,
-        "identity_coverage": identity_coverage,
-        "ess_sim_raw": ess_sim_raw,
-        "ess_geo_raw": ess_geo_raw,
-    }
+    return _PairKernel(
+        loc_score=loc_score,
+        js_ids=js_ids,
+        ess_ids=ess_ids,
+        opt_ids=opt_ids,
+        js_mat=js_mat,
+        ess_mat=ess_mat,
+        js_ids_valid=js_ids_valid,
+        ess_ids_valid=ess_ids_valid,
+        S=S,
+        rowmax=rowmax,
+        rowmax_rescaled=rowmax_rescaled,
+        argmax=argmax,
+        ess_sim=ess_sim,
+        ess_geo=ess_geo,
+        opt_sim=opt_sim,
+        grp_sim=grp_sim,
+        identity_coverage=identity_coverage,
+        ess_sim_raw=ess_sim_raw,
+        ess_geo_raw=ess_geo_raw,
+    )
 
 
 def _build_essential_match_list(
-    ess_mat,
-    js_mat,
-    S,
-    rowmax,
-    rowmax_rescaled,
-    argmax,
-    ess_ids_valid,
-    js_ids_valid,
-    skill_labels,
-    user_skill_labels,
+    k: _PairKernel,
+    skill_labels: dict[str, str],
+    user_skill_labels: dict[str, str],
     threshold: float,
-):
-    """Match-list payload for the response. `similarity` is in rescaled space (the
+) -> list[MatchedSkill]:
+    """Match-list payload for the response. ``similarity`` is in rescaled space (the
     same frame as final_score, p_hat, essential_fit), so a human reader sees one
-    consistent scale. `similarity_raw` is the un-rescaled whitened cosine, kept for
-    audit / debugging. `meets_threshold` compares the rescaled value, since the
+    consistent scale. ``meets_threshold`` compares the rescaled value, since the
     threshold lives in the same rescaled frame as all the gate decisions.
     """
-    essential_skill_matches = []
+    essential_skill_matches: list[MatchedSkill] = []
     if (
-        ess_mat.size > 0
-        and js_mat.size > 0
-        and rowmax is not None
-        and argmax is not None
+        k.ess_mat.size > 0
+        and k.js_mat.size > 0
+        and k.rowmax is not None
+        and k.argmax is not None
     ):
         # rowmax_rescaled is None only if the kernel skipped rescaling; in that case
         # fall back to raw (rescaling disabled => values are already in the right frame).
-        rescaled = rowmax_rescaled if rowmax_rescaled is not None else rowmax
-        for i, ess_id in enumerate(ess_ids_valid):
-            best_idx = int(argmax[i])
-            best_js_id = js_ids_valid[best_idx] if js_ids_valid else None
+        rescaled = k.rowmax_rescaled if k.rowmax_rescaled is not None else k.rowmax
+        for i, ess_id in enumerate(k.ess_ids_valid):
+            best_idx = int(k.argmax[i])
+            best_js_id = k.js_ids_valid[best_idx] if k.js_ids_valid else None
             sim_rescaled = float(rescaled[i])
-            sim_raw = float(rowmax[i])
             essential_skill_matches.append(
-                {
-                    "job_skill_id": ess_id,
-                    "job_skill_label": skill_labels.get(ess_id),
-                    "best_user_skill_id": best_js_id,
-                    "best_user_skill_label": user_skill_labels.get(best_js_id),
-                    "similarity": round(sim_rescaled, 4),
-                    "similarity_raw": round(sim_raw, 4),
-                    "meets_threshold": sim_rescaled >= threshold,
-                }
+                MatchedSkill(
+                    job_skill_id=ess_id,
+                    job_skill_label=skill_labels.get(ess_id),
+                    best_user_skill_id=best_js_id,
+                    best_user_skill_label=user_skill_labels.get(best_js_id)
+                    if best_js_id
+                    else None,
+                    similarity=round(sim_rescaled, 4),
+                    meets_threshold=sim_rescaled >= threshold,
+                )
             )
-    elif ess_ids_valid:
-        for ess_id in ess_ids_valid:
+    elif k.ess_ids_valid:
+        for ess_id in k.ess_ids_valid:
             essential_skill_matches.append(
-                {
-                    "job_skill_id": ess_id,
-                    "job_skill_label": skill_labels.get(ess_id),
-                    "best_user_skill_id": None,
-                    "best_user_skill_label": None,
-                    "similarity": 0.0,
-                    "meets_threshold": False,
-                }
+                MatchedSkill(
+                    job_skill_id=ess_id,
+                    job_skill_label=skill_labels.get(ess_id),
+                    similarity=0.0,
+                    meets_threshold=False,
+                )
             )
     return essential_skill_matches
 
@@ -365,25 +395,176 @@ def _build_essential_match_list(
 def _optional_and_group_match_lists(
     op: Opportunity,
     js: Jobseeker,
-    opt_ids,
-    js_ids,
-    skill_labels,
-    user_skill_labels,
-    skill_group_labels,
-):
+    k: _PairKernel,
+    skill_labels: dict[str, str],
+    user_skill_labels: dict[str, str],
+    skill_group_labels: dict[str, str],
+) -> tuple[list[OptionalSkillMatch], list[SkillGroupMatch]]:
     optional_exact_matches = [
-        {
-            "skill_id": opt_id,
-            "skill_label": skill_labels.get(opt_id) or user_skill_labels.get(opt_id),
-        }
-        for opt_id in sorted(set(opt_ids) & set(js_ids))
-    ]
-    skill_group_matches = []
-    for gid in sorted(op.skill_groups_origin_uuids & js.skill_groups_origin_uuids):
-        skill_group_matches.append(
-            {"skill_group_id": gid, "skill_group_label": skill_group_labels.get(gid)}
+        OptionalSkillMatch(
+            skill_id=opt_id,
+            skill_label=skill_labels.get(opt_id) or user_skill_labels.get(opt_id),
         )
+        for opt_id in sorted(set(k.opt_ids) & set(k.js_ids))
+    ]
+    skill_group_matches = [
+        SkillGroupMatch(
+            skill_group_id=gid, skill_group_label=skill_group_labels.get(gid)
+        )
+        for gid in sorted(op.skill_groups_origin_uuids & js.skill_groups_origin_uuids)
+    ]
     return optional_exact_matches, skill_group_matches
+
+
+class SkillUtilityComponents(DomainModel):
+    """Components of the legacy skill utility ``U`` (each in [0, 1])."""
+
+    loc: float = Field(
+        description="Location proximity (1.0 city, 0.7 province, 0.3 otherwise)."
+    )
+    ess: float = Field(description="Mean best (rescaled) cosine over essential skills.")
+    opt: float = Field(description="Mean best (rescaled) cosine over optional skills.")
+    grp: float = Field(description="Skill-group recall.")
+
+
+class SkillUtility(DomainModel):
+    """Legacy skill utility ``U`` of a (jobseeker, opportunity) pair (``compute_U_complete``)."""
+
+    U_final: float = Field(
+        description="Weighted component blend minus the gap penalty, in [0, 1]."
+    )
+    is_eligible: bool = Field(
+        description="True when the share of essentials above ``SKILL_U_TAU_ELIG`` reaches the eligibility share."
+    )
+    components: SkillUtilityComponents = Field(description="The blended components.")
+    penalty: float = Field(description="Gap penalty subtracted from the blend.")
+    match_details: MatchedSkills = Field(description="Per-skill match rows.")
+
+
+class Feasibility(DomainModel):
+    """Recruiter-side feasibility signals of a pair, feeding the legacy ``p_hat``."""
+
+    gate_passed: bool = Field(
+        description="True when at most half the essentials fall below the gate threshold."
+    )
+    essential_fit: float = Field(
+        description="Score-weighted geometric mean of rescaled essential rowmaxes (0 when gated)."
+    )
+    essential_fit_raw: float = Field(
+        description="As ``essential_fit``, un-rescaled (diagnostic)."
+    )
+    identity_coverage: float = Field(
+        description="Share of essentials the user holds exactly (diagnostic)."
+    )
+    optional_sim: float = Field(description="Mean best cosine over optional skills.")
+    skill_group_recall: float = Field(description="Skill-group recall.")
+    gap_share: float = Field(
+        description="Share of essentials below the gate threshold."
+    )
+    has_essential_skills: bool = Field(
+        description="The opportunity lists essential skills."
+    )
+    has_optional_skills: bool = Field(
+        description="The opportunity lists optional skills."
+    )
+    has_skill_groups: bool = Field(description="The opportunity lists skill groups.")
+    match_details: MatchedSkills = Field(description="Per-skill match rows.")
+
+
+def _utility(
+    k: _PairKernel,
+    *,
+    essential_matches: list[MatchedSkill],
+    optional_matches: list[OptionalSkillMatch],
+    group_matches: list[SkillGroupMatch],
+) -> SkillUtility:
+    W_LOC, W_ESS, W_OPT, W_GRP, W_GAP_PEN = (
+        SKILL_U_W_LOC,
+        SKILL_U_W_ESS,
+        SKILL_U_W_OPT,
+        SKILL_U_W_GRP,
+        SKILL_U_GAP_PENALTY,
+    )
+    core_score = (
+        W_LOC * k.loc_score + W_ESS * k.ess_sim + W_OPT * k.opt_sim + W_GRP * k.grp_sim
+    ) / (W_LOC + W_ESS + W_OPT + W_GRP)
+
+    # gap_share / eligibility evaluated against rescaled rowmax so the TAU_ELIG threshold
+    # lives in the same calibrated frame as ess_sim and final_score. When rescaling is
+    # disabled (no artefact metadata), rowmax_rescaled == rowmax, so behaviour is identical
+    # to before.
+    rowmax_for_gates = k.rowmax_rescaled if k.rowmax_rescaled is not None else k.rowmax
+    if rowmax_for_gates is None or rowmax_for_gates.size == 0:
+        gap_share, eligible = 0.0, True
+    else:
+        meets = rowmax_for_gates >= SKILL_U_TAU_ELIG
+        gap_share = float((~meets).mean())
+        eligible = bool(float(meets.mean()) >= SKILL_MIN_ESSENTIAL_MATCH_SHARE)
+
+    u_final = max(0.0, core_score - (W_GAP_PEN * gap_share))
+    return SkillUtility(
+        U_final=round(u_final, 4),
+        is_eligible=eligible,
+        components=SkillUtilityComponents(
+            loc=round(k.loc_score, 2),
+            ess=round(k.ess_sim, 4),
+            opt=round(k.opt_sim, 4),
+            grp=round(k.grp_sim, 4),
+        ),
+        penalty=round(W_GAP_PEN * gap_share, 4),
+        match_details=MatchedSkills(
+            essential_skill_matches=essential_matches,
+            optional_exact_matches=optional_matches,
+            skill_group_matches=group_matches,
+        ),
+    )
+
+
+def _feasibility(
+    op: Opportunity,
+    k: _PairKernel,
+    *,
+    gate_threshold: float,
+    essential_matches: list[MatchedSkill],
+    optional_matches: list[OptionalSkillMatch],
+    group_matches: list[SkillGroupMatch],
+) -> Feasibility:
+    # Gate evaluated against rescaled rowmax so GATE_SIMILARITY_THRESHOLD lives in the
+    # same calibrated frame as essential_fit and final_score. When rescaling is disabled
+    # (no artefact metadata), rowmax_rescaled == rowmax, so behaviour matches the
+    # pre-rescaling system.
+    rowmax_for_gates = k.rowmax_rescaled if k.rowmax_rescaled is not None else k.rowmax
+    ess_geo = k.ess_geo
+    if not k.ess_ids:
+        gap_share = 1.0
+        gate_passed = False
+        ess_geo = 0.0
+    elif rowmax_for_gates is None or rowmax_for_gates.size == 0:
+        gap_share = 1.0
+        gate_passed = False
+        ess_geo = 0.0
+    else:
+        meets = rowmax_for_gates >= gate_threshold
+        gap_share = float((~meets).mean())
+        gate_passed = bool(gap_share <= 0.5)
+
+    return Feasibility(
+        gate_passed=gate_passed,
+        essential_fit=round(ess_geo, 4),
+        essential_fit_raw=round(k.ess_geo_raw, 4),
+        identity_coverage=round(k.identity_coverage, 4),
+        optional_sim=round(k.opt_sim, 4),
+        skill_group_recall=round(k.grp_sim, 4),
+        gap_share=round(gap_share, 4),
+        has_essential_skills=len(k.ess_ids) > 0,
+        has_optional_skills=len(k.opt_ids) > 0,
+        has_skill_groups=len(op.skill_groups_origin_uuids) > 0,
+        match_details=MatchedSkills(
+            essential_skill_matches=essential_matches,
+            optional_exact_matches=optional_matches,
+            skill_group_matches=group_matches,
+        ),
+    )
 
 
 # =============================================================================
@@ -398,100 +579,25 @@ def compute_U_complete(
     skill_labels: dict[str, str] | None = None,
     user_skill_labels: dict[str, str] | None = None,
     skill_group_labels: dict[str, str] | None = None,
-):
+) -> SkillUtility:
     """Calculates the final Utility score with components and penalties.
 
     Uses a single essential similarity matmul via :func:`_shared_pair_kernel`.
     """
-    W_LOC, W_ESS, W_OPT, W_GRP, W_GAP_PEN = (
-        SKILL_U_W_LOC,
-        SKILL_U_W_ESS,
-        SKILL_U_W_OPT,
-        SKILL_U_W_GRP,
-        SKILL_U_GAP_PENALTY,
-    )
-    TAU_ELIG = SKILL_U_TAU_ELIG
-    MIN_ESS_SHARE = SKILL_MIN_ESSENTIAL_MATCH_SHARE
-
     skill_labels = skill_labels or {}
     user_skill_labels = user_skill_labels or {}
-    skill_group_labels = skill_group_labels or {}
-
     k = _shared_pair_kernel(js, op, engine)
-    loc_score = k["loc_score"]
-    ess_sim = k["ess_sim"]
-    opt_sim = k["opt_sim"]
-    grp_sim = k["grp_sim"]
-    ess_rowmax_raw = k["rowmax"]  # raw (preserved for diagnostic)
-    ess_rowmax_rescaled = k[
-        "rowmax_rescaled"
-    ]  # rescaled (used for gap_share / eligibility)
-    ess_mat, js_mat = k["ess_mat"], k["js_mat"]
-    js_ids, opt_ids = k["js_ids"], k["opt_ids"]
-    ess_ids_valid, js_ids_valid = k["ess_ids_valid"], k["js_ids_valid"]
-    S, argmax = k["S"], k["argmax"]
-
-    core_score = (
-        W_LOC * loc_score + W_ESS * ess_sim + W_OPT * opt_sim + W_GRP * grp_sim
-    ) / (W_LOC + W_ESS + W_OPT + W_GRP)
-
-    # gap_share / eligibility evaluated against rescaled rowmax so the TAU_ELIG threshold
-    # lives in the same calibrated frame as ess_sim and final_score. When rescaling is
-    # disabled (no artefact metadata), rowmax_rescaled == rowmax, so behaviour is identical
-    # to before.
-    rowmax_for_gates = (
-        ess_rowmax_rescaled if ess_rowmax_rescaled is not None else ess_rowmax_raw
+    opt_m, grp_m = _optional_and_group_match_lists(
+        op, js, k, skill_labels, user_skill_labels, skill_group_labels or {}
     )
-    if rowmax_for_gates is None or (
-        hasattr(rowmax_for_gates, "size") and rowmax_for_gates.size == 0
-    ):
-        gap_share, eligible = 0.0, True
-    else:
-        meets = rowmax_for_gates >= TAU_ELIG
-        gap_share = float((~meets).mean())
-        eligible = float(meets.mean()) >= MIN_ESS_SHARE
-
-    u_final = max(0.0, core_score - (W_GAP_PEN * gap_share))
-
-    essential_skill_matches = _build_essential_match_list(
-        ess_mat,
-        js_mat,
-        S,
-        ess_rowmax_raw,
-        ess_rowmax_rescaled,
-        argmax,
-        ess_ids_valid,
-        js_ids_valid,
-        skill_labels,
-        user_skill_labels,
-        TAU_ELIG,
+    return _utility(
+        k,
+        essential_matches=_build_essential_match_list(
+            k, skill_labels, user_skill_labels, SKILL_U_TAU_ELIG
+        ),
+        optional_matches=opt_m,
+        group_matches=grp_m,
     )
-    optional_exact_matches, skill_group_matches = _optional_and_group_match_lists(
-        op,
-        js,
-        opt_ids,
-        js_ids,
-        skill_labels,
-        user_skill_labels,
-        skill_group_labels,
-    )
-
-    return {
-        "U_final": round(u_final, 4),
-        "is_eligible": eligible,
-        "components": {
-            "loc": round(loc_score, 2),
-            "ess": round(ess_sim, 4),
-            "opt": round(opt_sim, 4),
-            "grp": round(grp_sim, 4),
-        },
-        "penalty": round(W_GAP_PEN * gap_share, 4),
-        "match_details": {
-            "essential_skill_matches": essential_skill_matches,
-            "optional_exact_matches": optional_exact_matches,
-            "skill_group_matches": skill_group_matches,
-        },
-    }
 
 
 # =============================================================================
@@ -507,89 +613,26 @@ def compute_feasibility_signals(
     skill_labels: dict[str, str] | None = None,
     user_skill_labels: dict[str, str] | None = None,
     skill_group_labels: dict[str, str] | None = None,
-):
+) -> Feasibility:
     """Recruiter-side feasibility; shares :func:`_shared_pair_kernel` with U."""
     if gate_threshold is None:
         gate_threshold = GATE_SIMILARITY_THRESHOLD
-
     skill_labels = skill_labels or {}
     user_skill_labels = user_skill_labels or {}
-    skill_group_labels = skill_group_labels or {}
-
     k = _shared_pair_kernel(js, op, engine)
-    ess_ids = k["ess_ids"]
-    opt_ids = k["opt_ids"]
-    js_ids = k["js_ids"]
-    ess_rowmax_raw = k["rowmax"]  # raw (preserved for diagnostic)
-    ess_rowmax_rescaled = k["rowmax_rescaled"]  # rescaled (used for gate / gap_share)
-    ess_geo = k["ess_geo"]
-    opt_sim = k["opt_sim"]
-    grp_recall = k["grp_sim"]
-    ess_mat, js_mat = k["ess_mat"], k["js_mat"]
-    ess_ids_valid, js_ids_valid = k["ess_ids_valid"], k["js_ids_valid"]
-    S, argmax = k["S"], k["argmax"]
-
-    # Gate evaluated against rescaled rowmax so GATE_SIMILARITY_THRESHOLD lives in the
-    # same calibrated frame as essential_fit and final_score. When rescaling is disabled
-    # (no artefact metadata), rowmax_rescaled == rowmax, so behaviour matches the
-    # pre-rescaling system.
-    rowmax_for_gates = (
-        ess_rowmax_rescaled if ess_rowmax_rescaled is not None else ess_rowmax_raw
+    opt_m, grp_m = _optional_and_group_match_lists(
+        op, js, k, skill_labels, user_skill_labels, skill_group_labels or {}
     )
-    has_essential_reqs = len(ess_ids) > 0
-    if not has_essential_reqs:
-        gap_share = 1.0
-        gate_passed = False
-        ess_geo = 0.0
-    elif rowmax_for_gates is None or rowmax_for_gates.size == 0:
-        gap_share = 1.0
-        gate_passed = False
-        ess_geo = 0.0
-    else:
-        meets = rowmax_for_gates >= gate_threshold
-        gap_share = float((~meets).mean())
-        gate_passed = bool(gap_share <= 0.5)
-
-    essential_skill_matches = _build_essential_match_list(
-        ess_mat,
-        js_mat,
-        S,
-        ess_rowmax_raw,
-        ess_rowmax_rescaled,
-        argmax,
-        ess_ids_valid,
-        js_ids_valid,
-        skill_labels,
-        user_skill_labels,
-        gate_threshold,
-    )
-    optional_exact_matches, skill_group_matches = _optional_and_group_match_lists(
+    return _feasibility(
         op,
-        js,
-        opt_ids,
-        js_ids,
-        skill_labels,
-        user_skill_labels,
-        skill_group_labels,
+        k,
+        gate_threshold=gate_threshold,
+        essential_matches=_build_essential_match_list(
+            k, skill_labels, user_skill_labels, gate_threshold
+        ),
+        optional_matches=opt_m,
+        group_matches=grp_m,
     )
-
-    return {
-        "gate_passed": gate_passed,
-        "essential_fit": round(ess_geo, 4),
-        "essential_fit_raw": round(k.get("ess_geo_raw", 0.0), 4),
-        "identity_coverage": round(k.get("identity_coverage", 0.0), 4),
-        "optional_sim": round(opt_sim, 4),
-        "skill_group_recall": round(grp_recall, 4),
-        "gap_share": round(gap_share, 4),
-        "has_essential_skills": len(ess_ids) > 0,
-        "has_optional_skills": len(opt_ids) > 0,
-        "has_skill_groups": len(op.skill_groups_origin_uuids) > 0,
-        "match_details": {
-            "essential_skill_matches": essential_skill_matches,
-            "optional_exact_matches": optional_exact_matches,
-            "skill_group_matches": skill_group_matches,
-        },
-    }
 
 
 def compute_utility_and_feasibility_pair(
@@ -600,159 +643,35 @@ def compute_utility_and_feasibility_pair(
     user_skill_labels: dict[str, str] | None = None,
     skill_group_labels: dict[str, str] | None = None,
     gate_threshold: float | None = None,
-) -> tuple:
+) -> tuple[SkillUtility, Feasibility]:
     """One essential matmul and one optional/group pass for the multiplicative pipeline."""
     if gate_threshold is None:
         gate_threshold = GATE_SIMILARITY_THRESHOLD
-    W_LOC, W_ESS, W_OPT, W_GRP, W_GAP_PEN = (
-        SKILL_U_W_LOC,
-        SKILL_U_W_ESS,
-        SKILL_U_W_OPT,
-        SKILL_U_W_GRP,
-        SKILL_U_GAP_PENALTY,
-    )
-    TAU_ELIG = SKILL_U_TAU_ELIG
-    MIN_ESS_SHARE = SKILL_MIN_ESSENTIAL_MATCH_SHARE
-
     skill_labels = skill_labels or {}
     user_skill_labels = user_skill_labels or {}
-    skill_group_labels = skill_group_labels or {}
-
     k = _shared_pair_kernel(js, op, engine)
-    loc_score = k["loc_score"]
-    ess_sim = k["ess_sim"]
-    ess_geo = k["ess_geo"]
-    opt_sim = k["opt_sim"]
-    grp_sim = k["grp_sim"]
-    ess_rowmax_raw = k["rowmax"]  # raw (preserved for diagnostic)
-    ess_rowmax_rescaled = k[
-        "rowmax_rescaled"
-    ]  # rescaled (used for both u-side and f-side gates)
-    ess_mat, js_mat = k["ess_mat"], k["js_mat"]
-    ess_ids, opt_ids, js_ids = k["ess_ids"], k["opt_ids"], k["js_ids"]
-    ess_ids_valid, js_ids_valid = k["ess_ids_valid"], k["js_ids_valid"]
-    S, argmax = k["S"], k["argmax"]
-
-    core_score = (
-        W_LOC * loc_score + W_ESS * ess_sim + W_OPT * opt_sim + W_GRP * grp_sim
-    ) / (W_LOC + W_ESS + W_OPT + W_GRP)
-
-    # u-side gap: TAU_ELIG against rescaled rowmax (calibrated frame).
-    rowmax_for_gates = (
-        ess_rowmax_rescaled if ess_rowmax_rescaled is not None else ess_rowmax_raw
+    u_ess = _build_essential_match_list(
+        k, skill_labels, user_skill_labels, SKILL_U_TAU_ELIG
     )
-    if rowmax_for_gates is None or (
-        hasattr(rowmax_for_gates, "size") and rowmax_for_gates.size == 0
-    ):
-        u_gap, eligible = 0.0, True
-    else:
-        meets = rowmax_for_gates >= TAU_ELIG
-        u_gap = float((~meets).mean())
-        eligible = float(meets.mean()) >= MIN_ESS_SHARE
-
-    u_final = max(0.0, core_score - (W_GAP_PEN * u_gap))
-
-    if abs(TAU_ELIG - gate_threshold) >= 1e-9:
-        u_ess = _build_essential_match_list(
-            ess_mat,
-            js_mat,
-            S,
-            ess_rowmax_raw,
-            ess_rowmax_rescaled,
-            argmax,
-            ess_ids_valid,
-            js_ids_valid,
-            skill_labels,
-            user_skill_labels,
-            TAU_ELIG,
-        )
-        f_ess = _build_essential_match_list(
-            ess_mat,
-            js_mat,
-            S,
-            ess_rowmax_raw,
-            ess_rowmax_rescaled,
-            argmax,
-            ess_ids_valid,
-            js_ids_valid,
-            skill_labels,
-            user_skill_labels,
-            gate_threshold,
-        )
-    else:
-        u_ess = f_ess = _build_essential_match_list(
-            ess_mat,
-            js_mat,
-            S,
-            ess_rowmax_raw,
-            ess_rowmax_rescaled,
-            argmax,
-            ess_ids_valid,
-            js_ids_valid,
-            skill_labels,
-            user_skill_labels,
-            TAU_ELIG,
-        )
-
+    f_ess = (
+        _build_essential_match_list(k, skill_labels, user_skill_labels, gate_threshold)
+        if abs(SKILL_U_TAU_ELIG - gate_threshold) >= 1e-9
+        else u_ess
+    )
     opt_m, grp_m = _optional_and_group_match_lists(
-        op,
-        js,
-        opt_ids,
-        js_ids,
-        skill_labels,
-        user_skill_labels,
-        skill_group_labels,
+        op, js, k, skill_labels, user_skill_labels, skill_group_labels or {}
     )
-
-    utility = {
-        "U_final": round(u_final, 4),
-        "is_eligible": eligible,
-        "components": {
-            "loc": round(loc_score, 2),
-            "ess": round(ess_sim, 4),
-            "opt": round(opt_sim, 4),
-            "grp": round(grp_sim, 4),
-        },
-        "penalty": round(W_GAP_PEN * u_gap, 4),
-        "match_details": {
-            "essential_skill_matches": u_ess,
-            "optional_exact_matches": opt_m,
-            "skill_group_matches": grp_m,
-        },
-    }
-
-    # f-side gate: gate_threshold against rescaled rowmax.
-    if not (len(ess_ids) > 0):
-        f_gap = 1.0
-        gate_passed = False
-        f_ess_geo = 0.0
-    elif rowmax_for_gates is None or rowmax_for_gates.size == 0:
-        f_gap = 1.0
-        gate_passed = False
-        f_ess_geo = 0.0
-    else:
-        meets = rowmax_for_gates >= gate_threshold
-        f_gap = float((~meets).mean())
-        gate_passed = bool(f_gap <= 0.5)
-        f_ess_geo = ess_geo
-
-    feasibility = {
-        "gate_passed": gate_passed,
-        "essential_fit": round(f_ess_geo, 4),
-        "essential_fit_raw": round(k.get("ess_geo_raw", 0.0), 4),
-        "identity_coverage": round(k.get("identity_coverage", 0.0), 4),
-        "optional_sim": round(opt_sim, 4),
-        "skill_group_recall": round(grp_sim, 4),
-        "gap_share": round(f_gap, 4),
-        "has_essential_skills": len(ess_ids) > 0,
-        "has_optional_skills": len(opt_ids) > 0,
-        "has_skill_groups": len(op.skill_groups_origin_uuids) > 0,
-        "match_details": {
-            "essential_skill_matches": f_ess,
-            "optional_exact_matches": opt_m,
-            "skill_group_matches": grp_m,
-        },
-    }
+    utility = _utility(
+        k, essential_matches=u_ess, optional_matches=opt_m, group_matches=grp_m
+    )
+    feasibility = _feasibility(
+        op,
+        k,
+        gate_threshold=gate_threshold,
+        essential_matches=f_ess,
+        optional_matches=opt_m,
+        group_matches=grp_m,
+    )
     return utility, feasibility
 
 
@@ -804,7 +723,7 @@ class SkillLabelPacks:
         self,
         embedding_ids: set[str],
         *,
-        read_rows: Callable[[Path], list[dict]],
+        read_rows: Callable[[Path], list[dict[str, str]]],
         languages: Iterable[str] | None = None,
         canonical_language: str = CANONICAL_LANGUAGE,
     ):
@@ -835,7 +754,7 @@ class SkillLabelPacks:
         self.unjoined_by_language: Counter = Counter()
 
         self._uuid_to_canonical: dict[str, str] = {}
-        self._rows_cache: dict[Path, list[dict]] = {}
+        self._rows_cache: dict[Path, list[dict[str, str]]] = {}
         self._skills_paths = self._resolve_skills_paths()
         for language in self.languages:
             self._load_language(language)
@@ -925,7 +844,7 @@ class SkillLabelPacks:
             str(row.get("ID") or "").strip() in self._embedding_ids for row in rows
         )
 
-    def _read_rows_cached(self, path: Path) -> list[dict]:
+    def _read_rows_cached(self, path: Path) -> list[dict[str, str]]:
         """``_read_rows`` memoised for this instance — the canonical pack is read twice
         (id-space preflight, then loading) and these files are tens of megabytes."""
         rows = self._rows_cache.get(path)
@@ -1084,24 +1003,21 @@ def _canon(label: str) -> str:
 
 
 def compact_cosine_matched_skill_lines(
-    per_job_skill: Sequence[dict[str, Any]],
+    per_job_skill: Sequence[SkillMatchDetail],
     *,
     limit: int = 24,
 ) -> list[str]:
+    """Display lines ``job skill <- user skill (cosine)`` for the strongest ``limit`` matches."""
     if not per_job_skill or limit <= 0:
         return []
-    ranked = sorted(
-        per_job_skill,
-        key=lambda x: float(x.get("cosine_similarity") or 0),
-        reverse=True,
-    )[:limit]
+    ranked = sorted(per_job_skill, key=lambda x: x.cosine_similarity, reverse=True)[
+        :limit
+    ]
     lines: list[str] = []
     for row in ranked:
-        jl = str(row.get("job_skill_label") or row.get("job_skill_id") or "").strip()
-        ul = str(
-            row.get("best_user_skill_label") or row.get("best_user_skill_id") or ""
-        ).strip()
-        c = float(row.get("cosine_similarity") or 0)
+        jl = (row.job_skill_label or row.job_skill_id or "").strip()
+        ul = (row.best_user_skill_label or row.best_user_skill_id or "").strip()
+        c = row.cosine_similarity
         if jl and ul and _canon(jl) == _canon(ul):
             lines.append(f"{jl} ({c:.2f})")
         elif jl and ul:
@@ -1195,7 +1111,8 @@ class CosineSkillMatcher:
         key = _canon(str(origin_uuid))
         return self._originuuid_to_id.get(key) if key else None
 
-    def get_resolution_stats(self) -> dict[str, Any]:
+    def get_resolution_stats(self) -> dict[str, int | list[tuple[str, int]]]:
+        """Per-process label-miss telemetry."""
         return {
             "total_misses": sum(self._missed_labels.values()),
             "distinct_missed_labels": len(self._missed_labels),
@@ -1226,65 +1143,49 @@ class CosineSkillMatcher:
             out.append(sid)
         return out
 
-    def _user_skill_pairs(self, user_profile: dict[str, Any]) -> list[tuple[str, str]]:
+    def _user_skill_pairs(self, user: UserProfile) -> list[tuple[str, str]]:
+        """(resolved id, label) per user skill: by label, else by ESCO origin/history UUID."""
         out: list[tuple[str, str]] = []
-        for s in user_profile.get("resolved_skills") or []:
-            if not isinstance(s, dict):
-                continue
-            lab = s.get("label")
-            sid = self._resolve_label(str(lab) if lab else None)
-            if sid is not None:
-                out.append((sid, str(lab)))
-        if out:
-            return out
-        for s in (user_profile.get("skills_vector") or {}).get("top_skills") or []:
-            if not isinstance(s, dict):
-                continue
-            lab = s.get("preferredLabel") or s.get("label")
-            sid = self._resolve_label(str(lab) if lab else None)
+        for s in user.skills_vector.top_skills:
+            lab = s.preferredLabel
+            sid = self._resolve_label(lab)
             if sid is None:  # fallback: ESCO origin/history UUID -> same canonical id
-                sid = self._resolve_origin_uuid(
-                    s.get("originUUID") or s.get("origin_uuid") or s.get("originUuid")
-                )
+                sid = self._resolve_origin_uuid(s.originUUID)
+            if sid is not None:
+                out.append((sid, lab if lab else (self.skill_labels.get(sid) or "")))
+        return out
+
+    def _job_skill_pairs(self, item: MatchItem) -> list[tuple[str, str]]:
+        """(resolved id, label) per essential then optional item skill: by label, else by id."""
+        out: list[tuple[str, str]] = []
+        for s in [*item.essential_skills, *item.optional_skills]:
+            sid = self._resolve_label(s.label)
+            if sid is None:  # fallback: ESCO origin/history UUID -> same canonical id
+                sid = self._resolve_origin_uuid(s.id)
             if sid is not None:
                 out.append(
-                    (sid, str(lab) if lab else (self.skill_labels.get(sid) or ""))
+                    (sid, s.label if s.label else (self.skill_labels.get(sid) or ""))
                 )
         return out
 
-    def _job_skill_pairs(self, job_posting: dict[str, Any]) -> list[tuple[str, str]]:
-        out: list[tuple[str, str]] = []
+    def essential_ids(self, item: MatchItem) -> frozenset[str]:
+        """Label-resolved ids of the item's essential skills (the ``job_skill_id`` id space)."""
+        out: set[str] = set()
+        for s in item.essential_skills:
+            rid = self._resolve_label(s.label) if s.label else None
+            if rid:
+                out.add(rid)
+        return frozenset(out)
 
-        def _consume(items: Any) -> None:
-            for s in items or []:
-                if not isinstance(s, dict):
-                    continue
-                lab = s.get("label")
-                sid = self._resolve_label(str(lab) if lab else None)
-                if (
-                    sid is None
-                ):  # fallback: ESCO origin/history UUID -> same canonical id
-                    sid = self._resolve_origin_uuid(
-                        s.get("originUuid") or s.get("origin_uuid") or s.get("id")
-                    )
-                if sid is not None:
-                    out.append(
-                        (sid, str(lab) if lab else (self.skill_labels.get(sid) or ""))
-                    )
+    def score_pair(self, user: UserProfile, item: MatchItem) -> SkillPairScore:
+        """Cosine similarity only: mean over item skills of (max over user skills).
 
-        _consume(job_posting.get("essential_skills"))
-        _consume(job_posting.get("optional_skills"))
-        return out
-
-    def score_pair(
-        self, user_profile: dict[str, Any], job_posting: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Cosine similarity only: mean over job skills of (max over user skills).
-
-        Returns ``mean_best_cosine`` in ``[0, 1]`` (zero if no overlap to score).
+        :param user: The user
+        :param item: The job or occupation
+        :return: ``mean_best_cosine`` in ``[0, 1]`` (zero if no overlap to score) and the per-skill rows
         """
-        user_pairs = self._user_skill_pairs(user_profile)
-        job_pairs = self._job_skill_pairs(job_posting)
+        user_pairs = self._user_skill_pairs(user)
+        job_pairs = self._job_skill_pairs(item)
         user_ids = self._ordered_unique_skill_ids(user_pairs)
         job_ids = self._ordered_unique_skill_ids(job_pairs)
         user_labels = {sid: lab for sid, lab in user_pairs}
@@ -1294,42 +1195,40 @@ class CosineSkillMatcher:
         j_mat, j_valid = self._rows_with_ids(job_ids)
 
         if j_mat.size == 0 or u_mat.size == 0:
-            return {
-                "mean_best_cosine": 0.0,
-                "min_best_cosine": 0.0,
-                "n_user_skills_embedded": int(u_mat.shape[0]),
-                "n_job_skills_embedded": int(j_mat.shape[0]),
-                "per_job_skill": [],
-            }
+            return SkillPairScore(
+                mean_best_cosine=0.0,
+                min_best_cosine=0.0,
+                n_user_skills_embedded=int(u_mat.shape[0]),
+                n_job_skills_embedded=int(j_mat.shape[0]),
+                per_job_skill=[],
+            )
 
         sims = j_mat @ u_mat.T
         np.maximum(sims, 0.0, out=sims)
         argmax = sims.argmax(axis=1)
         rowmax = sims.max(axis=1)
 
-        per: list[dict[str, Any]] = []
+        per: list[SkillMatchDetail] = []
         for i, jid in enumerate(j_valid):
-            ui = int(argmax[i])
-            uid = u_valid[ui]
+            uid = u_valid[int(argmax[i])]
             per.append(
-                {
-                    "job_skill_id": jid,
-                    "job_skill_label": self.skill_labels.get(jid)
-                    or job_labels.get(jid),
-                    "best_user_skill_id": uid,
-                    "best_user_skill_label": self.skill_labels.get(uid)
+                SkillMatchDetail(
+                    job_skill_id=jid,
+                    job_skill_label=self.skill_labels.get(jid) or job_labels.get(jid),
+                    best_user_skill_id=uid,
+                    best_user_skill_label=self.skill_labels.get(uid)
                     or user_labels.get(uid),
-                    "cosine_similarity": round(float(rowmax[i]), 4),
-                }
+                    cosine_similarity=round(float(rowmax[i]), 4),
+                )
             )
 
-        return {
-            "mean_best_cosine": round(float(rowmax.mean()), 4),
-            "min_best_cosine": round(float(rowmax.min()), 4),
-            "n_user_skills_embedded": int(u_mat.shape[0]),
-            "n_job_skills_embedded": int(j_mat.shape[0]),
-            "per_job_skill": per,
-        }
+        return SkillPairScore(
+            mean_best_cosine=round(float(rowmax.mean()), 4),
+            min_best_cosine=round(float(rowmax.min()), 4),
+            n_user_skills_embedded=int(u_mat.shape[0]),
+            n_job_skills_embedded=int(j_mat.shape[0]),
+            per_job_skill=per,
+        )
 
     def _rescale(self, sims: np.ndarray) -> np.ndarray:
         """Map whitened cosines toward [0,1] via the artifact's target (no-op when target<=0)."""
@@ -1337,16 +1236,19 @@ class CosineSkillMatcher:
         return np.minimum(1.0, sims / t) if t and t > 0 else sims
 
     def score_pair_v4(
-        self, user_profile: dict[str, Any], job_posting: dict[str, Any]
-    ) -> dict[str, Any]:
+        self, user: UserProfile, item: MatchItem
+    ) -> list[SkillMatchDetail]:
         """v4 GATE matching: rescaled (whitened) similarity + one-to-one greedy assignment + exact-id
-        flag. Each job skill is matched to AT MOST ONE distinct user skill, so extra user skills can't
-        inflate coverage. ``per_job_skill`` rows mirror ``score_pair`` plus ``cosine_similarity_raw``
-        and ``exact`` (user holds this exact skill id). Used only by /match_v4; leaves ``score_pair``
-        (and v2/v3) untouched.
+        flag. Each item skill is matched to AT MOST ONE distinct user skill, so extra user skills can't
+        inflate coverage. Rows mirror ``score_pair`` plus ``cosine_similarity_raw`` and ``exact`` (user
+        holds this exact skill id). Leaves ``score_pair`` (stage-1 detail, v2/v3) untouched.
+
+        :param user: The user
+        :param item: The job or occupation
+        :return: One row per embedded item skill; unassigned skills have no user skill and similarity 0
         """
-        user_pairs = self._user_skill_pairs(user_profile)
-        job_pairs = self._job_skill_pairs(job_posting)
+        user_pairs = self._user_skill_pairs(user)
+        job_pairs = self._job_skill_pairs(item)
         user_ids = self._ordered_unique_skill_ids(user_pairs)
         job_ids = self._ordered_unique_skill_ids(job_pairs)
         user_labels = {sid: lab for sid, lab in user_pairs}
@@ -1356,25 +1258,27 @@ class CosineSkillMatcher:
         u_mat, u_valid = self._rows_with_ids(user_ids)
         j_mat, j_valid = self._rows_with_ids(job_ids)
 
-        def _row(jid, uid, sim_resc, sim_raw):
-            return {
-                "job_skill_id": jid,
-                "job_skill_label": self.skill_labels.get(jid) or job_labels.get(jid),
-                "best_user_skill_id": uid,
-                "best_user_skill_label": (
+        def _row(
+            jid: str, uid: str | None, sim_resc: float, sim_raw: float
+        ) -> SkillMatchDetail:
+            return SkillMatchDetail(
+                job_skill_id=jid,
+                job_skill_label=self.skill_labels.get(jid) or job_labels.get(jid),
+                best_user_skill_id=uid,
+                best_user_skill_label=(
                     self.skill_labels.get(uid) or user_labels.get(uid)
                 )
                 if uid
                 else None,
-                "cosine_similarity": round(float(sim_resc), 4),
-                "cosine_similarity_raw": round(float(sim_raw), 4),
-                "exact": jid in user_id_set,
-            }
+                cosine_similarity=round(float(sim_resc), 4),
+                cosine_similarity_raw=round(float(sim_raw), 4),
+                exact=jid in user_id_set,
+            )
 
         if j_mat.size == 0:
-            return {"per_job_skill": []}
+            return []
         if u_mat.size == 0:
-            return {"per_job_skill": [_row(jid, None, 0.0, 0.0) for jid in j_valid]}
+            return [_row(jid, None, 0.0, 0.0) for jid in j_valid]
 
         raw = j_mat @ u_mat.T
         np.maximum(raw, 0.0, out=raw)
@@ -1383,7 +1287,7 @@ class CosineSkillMatcher:
         # greedy one-to-one assignment maximising rescaled similarity (each user skill used once)
         order = np.argsort(resc, axis=None)[::-1]
         assigned = [-1] * n_j
-        used_u: set = set()
+        used_u: set[int] = set()
         cap = min(n_j, n_u)
         n_assigned = 0
         for flat in order:
@@ -1395,60 +1299,43 @@ class CosineSkillMatcher:
             n_assigned += 1
             if n_assigned >= cap:
                 break
-        per: list[dict[str, Any]] = []
-        for j, jid in enumerate(j_valid):
-            u = assigned[j]
-            per.append(
-                _row(jid, None, 0.0, 0.0)
-                if u < 0
-                else _row(jid, u_valid[u], resc[j, u], raw[j, u])
+        return [
+            _row(jid, None, 0.0, 0.0)
+            if assigned[j] < 0
+            else _row(
+                jid, u_valid[assigned[j]], resc[j, assigned[j]], raw[j, assigned[j]]
             )
-        return {"per_job_skill": per}
+            for j, jid in enumerate(j_valid)
+        ]
 
-    def resolved_user_skill_labels_ordered(
-        self, user_profile: dict[str, Any]
-    ) -> list[str]:
+    def resolved_user_skill_labels_ordered(self, user: UserProfile) -> list[str]:
         """Display labels for embedded user skills (order preserved, de-duplicated by id)."""
-        pairs = self._user_skill_pairs(user_profile)
         seen: set[str] = set()
         out: list[str] = []
-        for sid, lab in pairs:
+        for sid, lab in self._user_skill_pairs(user):
             if sid in seen:
                 continue
             seen.add(sid)
-            txt = lab or self.skill_labels.get(sid) or sid
-            out.append(txt)
+            out.append(lab or self.skill_labels.get(sid) or sid)
         return out
 
     def rank_jobs(
         self,
-        user_profile: dict[str, Any],
-        jobs: Sequence[dict[str, Any]],
+        user: UserProfile,
+        items: Sequence[MatchItem],
         *,
         top_k: int = 10,
-    ) -> list[dict[str, Any]]:
-        """Score every job and return the top ``top_k`` by ``mean_best_cosine`` desc."""
-        scored: list[tuple[float, dict[str, Any]]] = []
-        for job in jobs:
-            detail = self.score_pair(user_profile, job)
-            key = (detail["mean_best_cosine"], detail["min_best_cosine"])
-            scored.append((key, {"job": job, "score": detail}))
+    ) -> list[tuple[MatchItem, SkillPairScore]]:
+        """Score every item; the top ``top_k`` by (``mean_best_cosine``, ``min_best_cosine``) desc.
 
-        scored.sort(key=lambda x: (-x[0][0], -x[0][1]))
-        out: list[dict[str, Any]] = []
-        for rank, (_, row) in enumerate(scored[: max(0, top_k)], 1):
-            j = row["job"]
-            out.append(
-                {
-                    "rank": rank,
-                    "job_uuid": j.get("uuid") or j.get("_id"),
-                    "job_title": j.get("opportunity_title"),
-                    "employer": j.get("employer"),
-                    "location": j.get("location"),
-                    **row["score"],
-                }
-            )
-        return out
+        :param user: The user
+        :param items: Jobs or occupations
+        :param top_k: How many to keep
+        :return: ``(item, score)`` pairs, best first
+        """
+        scored = [(item, self.score_pair(user, item)) for item in items]
+        scored.sort(key=lambda x: (-x[1].mean_best_cosine, -x[1].min_best_cosine))
+        return scored[: max(0, top_k)]
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1472,8 +1359,8 @@ class SkillScorer:
         packs: SkillLabelPacks,
         display_language: str,
         rescale_target: float,
-        skill_group_rows: list[dict] | None,
-        hierarchy_rows: list[dict] | None,
+        skill_group_rows: list[dict[str, str]] | None,
+        hierarchy_rows: list[dict[str, str]] | None,
         model_label: str,
     ):
         W = weights
@@ -1571,7 +1458,7 @@ class SkillScorer:
         """internal_id → preferredLabel in ``language`` (canonical language when absent)."""
         return self._packs.display_labels(language)
 
-    def get_resolution_stats(self) -> dict:
+    def get_resolution_stats(self) -> dict[str, int | list[tuple[str, int]]]:
         """Per-process miss telemetry. Useful for batch scripts at end-of-run."""
         return {
             "total_misses": sum(self._missed_labels.values()),
@@ -1579,87 +1466,81 @@ class SkillScorer:
             "top_misses": self._missed_labels.most_common(20),
         }
 
-    def _build_objects(self, user_profile: dict, job_posting: dict):
-        """Build Jobseeker / Opportunity dataclasses + user skill labels.
+    def _build_objects(
+        self, user: UserProfile, item: MatchItem
+    ) -> tuple[Jobseeker, Opportunity, dict[str, str]]:
+        """Build the Jobseeker / Opportunity pair and the user's resolved-id -> label map.
 
-        Both sides resolve via labels — user payload carries preferredLabel,
-        job payload carries essential_skills/optional_skills as [{id, label}, ...]
-        dicts (label is the trust anchor). Group IDs come pre-resolved from
-        the upstream taxonomy export and are passed through unchanged.
+        Both sides resolve via labels (the trust anchor); item skills fall back to their taxonomy
+        id. Skill groups are taken as given, or derived from the resolved skills when absent.
+
+        :param user: The user
+        :param item: The job or occupation
+        :return: ``(jobseeker, opportunity, user_skill_labels)``
+        :raises ValueError: If the user has no ``user_id``
         """
-        user_id = user_profile.get("user_id") or user_profile.get("youth_id")
-        if not user_id:
-            raise ValueError("user_profile must include user_id (or legacy youth_id)")
-
-        user_top_skills = (
-            user_profile.get("skills_vector", {}).get("top_skills", []) or []
-        )
+        if not user.user_id:
+            raise ValueError("user must include user_id")
 
         user_skill_labels: dict[str, str] = {}
         resolved_user_ids: set[str] = set()
-        for s in user_top_skills:
-            if not isinstance(s, dict):
-                continue
-            label = s.get("preferredLabel")
-            resolved = self._resolve_label(label)
+        for s in user.skills_vector.top_skills:
+            label = s.preferredLabel
+            resolved = self._resolve_label(label or "")
             if resolved is None:
                 continue
             resolved_user_ids.add(resolved)
             if label:
                 user_skill_labels[resolved] = label
 
-        raw_user_groups = user_profile.get("skill_groups_origin_uuids", []) or []
-        user_groups = {str(g) for g in raw_user_groups if g}
+        user_groups = {g for g in user.skill_groups_origin_uuids if g}
         if not user_groups:
             user_groups = self._derive_groups(resolved_user_ids)
 
         js = Jobseeker(
-            compass_id=str(user_id),
+            compass_id=user.user_id,
             skills_origin_uuids=resolved_user_ids,
             skill_groups_origin_uuids=user_groups,
-            city=user_profile.get("city"),
-            province=user_profile.get("province"),
+            city=user.city,
+            province=user.province,
         )
 
-        def _resolve_job_skills(items) -> set[str]:
+        def _resolve_job_skills(items: Iterable[SkillReference]) -> set[str]:
             out: set[str] = set()
-            for s in items or []:
-                if not isinstance(s, dict):
-                    continue
-                resolved = self._resolve_label(s.get("label"))
+            for s in items:
+                resolved = self._resolve_label(s.label)
                 if resolved is None:
                     # Fallback for a label this build has no pack for: the job's `id` is a
                     # taxonomy skill ID written by the reranker, which the label packs
                     # crosswalk across locales. This is not the UUID path the docstring
                     # warns about — it is an exact per-model identifier, used only after
                     # the label misses.
-                    resolved = self._packs.resolve_id(s.get("id"))
+                    resolved = self._packs.resolve_id(s.id)
                 if resolved is not None:
                     out.add(resolved)
             return out
 
-        resolved_ess = _resolve_job_skills(job_posting.get("essential_skills"))
-        resolved_opt = _resolve_job_skills(job_posting.get("optional_skills"))
+        resolved_ess = _resolve_job_skills(item.essential_skills)
+        resolved_opt = _resolve_job_skills(item.optional_skills)
 
-        raw_job_groups = job_posting.get("skill_groups_origin_uuids", []) or []
-        job_groups = {str(g) for g in raw_job_groups if g}
+        job_groups = {g for g in item.skill_groups_origin_uuids if g}
         if not job_groups:
             job_groups = self._derive_groups(resolved_ess | resolved_opt)
 
         op = Opportunity(
-            opportunity_id=str(job_posting.get("uuid")),
+            opportunity_id=item.uuid,
             essential_skill_ids=resolved_ess,
             optional_skill_ids=resolved_opt,
             skill_groups_origin_uuids=job_groups,
-            city=job_posting.get("city") or job_posting.get("location"),
-            province=job_posting.get("province") or job_posting.get("location"),
+            city=item.city or item.location,
+            province=item.province or item.location,
         )
 
         return js, op, user_skill_labels
 
-    def calculate_score(self, user_profile: dict, job_posting: dict) -> dict:
-        """Returns the full dictionary of skill utility components (legacy U_final)."""
-        js, op, user_skill_labels = self._build_objects(user_profile, job_posting)
+    def calculate_score(self, user: UserProfile, item: MatchItem) -> SkillUtility:
+        """Legacy skill utility ``U`` of the pair."""
+        js, op, user_skill_labels = self._build_objects(user, item)
         return compute_U_complete(
             js,
             op,
@@ -1669,13 +1550,13 @@ class SkillScorer:
             skill_group_labels=self.skill_group_labels,
         )
 
-    def calculate_feasibility(self, user_profile: dict, job_posting: dict) -> dict:
-        """Returns recruiter-side feasibility signals for the success-propensity proxy.
+    def calculate_feasibility(self, user: UserProfile, item: MatchItem) -> Feasibility:
+        """Recruiter-side feasibility signals for the success-propensity proxy.
 
-        Uses the same Node2Vec embedding engine as calculate_score but aggregates
-        essential-skill similarities via geometric mean (stricter on gaps).
+        Uses the same embedding engine as calculate_score but aggregates essential-skill
+        similarities via geometric mean (stricter on gaps).
         """
-        js, op, user_skill_labels = self._build_objects(user_profile, job_posting)
+        js, op, user_skill_labels = self._build_objects(user, item)
         return compute_feasibility_signals(
             js,
             op,
@@ -1687,11 +1568,11 @@ class SkillScorer:
         )
 
     def score_utility_and_feasibility(
-        self, user_profile: dict, job_posting: dict
-    ) -> tuple[dict, dict]:
+        self, user: UserProfile, item: MatchItem
+    ) -> tuple[SkillUtility, Feasibility]:
         """Single embedding pass for multiplicative mode (U + feasibility for p_hat)."""
-        js, op, user_skill_labels = self._build_objects(user_profile, job_posting)
-        u, f = compute_utility_and_feasibility_pair(
+        js, op, user_skill_labels = self._build_objects(user, item)
+        return compute_utility_and_feasibility_pair(
             js,
             op,
             self.engine,
@@ -1700,4 +1581,3 @@ class SkillScorer:
             skill_group_labels=self.skill_group_labels,
             gate_threshold=GATE_SIMILARITY_THRESHOLD,
         )
-        return u, f
