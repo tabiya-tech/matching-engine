@@ -24,6 +24,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app import observability
+from app.domain.user import UserProfile
 from app.observability import (
     MatchTracingMiddleware,
     TracingConfig,
@@ -33,6 +34,7 @@ from app.observability import (
     stage,
     tracing_config_from_env,
 )
+from app.schemas import MatchRequest
 from app.observability.testing import (
     TEST_TRACING_CONFIG,
     RecordedSpans,
@@ -124,6 +126,10 @@ def _metadata(span, key: str):
     return RecordedSpans.json_attribute(span, f"{META}.{key}")
 
 
+def _user(user_id: str, *, city: str = "") -> UserProfile:
+    return UserProfile.from_request(MatchRequest(user_id=user_id, city=city))
+
+
 # ---------------------------------------------------------------------------
 # 1. Configuration, and the no-op path
 # ---------------------------------------------------------------------------
@@ -166,7 +172,7 @@ def test_json_tunables_are_applied_and_bad_values_ignored():
 def test_helpers_and_middleware_are_no_ops_when_tracing_is_off(monkeypatch):
     with stage("retrieval") as span:
         assert span is None
-    set_request_users([{"user_id": "u1"}])
+    set_request_users([_user("u1")])
 
     async def handler():
         return {"ok": True}
@@ -195,7 +201,7 @@ def test_match_paths_cover_every_version():
 
 def test_match_request_is_one_trace_with_user_and_request_id():
     async def handler():
-        set_request_users([{"user_id": "u-42", "city": "Nairobi"}], final_top_k=30)
+        set_request_users([_user("u-42", city="Nairobi")], final_top_k=30)
         with stage("retrieval", corpus="jobs"):
             pass
         return {"ok": True}
@@ -237,7 +243,7 @@ def test_generated_request_id_is_the_trace_id():
 
 def test_batch_request_lists_user_ids_without_a_trace_owner():
     async def handler():
-        set_request_users([{"user_id": "a"}, {"user_id": "b"}])
+        set_request_users([_user("a"), _user("b")])
         return {}
 
     with in_memory_tracing() as spans:
@@ -443,16 +449,24 @@ def test_v4_engine_records_shortlist_and_rerank_per_corpus():
     from app.clients.gemini_embedding_client import EMBEDDING_DIM
     from app.matching.service import MatchingService
     from app.ranking.retrieval import Stage1Retriever
+    from app.ranking.types import SkillPairScore
     from app.server_dependencies.model_dependencies import get_concat_whitener
+    from tests.domain_factories import make_job, make_user
 
     def job(uuid, index):
         v = np.zeros(EMBEDDING_DIM, dtype=np.float32)
         v[index] = 1.0
-        return {"uuid": uuid, "essential_skills": [], "job_embedding": v.tolist()}
+        return make_job(uuid=uuid, embedding=v)
 
     matcher = MagicMock()
-    matcher.score_pair.return_value = {"per_job_skill": []}
-    user = {"user_id": "u1", "skills_vector": {"top_skills": []}}
+    matcher.score_pair.return_value = SkillPairScore(
+        mean_best_cosine=0.0,
+        min_best_cosine=0.0,
+        n_user_skills_embedded=0,
+        n_job_skills_embedded=0,
+        per_job_skill=[],
+    )
+    user = make_user(user_id="u1")
     u_vecs = np.zeros((1, EMBEDDING_DIM))
     u_vecs[0, 0] = 1.0
     rerank = MagicMock()
