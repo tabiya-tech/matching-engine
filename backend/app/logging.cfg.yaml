@@ -1,0 +1,25 @@
+version: 1
+disable_existing_loggers: False
+formatters:
+  json_formatter:
+    (): app.logger.JsonLogFormatter
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: DEBUG
+    formatter: json_formatter
+    stream: ext://sys.stdout
+loggers:
+  # uvicorn configures its own text handlers before the app is imported; route them through JSON too.
+  uvicorn:
+    handlers: [ console ]
+    propagate: no
+  uvicorn.error:
+    handlers: [ ]
+    propagate: yes
+  uvicorn.access:
+    handlers: [ console ]
+    propagate: no
+root:
+  level: INFO
+  handlers: [ console ]
