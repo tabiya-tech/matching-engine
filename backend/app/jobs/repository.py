@@ -1,7 +1,63 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
+from pydantic import Field
+
+from app.domain.base import DomainModel
+from app.domain.job import Job
 from app.schemas import JobListItem, JobsStats
+
+
+class JobsLoadTiming(DomainModel):
+    """Durations and counts of one ``find_jobs_with_timing`` call (logged and traced, never returned)."""
+
+    mongo_ranked_find_ms: float = Field(
+        description="Time reading the documents from Mongo."
+    )
+    python_build_jobs_ms: float = Field(
+        description="Time validating and mapping documents to jobs."
+    )
+    n_ranked_raw: int = Field(description="Documents read.")
+    n_jobs: int = Field(description="Jobs returned.")
+    n_skipped_inactive: int = Field(
+        description="Documents skipped because ``is_active`` is False."
+    )
+    n_skipped_invalid: int = Field(
+        description="Documents skipped because they failed validation."
+    )
+    get_all_jobs_total_ms: float = Field(description="Total time of the call.")
+    jobs_find_use_projection: bool = Field(
+        description="Whether the find used ``RANKED_JOB_FIND_PROJECTION``."
+    )
+    jobs_retrieval_filter_applied: bool = Field(
+        default=False,
+        description="Whether the /match location prefilter was applied (set by ``retrieve_jobs_with_timing``).",
+    )
+
+
+class JobsPageTiming(DomainModel):
+    """Durations and counts of one ``get_jobs_page_with_timing`` call."""
+
+    mongo_find_ms: float = Field(description="Time reading the page from Mongo.")
+    python_build_jobs_ms: float = Field(
+        description="Time validating and mapping documents to jobs."
+    )
+    n_page_raw: int = Field(
+        description="Documents read for the page (without the look-ahead one)."
+    )
+    n_jobs: int = Field(description="Jobs on the page.")
+    n_skipped_inactive: int = Field(
+        description="Documents skipped because ``is_active`` is False."
+    )
+    n_skipped_invalid: int = Field(
+        description="Documents skipped because they failed validation."
+    )
+    has_more: bool = Field(description="Whether another page exists.")
+    limit: int = Field(description="Page size used.")
+    total: int | None = Field(
+        description="Jobs matching the filters; None unless requested."
+    )
+    get_jobs_page_total_ms: float = Field(description="Total time of the call.")
 
 
 class IJobsRepository(ABC):
@@ -13,9 +69,11 @@ class IJobsRepository(ABC):
     @abstractmethod
     async def find_jobs_with_timing(
         self, query_filter: dict[str, Any] | None = None, *, limit: int = 0
-    ) -> tuple[list[dict], dict[str, Any]]:
+    ) -> tuple[list[Job], JobsLoadTiming]:
         """
-        Load active jobs as flat job dicts (see ``build_job_dict_from_ranked``).
+        Load active jobs, validated and mapped from their stored documents (see ``build_job_from_ranked``).
+
+        Documents that fail validation are skipped and logged, not raised.
 
         Args:
             query_filter: Mongo filter to apply. ``None`` loads every active job, unsorted and uncapped.
@@ -41,7 +99,7 @@ class IJobsRepository(ABC):
         skills: str | None = None,
         days: int | None = None,
         include_total: bool = False,
-    ) -> tuple[list[JobListItem], str | None, int | None, dict[str, Any]]:
+    ) -> tuple[list[JobListItem], str | None, int | None, JobsPageTiming]:
         """
         Cursor-paginated, filterable browse over active jobs.
 

@@ -93,11 +93,25 @@ class TestFindJobsWithTiming:
         assert collection.cursors[0].sort_spec is None
         assert collection.cursors[0].limit_n is None
         # AND inactive documents are skipped in the build step
-        assert [j["uuid"] for j in jobs] == ["a", "b"]
-        assert timing["n_ranked_raw"] == 3
-        assert timing["n_jobs"] == 2
-        assert timing["n_skipped_inactive"] == 1
-        assert timing["jobs_find_use_projection"] is True
+        assert [j.uuid for j in jobs] == ["a", "b"]
+        assert timing.n_ranked_raw == 3
+        assert timing.n_jobs == 2
+        assert timing.n_skipped_inactive == 1
+        assert timing.n_skipped_invalid == 0
+        assert timing.jobs_find_use_projection is True
+
+    def test_invalid_documents_are_skipped_not_raised(self):
+        # GIVEN a valid job and one whose title is not a scalar
+        bad = _doc("bad")
+        bad["classifier_metadata"]["title"] = {"en": "nested"}
+        collection = _FakeCollection([_doc("a"), bad])
+
+        # WHEN loading
+        jobs, timing = asyncio.run(_repository(collection).find_jobs_with_timing())
+
+        # THEN the invalid document is dropped and counted
+        assert [j.uuid for j in jobs] == ["a"]
+        assert timing.n_skipped_invalid == 1
 
     def test_filter_is_sorted_newest_first_and_capped(self):
         collection = _FakeCollection([_doc("a"), _doc("b"), _doc("c")])
@@ -142,7 +156,7 @@ class TestGetJobsPage:
         assert collection.cursors[0].sort_spec == [("_id", -1)]
         assert [j.uuid for j in jobs] == ["0", "1"]
         assert decode_jobs_cursor(next_cursor) == oids[1]
-        assert timing["has_more"] is True
+        assert timing.has_more is True
         assert total is None
 
     def test_last_page_has_no_cursor(self):
@@ -153,7 +167,7 @@ class TestGetJobsPage:
         )
 
         assert next_cursor is None
-        assert timing["has_more"] is False
+        assert timing.has_more is False
 
     def test_cursor_is_composed_with_the_filter(self):
         oid = ObjectId()

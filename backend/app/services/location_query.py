@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from app.config import LOCATION_HUB_CHAINS_PATH, LOCATION_TIER_ENABLED
+from app.domain.user import UserProfile
 from app.jobs.job_document import (
     CITY_FIELD,
     COUNTY_FIELD,
@@ -61,16 +62,16 @@ def _expr_haystack_contains_mongo_subfield(
     }
 
 
-def location_or_clauses_for_one_user(user: dict) -> list[dict[str, Any]]:
+def location_or_clauses_for_one_user(user: UserProfile) -> list[dict[str, Any]]:
     """Superset of matching_service._job_matches_user_location, on classifier_metadata fields.
 
     By default the needle set is the user's {city, province}. When LOCATION_TIER_ENABLED (urban-pull
     Part A), it is widened to also include the user's hub-chain regions (regional + national hub) so
-    hub jobs become candidates in the pool; the per-user soft tier re-rank (match_v4_full_service)
+    hub jobs become candidates in the pool; the per-user soft tier re-rank (MatchingService.rank)
     then keeps local jobs preferred. Strictly additive — remote clauses always come first.
     """
-    uc = _norm_loc_value(user.get("city"))
-    up = _norm_loc_value(user.get("province"))
+    uc = _norm_loc_value(user.city)
+    up = _norm_loc_value(user.province)
     ors: list[dict[str, Any]] = list(_remote_substring_ors())
     if not uc or not up:
         return ors
@@ -98,7 +99,7 @@ def location_or_clauses_for_one_user(user: dict) -> list[dict[str, Any]]:
 
 
 def build_mongo_filter_active_and_location(
-    users: Sequence[dict],
+    users: Sequence[UserProfile],
 ) -> dict[str, Any] | None:
     """
     is_active and (OR of all per-user location clauses). None if the caller should

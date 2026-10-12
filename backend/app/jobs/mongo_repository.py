@@ -1,18 +1,21 @@
 import logging
 import time
+from collections.abc import Iterable, Mapping
 from typing import Any
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from motor.motor_asyncio import AsyncIOMotorCursor, AsyncIOMotorDatabase
+from pydantic import ValidationError
 
 from app.config import JOBS_FIND_USE_PROJECTION
+from app.domain.job import Job
 from app.jobs.browse_filter import build_jobs_browse_filter
 from app.jobs.job_document import (
     RANKED_JOB_FIND_PROJECTION,
     RANKED_JOBS_ACTIVE_FILTER,
-    build_job_dict_from_ranked,
+    build_job_from_ranked,
 )
 from app.jobs.pagination import JOBS_PAGE_SORT, decode_jobs_cursor, encode_jobs_cursor
-from app.jobs.repository import IJobsRepository
+from app.jobs.repository import IJobsRepository, JobsLoadTiming, JobsPageTiming
 from app.schemas import JobListItem, JobsStats
 from app.server_dependencies.database_collections import Collections
 
@@ -30,14 +33,43 @@ class MongoJobsRepository(IJobsRepository):
         self._collection = db.get_collection(Collections.JOBS)
         self._logger = logging.getLogger(self.__class__.__name__)
 
-    def _find(self, query_filter: dict[str, Any]):
+    def _find(self, query_filter: dict[str, Any]) -> AsyncIOMotorCursor:
         if JOBS_FIND_USE_PROJECTION:
             return self._collection.find(query_filter, RANKED_JOB_FIND_PROJECTION)
         return self._collection.find(query_filter)
 
+    def _build_jobs(
+        self, raw_docs: Iterable[Mapping[str, Any]]
+    ) -> tuple[list[Job], int, int]:
+        """Validate and map stored documents to jobs.
+
+        :return: ``(jobs, n_skipped_inactive, n_skipped_invalid)``; an invalid document is logged
+            and skipped so one malformed ad does not fail the whole request.
+        """
+        jobs: list[Job] = []
+        skipped_inactive = 0
+        skipped_invalid = 0
+        for rd in raw_docs:
+            try:
+                built = build_job_from_ranked(rd)
+            except ValidationError as e:
+                skipped_invalid += 1
+                self._logger.warning(
+                    "Skipping invalid job document _id=%s job_id=%s: %s",
+                    rd.get("_id"),
+                    rd.get("job_id"),
+                    e,
+                )
+                continue
+            if built is None:
+                skipped_inactive += 1
+                continue
+            jobs.append(built)
+        return jobs, skipped_inactive, skipped_invalid
+
     async def find_jobs_with_timing(
         self, query_filter: dict[str, Any] | None = None, *, limit: int = 0
-    ) -> tuple[list[dict], dict[str, Any]]:
+    ) -> tuple[list[Job], JobsLoadTiming]:
         t_total = time.perf_counter()
         t0 = time.perf_counter()
         cursor = self._find(
@@ -51,32 +83,27 @@ class MongoJobsRepository(IJobsRepository):
         mongo_ranked_find_ms = _ms(t0)
 
         t0 = time.perf_counter()
-        jobs: list[dict] = []
-        skipped = 0
-        for rd in ranked_docs:
-            built = build_job_dict_from_ranked(rd)
-            if built is None:
-                skipped += 1
-                continue
-            jobs.append(built)
+        jobs, skipped_inactive, skipped_invalid = self._build_jobs(ranked_docs)
         python_build_jobs_ms = _ms(t0)
 
         self._logger.info(
-            "Loaded %d active jobs from %s (matched=%d, skipped_in_build=%d)",
+            "Loaded %d active jobs from %s (matched=%d, skipped_inactive=%d, skipped_invalid=%d)",
             len(jobs),
             Collections.JOBS,
             len(ranked_docs),
-            skipped,
+            skipped_inactive,
+            skipped_invalid,
         )
-        return jobs, {
-            "mongo_ranked_find_ms": mongo_ranked_find_ms,
-            "python_build_jobs_ms": python_build_jobs_ms,
-            "n_ranked_raw": len(ranked_docs),
-            "n_jobs": len(jobs),
-            "n_skipped_inactive": skipped,
-            "get_all_jobs_total_ms": _ms(t_total),
-            "jobs_find_use_projection": JOBS_FIND_USE_PROJECTION,
-        }
+        return jobs, JobsLoadTiming(
+            mongo_ranked_find_ms=mongo_ranked_find_ms,
+            python_build_jobs_ms=python_build_jobs_ms,
+            n_ranked_raw=len(ranked_docs),
+            n_jobs=len(jobs),
+            n_skipped_inactive=skipped_inactive,
+            n_skipped_invalid=skipped_invalid,
+            get_all_jobs_total_ms=_ms(t_total),
+            jobs_find_use_projection=JOBS_FIND_USE_PROJECTION,
+        )
 
     async def get_jobs_page_with_timing(
         self,
@@ -90,8 +117,8 @@ class MongoJobsRepository(IJobsRepository):
         skills: str | None = None,
         days: int | None = None,
         include_total: bool = False,
-    ) -> tuple[list[JobListItem], str | None, int | None, dict[str, Any]]:
-        """Reads through the same ``build_job_dict_from_ranked`` shaping as ``find_jobs_with_timing``
+    ) -> tuple[list[JobListItem], str | None, int | None, JobsPageTiming]:
+        """Reads through the same ``build_job_from_ranked`` mapping as ``find_jobs_with_timing``
         (the matched-jobs data source), so browse and match return identical job objects.
 
         Pagination is keyset-based on ``_id`` descending (newest first, stable under inserts):
@@ -134,43 +161,8 @@ class MongoJobsRepository(IJobsRepository):
         page_docs = raw_docs[:limit]
 
         t0 = time.perf_counter()
-        jobs: list[JobListItem] = []
-        skipped = 0
-        for rd in page_docs:
-            built = build_job_dict_from_ranked(rd)
-            if built is None:
-                skipped += 1
-                continue
-            jobs.append(
-                JobListItem(
-                    uuid=built.get("uuid"),
-                    originUuid=built.get("originUuid"),
-                    url=built.get("url"),
-                    opportunity_title=built.get("opportunity_title", "No title"),
-                    opportunity_isco_occupation_group=built.get(
-                        "opportunity_isco_occupation_group"
-                    ),
-                    opportunity_isco_occupation_group_id=built.get(
-                        "opportunity_isco_occupation_group_id"
-                    ),
-                    related_occupation_id=built.get("related_occupation_id"),
-                    location=built.get("location"),
-                    city=built.get("city"),
-                    province=built.get("province"),
-                    employer=built.get("employer"),
-                    employment_type=built.get("employment_type"),
-                    contract_type=built.get("contract_type"),
-                    salary_text=built.get("salary_text"),
-                    closing_date=built.get("closing_date"),
-                    posted_date=built.get("posted_date"),
-                    opportunity_description=built.get("opportunity_description"),
-                    # Consumer-contract fields (Compass jobs board): sector/category, the platform the
-                    # posting was scraped from, and the flat list of skill labels for this opportunity.
-                    category=built.get("category"),
-                    source_platform=built.get("source_platform"),
-                    skills=built.get("skills", []),
-                )
-            )
+        built_jobs, skipped_inactive, skipped_invalid = self._build_jobs(page_docs)
+        jobs = [JobListItem.from_job(job) for job in built_jobs]
         python_build_ms = _ms(t0)
 
         next_cursor = (
@@ -181,22 +173,23 @@ class MongoJobsRepository(IJobsRepository):
             jobs,
             next_cursor,
             total,
-            {
-                "mongo_find_ms": mongo_find_ms,
-                "python_build_jobs_ms": python_build_ms,
-                "n_page_raw": len(page_docs),
-                "n_jobs": len(jobs),
-                "n_skipped_inactive": skipped,
-                "has_more": has_more,
-                "limit": limit,
-                "total": total,
-                "get_jobs_page_total_ms": _ms(t_total),
-            },
+            JobsPageTiming(
+                mongo_find_ms=mongo_find_ms,
+                python_build_jobs_ms=python_build_ms,
+                n_page_raw=len(page_docs),
+                n_jobs=len(jobs),
+                n_skipped_inactive=skipped_inactive,
+                n_skipped_invalid=skipped_invalid,
+                has_more=has_more,
+                limit=limit,
+                total=total,
+                get_jobs_page_total_ms=_ms(t_total),
+            ),
         )
 
     async def get_jobs_stats(self) -> JobsStats:
         """``sectors`` counts distinct, case-insensitively-deduplicated categories (falling back
-        to the ISCO occupation group label, matching ``build_job_dict_from_ranked``);
+        to the ISCO occupation group label, matching ``build_job_from_ranked``);
         ``platforms`` counts distinct source platforms.
         """
         col = self._collection

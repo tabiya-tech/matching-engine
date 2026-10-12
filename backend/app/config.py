@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     # the extra filter and load all active jobs (scripts, back-compat).
     jobs_retrieval_filter: bool = True
     jobs_retrieval_limit: int = 10_000
-    # Mongo find() inclusion projection (fields used by build_job_dict_from_ranked). Set 0 to load full documents.
+    # Mongo find() inclusion projection (fields read by app.jobs.job_document.RankedJobDocument). Set 0 to load full documents.
     jobs_find_use_projection: bool = True
 
     # GET /jobs cursor-paginated browse endpoint: default and hard-cap page sizes.
@@ -635,7 +635,12 @@ def occupation_json_path(language: str = CANONICAL_LANGUAGE) -> str:
     if raw:
         return raw
     subdir = language_setting(language, "resources_subdir", language) or language
-    candidate = _RESOURCES / "occupations" / subdir / "combined_occupation_database_with_wa.json"
+    candidate = (
+        _RESOURCES
+        / "occupations"
+        / subdir
+        / "combined_occupation_database_with_wa.json"
+    )
     if candidate.is_file():
         return str(candidate)
     return str(_DEFAULT_OCC)
@@ -647,7 +652,9 @@ def cross_encoder_model_name(language: str = CANONICAL_LANGUAGE) -> str:
     The reranker scores skill-label text, so an English-only checkpoint on Spanish labels
     scores poorly — hence one per language rather than one globally.
     """
-    return str(language_setting(language, "cross_encoder_model", CROSS_ENCODER_MODEL_NAME))
+    return str(
+        language_setting(language, "cross_encoder_model", CROSS_ENCODER_MODEL_NAME)
+    )
 
 
 def stopwords(language: str = CANONICAL_LANGUAGE) -> frozenset[str]:
