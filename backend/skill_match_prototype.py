@@ -57,7 +57,8 @@ import torch  # noqa: E402  (import order is deliberate)
 import numpy as np  # noqa: E402
 
 import app.config as C  # noqa: E402
-from app.services.cosine_similarity.skill_score import CosineSkillMatcher  # noqa: E402
+from app.server_dependencies.model_dependencies import build_skill_matcher  # noqa: E402
+from app.services.offline_io import user_from_record  # noqa: E402
 
 
 def _l2(M):
@@ -459,13 +460,8 @@ def validate_real_concat(matcher, white_W, target, name, users_path, jobs_path, 
         truststore.inject_into_ssl()
     except Exception:
         pass
-    from app.services.cross_encoder.concat_embedding_text import (
-        user_concat_embedding_text,
-    )
-    from app.services.cross_encoder.gemini_embeddings import (
-        embed_text_list,
-        l2_normalize_rows,
-    )
+    from app.clients.gemini_embedding_client import embed_text_list
+    from app.ranking.retrieval import l2_normalize_rows, user_concat_embedding_text
 
     api_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
     if not api_key:
@@ -502,7 +498,9 @@ def validate_real_concat(matcher, white_W, target, name, users_path, jobs_path, 
         f"[{name}] embedding {len(users)} user concat texts via Gemini ...",
         file=sys.stderr,
     )
-    texts = [user_concat_embedding_text(u) or " " for u, _, _ in users]
+    texts = [
+        user_concat_embedding_text(user_from_record(u)) or " " for u, _, _ in users
+    ]
     Uraw = embed_text_list(texts, api_key=api_key, batch_size=100, sleep_s=0.12).astype(
         np.float64
     )
@@ -718,7 +716,7 @@ def main():
     rng = np.random.default_rng(args.seed)
 
     print("Loading matcher (raw) + whitened matrix ...", file=sys.stderr)
-    matcher = CosineSkillMatcher()  # raw W + resolution maps (read-only)
+    matcher = build_skill_matcher()  # raw W + resolution maps (read-only)
     raw_W = matcher.W.astype(np.float32)  # already L2-normalised
     white_W, target = _load_whitened_W(
         Path(C.EMBEDDING_MODEL_PATH).parent

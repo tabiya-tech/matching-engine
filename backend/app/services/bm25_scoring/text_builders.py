@@ -8,11 +8,7 @@ user's optional programme / institution / school year — are still word-split.
 Token streams used by ``bm25library``:
 
 User query (one list per user)
-    - ``resolved_skills[*].label`` or ``skills_vector.top_skills[*].preferredLabel``
-      -> one phrase token per skill
-    - Optionally: ``programme_name``, ``institution_name``, ``school_year``
-      as loose word tokens (**off by default** — tends to leak noise such as
-      *skills*, *training*, *year* onto the dashboard / query).
+    - ``skills_vector.top_skills[*].preferredLabel`` -> one phrase token per skill
 
 Skills-only job document
     - ``essential_skills[*].label`` + ``optional_skills[*].label`` -> phrase tokens
@@ -34,10 +30,16 @@ from __future__ import annotations
 import re
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from pydantic import BaseModel, Field
+
 # Conservative English stopword list. Small on purpose: BM25's IDF already
 # down-weights frequent tokens; the goal here is just to skip pure noise.
 from app.config import stopwords as config_stopwords
+from app.domain.job import Job
+from app.domain.skills import SkillReference
+from app.domain.user import UserProfile
 from app.languages import CANONICAL_LANGUAGE, default_language, normalise_language
+from app.ranking.types import MatchItem
 
 _STOPWORDS = frozenset(
     {
@@ -151,28 +153,15 @@ def normalize_skill_phrase(
 # ---------------------------------------------------------------------------
 
 
-def _user_skill_labels(user: dict) -> List[str]:
-    """Pull skill labels from a raw or pre-resolved user record."""
-    out: List[str] = []
-    for s in user.get("resolved_skills") or []:
-        if isinstance(s, dict):
-            lab = s.get("label")
-            if lab:
-                out.append(str(lab))
-    if out:
-        return out
-    for s in (user.get("skills_vector") or {}).get("top_skills") or []:
-        if isinstance(s, dict):
-            lab = s.get("preferredLabel") or s.get("label")
-            if lab:
-                out.append(str(lab))
-    return out
+def _user_skill_labels(user: UserProfile) -> List[str]:
+    """The user's skill labels (``skills_vector.top_skills[].preferredLabel``)."""
+    return [s.preferredLabel for s in user.skills_vector.top_skills if s.preferredLabel]
 
 
-def user_skill_phrase_tokens(user: dict) -> List[str]:
+def user_skill_phrase_tokens(user: UserProfile) -> List[str]:
     """Phrase tokens from the user's skill labels (one token per skill, unique)."""
     out: List[str] = []
-    seen: set = set()
+    seen: set[str] = set()
     for lab in _user_skill_labels(user):
         phr = normalize_skill_phrase(lab)
         if phr and phr not in seen:
@@ -181,15 +170,15 @@ def user_skill_phrase_tokens(user: dict) -> List[str]:
     return out
 
 
-def user_query_tokens(user: dict, *, include_programme: bool = False) -> List[str]:
-    """User-side BM25 tokens: skill phrases (+ optional programme word tokens)."""
-    tokens = list(user_skill_phrase_tokens(user))
-    if include_programme:
-        for k in ("programme_name", "institution_name", "school_year"):
-            v = user.get(k)
-            if v:
-                tokens.extend(tokenize(str(v)))
-    return tokens
+def user_query_tokens(
+    user: UserProfile, *, include_programme: bool = False
+) -> List[str]:
+    """User-side BM25 tokens: skill phrases.
+
+    ``include_programme`` is accepted for CLI compatibility only: ``UserProfile`` carries no
+    programme / institution / school-year fields, so there is nothing to add.
+    """
+    return list(user_skill_phrase_tokens(user))
 
 
 # ---------------------------------------------------------------------------
@@ -197,48 +186,47 @@ def user_query_tokens(user: dict, *, include_programme: bool = False) -> List[st
 # ---------------------------------------------------------------------------
 
 
-def _skill_labels(items) -> List[str]:
-    out: List[str] = []
-    for s in items or []:
-        if isinstance(s, dict):
-            lab = s.get("label")
-            if lab:
-                out.append(str(lab))
-    return out
+def _skill_labels(items: Iterable[SkillReference]) -> List[str]:
+    return [s.label for s in items if s.label]
 
 
-def job_skill_phrase_tokens(job: dict) -> List[str]:
+def job_skill_phrase_tokens(job: MatchItem) -> List[str]:
     """Phrase tokens for one job: one underscore-joined token per skill."""
     out: List[str] = []
-    for lab in _skill_labels(job.get("essential_skills")) + _skill_labels(
-        job.get("optional_skills")
-    ):
+    for lab in _skill_labels(job.essential_skills) + _skill_labels(job.optional_skills):
         phr = normalize_skill_phrase(lab)
         if phr:
             out.append(phr)
     return out
 
 
-def job_full_tokens(job: dict, *, description_chars: int = 20000) -> List[str]:
+def _description(job: MatchItem) -> str:
+    return job.opportunity_description if isinstance(job, Job) else job.description
+
+
+def job_full_tokens(job: MatchItem, *, description_chars: int = 20000) -> List[str]:
     """Free-form words + skill phrase tokens (full-text BM25 document).
 
-    Description is hard-capped to avoid a multi-paragraph posting drowning
+    Jobs contribute title, employer, location and description; occupations their label, county
+    and description. Description is hard-capped to avoid a multi-paragraph posting drowning
     out the rest of the fields; the cap is well above any realistic job text.
     """
     parts: List[str] = [
-        str(job.get("opportunity_title") or ""),
-        str(job.get("employer") or ""),
-        str(job.get("location") or ""),
+        job.title,
+        (job.employer if isinstance(job, Job) else None) or "",
+        job.location,
     ]
-    desc = job.get("opportunity_description") or ""
+    desc = _description(job)
     if desc:
-        parts.append(str(desc)[:description_chars])
+        parts.append(desc[:description_chars])
     tokens = tokenize(" ".join(p for p in parts if p))
     tokens.extend(job_skill_phrase_tokens(job))
     return tokens
 
 
-def build_corpora(jobs: Iterable[dict]) -> Tuple[List[List[str]], List[List[str]]]:
+def build_corpora(
+    jobs: Iterable[MatchItem],
+) -> Tuple[List[List[str]], List[List[str]]]:
     """Return ``(skills_only_tokens_per_job, full_tokens_per_job)``."""
     skills_corpus: List[List[str]] = []
     full_corpus: List[List[str]] = []
@@ -253,7 +241,7 @@ def build_corpora(jobs: Iterable[dict]) -> Tuple[List[List[str]], List[List[str]
 # ---------------------------------------------------------------------------
 
 
-def matched_skill_phrases(user: dict, job: dict) -> List[str]:
+def matched_skill_phrases(user: UserProfile, job: MatchItem) -> List[str]:
     """Intersect user vs job skills as normalised phrase tokens (sorted).
 
     Same normalisation as the phrase tokeniser, so the strings displayed by
@@ -270,7 +258,7 @@ def _phrase_to_first_skill_label(labels: Iterable[str]) -> Dict[str, str]:
     """Map normalised phrase token -> first observed raw label."""
     out: Dict[str, str] = {}
     for lab in labels:
-        if not isinstance(lab, str) or not lab.strip():
+        if not lab.strip():
             continue
         phr = normalize_skill_phrase(lab)
         if phr and phr not in out:
@@ -278,7 +266,17 @@ def _phrase_to_first_skill_label(labels: Iterable[str]) -> Dict[str, str]:
     return out
 
 
-def matched_skill_overlap(user: dict, job: dict) -> List[Dict[str, str]]:
+class SkillPhraseOverlap(BaseModel):
+    """One skill phrase shared by a user and a job, with each side's wording."""
+
+    phrase_token: str = Field(description="Normalised phrase token.")
+    user_label: str = Field(description="The user's label for the skill.")
+    job_label: str = Field(description="The job's label for the skill.")
+
+
+def matched_skill_overlap(
+    user: UserProfile, job: MatchItem
+) -> List[SkillPhraseOverlap]:
     """Overlap skills with one example label from the user vs from the job.
 
     Each phrase token appears at most once in the sorted list; when the user's
@@ -286,12 +284,11 @@ def matched_skill_overlap(user: dict, job: dict) -> List[Dict[str, str]]:
     show ``user_label`` vs ``job_label``.
     """
     u_map = _phrase_to_first_skill_label(_user_skill_labels(user))
-    j_labs = _skill_labels(job.get("essential_skills")) + _skill_labels(
-        job.get("optional_skills")
+    j_map = _phrase_to_first_skill_label(
+        _skill_labels(job.essential_skills) + _skill_labels(job.optional_skills)
     )
-    j_map = _phrase_to_first_skill_label(j_labs)
     common = sorted(set(u_map.keys()) & set(j_map.keys()))
     return [
-        {"phrase_token": ph, "user_label": u_map[ph], "job_label": j_map[ph]}
+        SkillPhraseOverlap(phrase_token=ph, user_label=u_map[ph], job_label=j_map[ph])
         for ph in common
     ]

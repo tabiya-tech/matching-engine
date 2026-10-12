@@ -5,17 +5,17 @@ no longer served — locally against offline datasets, no MongoDB. Pick the engi
 
 Each version calls the SAME engine function its route calls (or called, for retired versions), so
 the local output is identical to what that endpoint's consumers receive(d):
-  * ``--version v3`` -> ``run_match_v3_full`` (app.routes.match_v3): Gemini concat-cosine -> cross-
+  * ``--version v3`` -> ``run_match_v3_full`` (``app.matching.retired_routes.match_v3``): Gemini concat-cosine -> cross-
     encoder rerank. ``final_score`` is the concat cosine (whitened space when the artifact is present);
     NO preference layer (u_hat/p_hat empty). Same ``MatchResponse`` shape. Route defaults: 50/30.
-  * ``--version v4`` -> ``run_match_v4_full`` (app.routes.match, served at ``POST /match``): Pydantic validation -> Gemini
+  * ``--version v4`` -> ``MatchingService.rank`` (``app.matching.routes``, served at ``POST /match``): Pydantic validation -> Gemini
     user embedding -> concat-cosine retrieval -> cross-encoder rerank -> u_hat/p_hat preference final
     score -> ``MatchResponse`` with opportunities (jobs), occupations/careers (demand-gamma weighting
     + per-user location filter + top-k) and Node2Vec skill-gap recommendations.
-  * ``--version v5`` -> the SAME ``run_match_v4_full`` engine, then per-opportunity ZQF (Zambia)
+  * ``--version v5`` -> the SAME ``MatchingService.rank`` engine, then per-opportunity ZQF (Zambia)
     eligibility annotation (zqf_eligible/zqf_gap + labels) from the user's ``zqf_level`` and each job's
-    ``zqf_min`` (app.routes.match_v5) -> ``MatchResponseV5``. Null unless the data carries ZQF fields.
-  * ``--version match`` -> ``match_user_with_data`` (app.routes.match_legacy, retired): the legacy skill/Node2Vec
+    ``zqf_min`` (``app.matching.retired_routes.match_v5``) -> ``MatchResponseV5``. Null unless the data carries ZQF fields.
+  * ``--version match`` -> ``match_user_with_data`` (``app.matching.retired_routes.match_legacy``): the legacy skill/Node2Vec
     engine — no Gemini user embedding, no cross-encoder, no retrieve/final top-k. Same ``MatchResponse``
     shape (opportunities + occupations + skill-gaps), so all the CSV/manifest outputs below apply; the
     v4-only u_hat/p_hat/demand columns are simply empty.
@@ -123,16 +123,6 @@ DEFAULT_USERS_PATH = Path(os.getenv("USERS_JSONL_PATH", str(DATASETS[DEFAULT_DAT
 BLOCKING_TAGS = {"skills_missing", "preferences_missing", "bws_missing"}
 
 
-def _load_jobs(path: Path) -> list:
-    with open(path, "r", encoding="utf-8") as f:
-        jobs = json.load(f)
-    if not isinstance(jobs, list):
-        raise ValueError(
-            f"Expected a JSON array of jobs in {path}, got {type(jobs).__name__}"
-        )
-    return jobs
-
-
 def _load_users_jsonl(path: Path) -> list:
     rows = []
     with open(path, "r", encoding="utf-8") as f:
@@ -186,7 +176,7 @@ def main() -> None:
             "(run_match_v3_full); final_score is the concat cosine (whitened when the artifact is "
             "present), NO preference layer (u_hat/p_hat empty). Defaults retrieve=50/final=30.\n"
             "  v4    -> POST /match            : Gemini concat-cosine -> cross-encoder -> u_hat x p_hat "
-            "(run_match_v4_full). Defaults retrieve=100/final=50.\n"
+            "(MatchingService.rank). Defaults retrieve=100/final=50.\n"
             "  v5    -> retired v5 (not served) : same engine as v4 plus per-opportunity ZQF "
             "(Zambia) eligibility annotation from the user's zqf_level and each job's zqf_min."
         ),
@@ -391,9 +381,9 @@ def main() -> None:
         )
 
     # ── 3. Import app modules (order mirrors run_local.py: config & scorers first for DLL load order) ──
-    # NOTE: we deliberately do NOT import app.routes — it pulls in fastapi (not installed in this
-    # env, and not part of the algorithm). Instead we call run_match_v4_full (the exact function the
-    # route calls) and wrap with the same MatchResponse model, so the code path is identical to prod.
+    # NOTE: we deliberately do NOT import the routes — they pull in fastapi (not part of the
+    # algorithm). Instead we call MatchingService.rank (the exact method POST /match calls), so the
+    # code path is identical to prod.
     sys.path.insert(0, str(BACKEND_ROOT))
     try:
         import app.config  # noqa: F401  (must precede skill/preference scorers for DLL load order)
@@ -406,15 +396,24 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    from app.domain.job import Job
+    from app.domain.occupation import Occupation
+    from app.domain.user import UserProfile
     from app.jobs.get_jobs_repository import standalone_jobs_repository
+    from app.jobs.repository import IJobsRepository, JobsLoadTiming
+    from app.matching.get_matching_service import create_matching_service
     from app.occupations.loader import (
         attach_occupation_embeddings,
         get_all_occupations_with_timing,
     )
+    from app.ranking.retrieval import (
+        job_requires_post_secondary,
+        user_lacks_post_secondary,
+        zqf_annotation,
+    )
+    from app.ranking.types import MatchItem
     from app.services.job_retrieval import retrieve_jobs_with_timing
-    import app.services.preference_score  # noqa: F401
-    import app.services.demand_score  # noqa: F401
-    import app.services.skill_score  # noqa: F401
+    from app.services.offline_io import load_jobs_file
     from app.config import (
         FINAL_SCORE_COMBINER,
         PREFERENCE_SCORER_MODE,
@@ -427,20 +426,37 @@ def main() -> None:
         MATCH_V4_FINAL_TOP_K,
         COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
     )
-    from app.services.cross_encoder.gemini_embeddings import EMBEDDING_DIM
-    from app.services.match_v4_full_service import run_match_v4_full
+    from app.clients.gemini_embedding_client import EMBEDDING_DIM
     from app.services.match_v3_full_service import run_match_v3_full
     from app.services.matching_service import match_user_with_data
-    from app.services.education_eligibility import (
-        job_requires_post_secondary,
-        user_lacks_post_secondary,
-    )
     from app.schemas import (
+        JobsStats,
         MatchRequest,
         MatchResponse,
         MatchRequestV5,
         MatchResponseV5,
+        OpportunityRecommendationV5,
     )
+
+    class _LoadedJobsRepository(IJobsRepository):
+        """The already-loaded job corpus behind the jobs-repository interface.
+
+        ``MatchingService.rank`` never reads the repository (jobs are passed in); this keeps the
+        service construction free of a Mongo connection for offline runs.
+        """
+
+        def __init__(self, jobs: list[Job], timing: JobsLoadTiming):
+            self._jobs = jobs
+            self._timing = timing
+
+        async def find_jobs_with_timing(self, query_filter=None, *, limit=0):  # noqa: ANN001
+            return list(self._jobs), self._timing
+
+        async def get_jobs_page_with_timing(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise NotImplementedError("paging is not used by this script")
+
+        async def get_jobs_stats(self) -> JobsStats:
+            raise NotImplementedError("stats are not used by this script")
 
     # v3/v4/v5 all run the Gemini concat → CE engine (need user embedding + cross-encoder +
     # occupation embeddings + retrieve/final top-k). HAS_PREF is the narrower v4/v5 family that
@@ -454,26 +470,30 @@ def main() -> None:
     # Live (--live-jobs): read through a standalone jobs repository, with the same location prefilter
     # policy as the routes (app.services.job_retrieval). ──
     if not USE_LIVE_JOBS:
-        jobs = _load_jobs(args.jobs)
-        jobs_timing = {
-            "mongo_ranked_find_ms": 0.0,
-            "python_build_jobs_ms": 0.0,
-            "n_ranked_raw": len(jobs),
-            "n_jobs": len(jobs),
-            "n_skipped_inactive": 0,
-            "get_all_jobs_total_ms": 0.0,
-            "jobs_retrieval_filter_applied": False,  # offline: no per-user location prefilter
-            "jobs_find_use_projection": False,
-            "source": "local_json",
-            "path": str(args.jobs.resolve()),
-        }
+        # Ranked-job documents or flat job objects, validated into Job models.
+        local_jobs = load_jobs_file(args.jobs)
+        local_timing = JobsLoadTiming(
+            mongo_ranked_find_ms=0.0,
+            python_build_jobs_ms=0.0,
+            n_ranked_raw=len(local_jobs),
+            n_jobs=len(local_jobs),
+            n_skipped_inactive=0,
+            n_skipped_invalid=0,
+            get_all_jobs_total_ms=0.0,
+            jobs_find_use_projection=False,
+            jobs_retrieval_filter_applied=False,  # offline: no per-user location prefilter
+        )
 
-        async def _fetch_jobs(users):  # noqa: ANN001
-            return list(jobs), dict(jobs_timing)
+        async def _fetch_jobs(
+            users: list[UserProfile],
+        ) -> tuple[list[Job], JobsLoadTiming]:
+            return list(local_jobs), local_timing
 
     else:
 
-        async def _fetch_jobs(users):  # noqa: ANN001
+        async def _fetch_jobs(
+            users: list[UserProfile],
+        ) -> tuple[list[Job], JobsLoadTiming]:
             async with standalone_jobs_repository() as jobs_repository:
                 return await retrieve_jobs_with_timing(jobs_repository, users)
 
@@ -549,15 +569,12 @@ def main() -> None:
     # go through _fetch_jobs — offline it's the local JSON closure defined above; with --live-jobs
     # it's the real Mongo-backed repository. Done before the banner so the
     # n_jobs count and all downstream lookups reflect the corpus actually used. v5 validates with
-    # MatchRequestV5 so the user's optional ``zqf_level`` survives model_dump into the engine.
+    # MatchRequestV5 so the user's optional ``zqf_level`` reaches the UserProfile.
     request_model = MatchRequestV5 if args.version == "v5" else MatchRequest
-    payload = [request_model(**u) for u in selected]
-    users_dicts = [m.model_dump() for m in payload]
+    users = [UserProfile.from_request(request_model(**u)) for u in selected]
     t0 = _dt.datetime.now()
     try:
-        jobs_list, mongo_timing = asyncio.run(
-            _fetch_jobs(users_dicts)
-        )
+        jobs_list, mongo_timing = asyncio.run(_fetch_jobs(users))
     except Exception as e:  # noqa: BLE001 — surface live-DB failures with an actionable hint
         if USE_LIVE_JOBS:
             print(
@@ -569,7 +586,9 @@ def main() -> None:
             )
             sys.exit(1)
         raise
-    jobs = jobs_list  # corpus actually used (banner, job_by_uuid lookups, education-gate counts, manifest)
+    jobs: list[Job] = (
+        jobs_list  # corpus actually used (banner, job_by_uuid lookups, education-gate counts, manifest)
+    )
 
     n_complete = sum(1 for r in report if r["kept"])
     print(
@@ -611,33 +630,38 @@ def main() -> None:
 
     # ── 6. Run the chosen endpoint's code path — mirrors the matching app.routes EXACTLY ──────
     # Occupations load from local resource files via app.occupations (works offline and with --live-jobs).
+    occ_corpus: list[Occupation]
     occ_corpus, _occ_timing = asyncio.run(get_all_occupations_with_timing())
 
     if IS_GEMINI:
-        # v3/v4/v5 route bodies all: validate -> model_dump -> (jobs, occ) ->
-        # attach_occupation_embeddings -> run_match_v{3,4}_full -> [MatchResponse(**row)]. We call the
-        # same engine function the live route calls, so opportunities, occupations (county-scoped +
-        # top-k) and skill-gaps are produced identically to live consumers.
+        # v3/v4/v5 route bodies all: validate -> UserProfile -> (jobs, occ) ->
+        # attach_occupation_embeddings -> the engine. We call the same engine the live route calls,
+        # so opportunities, occupations (county-scoped + top-k) and skill-gaps are produced
+        # identically to live consumers.
         occ_corpus = attach_occupation_embeddings(occ_corpus)
 
+    matching_service = create_matching_service(
+        _LoadedJobsRepository(jobs_list, mongo_timing)
+    )
+    responses: list[MatchResponse] | list[MatchResponseV5]
     if args.version == "v3":
         # /match_v3: Gemini concat-cosine -> cross-encoder rerank. final_score is the concat
         # cosine; NO preference layer (u_hat/p_hat empty). No combiner / mongo_timing args.
-        raw = run_match_v3_full(
-            users_dicts,
+        responses = run_match_v3_full(
+            users,
             jobs_list,
             occ_corpus,
             retrieve_top_k=retrieve_top_k,
             final_top_k=args.final_top_k,
             skill_gap_top_k=MATCH_TOP_K_SKILL_GAPS,
+            matching_service=matching_service,
         )
-        responses = [MatchResponse(**row) for row in raw]
     elif HAS_PREF:
-        # /match_v4 + /match_v5: Gemini concat-cosine -> CE -> u_hat x p_hat (demand-gamma + per-user
-        # location filter + top-k). v5 then annotates each opportunity with ZQF eligibility (same loop
-        # as app.routes.match_v5) and validates the rows with MatchResponseV5.
-        raw = run_match_v4_full(
-            users_dicts,
+        # POST /match (v4) + /experiments/v5/match: Gemini concat-cosine -> CE -> u_hat x p_hat
+        # (demand-gamma + per-user location filter + top-k). v5 then annotates each opportunity with
+        # ZQF eligibility (same loop as the retired v5 route).
+        v4 = matching_service.rank(
+            users,
             jobs_list,
             occ_corpus,
             retrieve_top_k=retrieve_top_k,
@@ -647,35 +671,43 @@ def main() -> None:
             mongo_timing=mongo_timing,
         )
         if args.version == "v5":
-            job_by_uuid_v5 = {str(j.get("uuid")): j for j in jobs_list}
-            for row, user in zip(raw, users_dicts):
-                user_zqf = user.get("zqf_level")
-                for opp in row.get("opportunity_recommendations") or []:
-                    job = job_by_uuid_v5.get(str(opp.get("uuid") or ""))
-                    job_zqf_min = job.get("zqf_min") if job else None
-                    if user_zqf is not None and isinstance(job_zqf_min, (int, float)):
-                        jmin, ulevel = int(job_zqf_min), int(user_zqf)
-                        opp["zqf_eligible"] = ulevel >= jmin
-                        opp["zqf_gap"] = abs(ulevel - jmin)
-                    else:
-                        opp["zqf_eligible"] = None
-                        opp["zqf_gap"] = None
-                    opp["zqf_min_label"] = job.get("zqf_min_label") if job else None
-                    opp["zqf_max_label"] = job.get("zqf_max_label") if job else None
-            responses = [MatchResponseV5(**row) for row in raw]
+            job_by_uuid_v5 = {j.uuid: j for j in jobs_list}
+            responses = []
+            for response, user in zip(v4, users):
+                opportunities: list[OpportunityRecommendationV5] = []
+                for opp in response.opportunity_recommendations:
+                    job = job_by_uuid_v5.get(opp.uuid)
+                    eligible, gap = zqf_annotation(
+                        user.zqf_level, job.zqf_min if job else None
+                    )
+                    opportunities.append(
+                        OpportunityRecommendationV5(
+                            **dict(opp),
+                            zqf_eligible=eligible,
+                            zqf_gap=gap,
+                            zqf_min_label=job.zqf_min_label if job else None,
+                            zqf_max_label=job.zqf_max_label if job else None,
+                        )
+                    )
+                responses.append(
+                    MatchResponseV5(
+                        user_id=response.user_id,
+                        occupation_recommendations=response.occupation_recommendations,
+                        opportunity_recommendations=opportunities,
+                        skill_gap_recommendations=response.skill_gap_recommendations,
+                    )
+                )
         else:
-            responses = [MatchResponse(**row) for row in raw]
+            responses = v4
     else:
-        # /match route body: validate -> model_dump -> (jobs, occ) -> match_user_with_data per user
-        # (CPU-bound, thread-pooled live; sequential here) -> [MatchResponse(**row)]. Legacy skill/
-        # Node2Vec engine — no Gemini user embedding, no cross-encoder, no retrieve/final top-k. Uses
-        # occupations as loaded (no attach_occupation_embeddings; that is a v3/v4/v5-only step).
-        raw = [match_user_with_data(u, jobs_list, occ_corpus) for u in users_dicts]
-        responses = [MatchResponse(**row) for row in raw]
+        # Retired legacy /match: match_user_with_data per user (CPU-bound, thread-pooled live;
+        # sequential here). Legacy skill/Node2Vec engine — no Gemini user embedding, no
+        # cross-encoder, no retrieve/final top-k. Uses occupations as loaded (no
+        # attach_occupation_embeddings; that is a v3/v4/v5-only step).
+        responses = [match_user_with_data(u, jobs_list, occ_corpus) for u in users]
 
-    resp_dicts = [
-        r.model_dump() if hasattr(r, "model_dump") else dict(r) for r in responses
-    ]
+    # Output edge: the CSV / JSON writers below read the serialised responses.
+    resp_dicts = [r.model_dump(mode="json") for r in responses]
     wall_s = (_dt.datetime.now() - t0).total_seconds()
 
     # ── 7. Write outputs ──────────────────────────────────────────────────────
@@ -694,23 +726,24 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    # Lookups for joining recs back to source item dicts + the validated user dicts.
-    job_by_uuid = {str(j.get("uuid")): j for j in jobs}
-    occ_by_uuid = {str(o.get("uuid")): o for o in occ_corpus}
-    user_by_id = {str(u.get("user_id") or ""): u for u in users_dicts}
+    # Lookups for joining recs back to the source items + the validated users.
+    job_by_uuid: dict[str, Job] = {j.uuid: j for j in jobs}
+    occ_by_uuid: dict[str, Occupation] = {o.uuid: o for o in occ_corpus}
+    user_by_id: dict[str, UserProfile] = {u.user_id or "": u for u in users}
 
-    def _fmt_user_skills(u: dict) -> str:
+    def _fmt_user_skills(u: UserProfile) -> str:
         parts = []
-        for s in ((u.get("skills_vector") or {}).get("top_skills")) or []:
-            label = s.get("preferredLabel") or s.get("originUUID") or ""
-            prof = s.get("proficiency")
+        for s in u.skills_vector.top_skills:
+            label = s.preferredLabel or s.originUUID or ""
+            prof = s.proficiency
             parts.append(f"{label} ({prof})" if prof is not None else str(label))
         return " | ".join(parts)
 
-    def _fmt_item_skills(skills: list) -> str:
-        return " | ".join(
-            str(s.get("label") or s.get("id") or "") for s in (skills or [])
-        )
+    def _fmt_item_skills(item: MatchItem | None, essential: bool) -> str:
+        if item is None:
+            return ""
+        skills = item.essential_skills if essential else item.optional_skills
+        return " | ".join(s.label or s.id for s in skills)
 
     def _join(xs) -> str:
         return " | ".join(str(x) for x in (xs or []))
@@ -729,40 +762,37 @@ def main() -> None:
         """Pull a field from the rich MatchResponse row's score_breakdown (u_hat/p_hat/demand live there)."""
         return (rec.get("score_breakdown") or {}).get(key)
 
-    def _user_vec_cols(u: dict) -> dict:
-        pv = u.get("preference_vector") or {}
-        cols = {
+    def _user_vec_cols(u: UserProfile | None) -> dict[str, object]:
+        if u is None:
+            return {}
+        pv = u.preference_vector
+        cols: dict[str, object] = {
             "user_top_skills": _fmt_user_skills(u),
-            "user_skill_groups_origin_uuids": _join(u.get("skill_groups_origin_uuids")),
-            "user_bws_scores": json.dumps(
-                pv.get("bws_scores") or {}, ensure_ascii=False
-            ),
-            "user_top_10_bws": _join(pv.get("top_10_bws")),
+            "user_skill_groups_origin_uuids": _join(u.skill_groups_origin_uuids),
+            "user_bws_scores": json.dumps(pv.bws_scores or {}, ensure_ascii=False),
+            "user_top_10_bws": _join(pv.top_10_bws),
         }
         for k in PREF_KEYS:
-            cols[f"user_pref_{k}"] = pv.get(k)
+            cols[f"user_pref_{k}"] = getattr(pv, k)
         return cols
 
     # ── 7a. Opportunities (jobs): flat CSV + detailed CSV with vectors ──
     # v5 carries the per-opportunity ZQF annotation; expose those columns only for v5.
     is_v5 = args.version == "v5"
     zqf_cols = ["zqf_eligible", "zqf_gap", "zqf_min_label", "zqf_max_label"]
-    opp_base_cols = (
-        [
-            "user_id",
-            "rank",
-            "job_uuid",
-            "opportunity_title",
-            "employer",
-            "location",
-            "is_eligible",
-            "u_hat",
-            "p_hat",
-            "final_score",
-            "demand_label",
-        ]
-        + (zqf_cols if is_v5 else [])
-    )
+    opp_base_cols = [
+        "user_id",
+        "rank",
+        "job_uuid",
+        "opportunity_title",
+        "employer",
+        "location",
+        "is_eligible",
+        "u_hat",
+        "p_hat",
+        "final_score",
+        "demand_label",
+    ] + (zqf_cols if is_v5 else [])
 
     def _opp_base_row(uid, rec):
         row = {
@@ -813,24 +843,22 @@ def main() -> None:
         w.writeheader()
         for resp in resp_dicts:
             uid = resp.get("user_id")
-            uc = _user_vec_cols(user_by_id.get(str(uid or "")) or {})
+            uc = _user_vec_cols(user_by_id.get(str(uid or "")))
             for rec in resp.get("opportunity_recommendations") or []:
-                j = job_by_uuid.get(str(rec.get("uuid") or "")) or {}
+                j = job_by_uuid.get(str(rec.get("uuid") or ""))
                 w.writerow(
                     {
                         **_opp_base_row(uid, rec),
-                        "job_essential_skills": _fmt_item_skills(
-                            j.get("essential_skills")
-                        ),
-                        "job_optional_skills": _fmt_item_skills(
-                            j.get("optional_skills")
-                        ),
+                        "job_essential_skills": _fmt_item_skills(j, True),
+                        "job_optional_skills": _fmt_item_skills(j, False),
                         "job_skill_groups_origin_uuids": _join(
-                            j.get("skill_groups_origin_uuids")
+                            j.skill_groups_origin_uuids if j else []
                         ),
-                        "job_attributes": json.dumps(
-                            j.get("attributes") or {}, ensure_ascii=False
-                        ),
+                        "job_attributes": j.attributes.model_dump_json(
+                            exclude_none=True
+                        )
+                        if j
+                        else "{}",
                         **uc,
                     }
                 )
@@ -899,27 +927,23 @@ def main() -> None:
         w.writeheader()
         for resp in resp_dicts:
             uid = resp.get("user_id")
-            uc = _user_vec_cols(user_by_id.get(str(uid or "")) or {})
+            uc = _user_vec_cols(user_by_id.get(str(uid or "")))
             for rec in resp.get("occupation_recommendations") or []:
-                occ = occ_by_uuid.get(str(rec.get("uuid") or "")) or {}
+                occ = occ_by_uuid.get(str(rec.get("uuid") or ""))
                 w.writerow(
                     {
                         **_career_base_row(uid, rec),
-                        "occupation_essential_skills": _fmt_item_skills(
-                            occ.get("essential_skills")
-                        ),
-                        "occupation_optional_skills": _fmt_item_skills(
-                            occ.get("optional_skills")
-                        ),
-                        "occupation_skill_groups_origin_uuids": _join(
-                            occ.get("skill_groups_origin_uuids")
-                        ),
-                        "occupation_attributes": json.dumps(
-                            occ.get("attributes") or {}, ensure_ascii=False
-                        ),
-                        "occupation_requires_post_secondary": occ.get(
-                            "requires_post_secondary"
-                        ),
+                        "occupation_essential_skills": _fmt_item_skills(occ, True),
+                        "occupation_optional_skills": _fmt_item_skills(occ, False),
+                        "occupation_skill_groups_origin_uuids": "",
+                        "occupation_attributes": occ.attributes.model_dump_json(
+                            exclude_none=True
+                        )
+                        if occ
+                        else "{}",
+                        "occupation_requires_post_secondary": occ.requires_post_secondary
+                        if occ
+                        else None,
                         **uc,
                     }
                 )
@@ -979,28 +1003,22 @@ def main() -> None:
     }
     for resp in resp_dicts:
         uid = str(resp.get("user_id") or "")
-        u = user_by_id.get(uid) or {}
+        u = user_by_id.get(uid)
         opps = resp.get("opportunity_recommendations") or []
         occs = resp.get("occupation_recommendations") or []
+        opp_items = [job_by_uuid.get(str(rec.get("uuid") or "")) for rec in opps]
+        occ_items = [occ_by_uuid.get(str(rec.get("uuid") or "")) for rec in occs]
         n_opp_req = sum(
-            1
-            for rec in opps
-            if job_requires_post_secondary(
-                job_by_uuid.get(str(rec.get("uuid") or "")) or {}
-            )
+            1 for j in opp_items if j is not None and job_requires_post_secondary(j)
         )
         n_occ_req = sum(
-            1
-            for rec in occs
-            if job_requires_post_secondary(
-                occ_by_uuid.get(str(rec.get("uuid") or "")) or {}
-            )
+            1 for o in occ_items if o is not None and job_requires_post_secondary(o)
         )
         education_gate["per_user"].append(
             {
                 "user_id": uid,
-                "any_post_secondary_educ": u.get("any_post_secondary_educ"),
-                "lacks_post_secondary": user_lacks_post_secondary(u),
+                "any_post_secondary_educ": u.any_post_secondary_educ if u else None,
+                "lacks_post_secondary": user_lacks_post_secondary(u) if u else False,
                 "n_opportunities": len(opps),
                 "n_opportunities_requiring_post_secondary": n_opp_req,
                 "n_occupations": len(occs),
@@ -1021,7 +1039,7 @@ def main() -> None:
             "run_match_v3_full (identical to the retired POST /experiments/v3/match route; "
             "Gemini concat-cosine -> cross-encoder rerank, concat-cosine [whitened] final_score, no preference layer)"
             if args.version == "v3"
-            else f"run_match_v4_full (identical to the POST {endpoint_label} route)"
+            else f"MatchingService.rank (identical to the POST {endpoint_label} route)"
             + (" + per-opportunity ZQF eligibility annotation" if is_v5 else "")
             if IS_GEMINI
             else "match_user_with_data (identical to the retired legacy POST /match route; legacy skill/Node2Vec engine)"
@@ -1044,7 +1062,7 @@ def main() -> None:
                 if USE_LIVE_JOBS
                 else "local_json (full active corpus; users= location prefilter intentionally ignored)"
             ),
-            "mongo_timing": mongo_timing,
+            "mongo_timing": mongo_timing.model_dump(),
         },
         "config": (
             {
@@ -1110,7 +1128,7 @@ def main() -> None:
             (
                 f"Drives run_match_v3_full directly — same Gemini concat-cosine -> cross-encoder engine, county-scoped occupations, top-k and skill-gaps as the deployed POST {endpoint_label}. final_score is the concat cosine (whitened space when the artifact is present); the v4-only u_hat/p_hat/demand columns are empty for this engine. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ."
                 if args.version == "v3"
-                else f"Drives run_match_v4_full directly — same engine, scoring, occupation demand-gamma + per-user location filter, top-k, and skill-gaps as the deployed POST {endpoint_label}. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ."
+                else f"Drives MatchingService.rank directly — same engine, scoring, occupation demand-gamma + per-user location filter, top-k, and skill-gaps as the deployed POST {endpoint_label}. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ."
                 if IS_GEMINI
                 else "Drives match_user_with_data directly — same legacy skill/Node2Vec engine, scoring, top-k and skill-gaps as the retired legacy POST /match. Only the job source (local JSON unless --live-jobs) and the absence of the FastAPI/Mongo wrapper differ."
             ),
@@ -1127,7 +1145,9 @@ def main() -> None:
             ),
         ]
         + (
-            ["Cross-encoder downloads from HuggingFace on first run unless HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE are set."]
+            [
+                "Cross-encoder downloads from HuggingFace on first run unless HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE are set."
+            ]
             if IS_GEMINI
             else []
         )

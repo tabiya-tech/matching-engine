@@ -30,11 +30,14 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 # No Mongo client is created on import (the app opens it in its lifespan), and this script passes
 # jobs/occupations from local files straight to the matcher, so no database is needed.
 sys.path.insert(0, str(Path(__file__).parent))
-import app.config  # noqa: E402  # must be imported before skill_score/matching_service
-import app.services.preference_score  # noqa: E402
-import app.services.demand_score  # noqa: E402
-import app.services.skill_score  # noqa: E402, F401  # side-effect: DLL/module init
 from app.config import OCCUPATION_JSON_PATH  # noqa: E402
+from app.domain.job import Job  # noqa: E402
+from app.domain.occupation import Occupation  # noqa: E402
+from app.domain.user import UserProfile  # noqa: E402
+from app.occupations.flatten import flatten_occupations  # noqa: E402
+from app.occupations.occupation_file import OCCUPATION_FILE  # noqa: E402
+from app.schemas import MatchResponse  # noqa: E402
+from app.services.offline_io import load_jobs_file, load_users  # noqa: E402
 
 # ── 2. Load local JSONL data (override with SUPPLY_JSONL_PATH / DEMAND_JSONL_PATH) ──
 REPO_ROOT = Path(__file__).parent.parent
@@ -45,57 +48,12 @@ DEMAND_PATH = Path(
     os.getenv("DEMAND_JSONL_PATH", str(REPO_ROOT / "data" / "demand.jsonl"))
 )
 
+JOBS: list[Job] = load_jobs_file(DEMAND_PATH)
 
-def load_jsonl(path: Path) -> list:
-    with open(path, "r", encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
-
-
-JOBS = load_jsonl(DEMAND_PATH)
-
-OCCUPATION_DB_PATH = Path(OCCUPATION_JSON_PATH)
-with open(OCCUPATION_DB_PATH, "r", encoding="utf-8") as _f:
-    _raw_occupations = json.load(_f)
-
-# Flatten: each occupation × county becomes one record in the format the matching
-# service expects (mirrors how data would be stored flat in MongoDB).
-OCCUPATIONS = []
-for entry in _raw_occupations:
-    occ = entry.get("occupation", {})
-    skills = entry.get("skills", {})
-    essential_uuids = skills.get("essential", {}).get("uuids", [])
-    optional_uuids = skills.get("optional", {}).get("uuids", [])
-    onet_was = entry.get("onet_work_activities", [])
-
-    for county_entry in entry.get("counties_data", []):
-        county = county_entry.get("county", "")
-        raw_attrs = (county_entry.get("job_attributes") or {}).get("attributes", [])
-        flat_attrs = {
-            a["attribute_name"]: a["selected_level_id"]
-            for a in raw_attrs
-            if "attribute_name" in a and "selected_level_id" in a
-        }
-
-        OCCUPATIONS.append(
-            {
-                "uuid": f"{occ.get('code', '')}_{county}",
-                "originUuid": occ.get("code", ""),
-                "occupation_label": occ.get("preferred_label", ""),
-                "occupation_description": occ.get("description", ""),
-                "province": county,
-                "city": county,
-                "location": county,
-                "essential_skills": [
-                    {"id": str(u), "label": ""} for u in essential_uuids
-                ],
-                "optional_skills": [
-                    {"id": str(u), "label": ""} for u in optional_uuids
-                ],
-                "skill_groups_origin_uuids": [],
-                "attributes": flat_attrs,
-                "onet_work_activities": onet_was,
-            }
-        )
+# Each occupation × county becomes one row, exactly as the service flattens the occupation file.
+OCCUPATIONS: list[Occupation] = flatten_occupations(
+    OCCUPATION_FILE.validate_json(Path(OCCUPATION_JSON_PATH).read_bytes())
+)
 
 
 import app.services.matching_service as ms_module  # noqa: E402
@@ -103,12 +61,9 @@ import app.services.matching_service as ms_module  # noqa: E402
 # ── 3. Run matching ───────────────────────────────────────────────────────────
 
 
-async def run(users: list) -> list:
-    results = []
-    for user in users:
-        result = await ms_module.match_single_user(user, JOBS, OCCUPATIONS)
-        results.append(result)
-    return results
+async def run(users: list[UserProfile]) -> list[MatchResponse]:
+    """Match each user against the local jobs and occupations."""
+    return [await ms_module.match_single_user(u, JOBS, OCCUPATIONS) for u in users]
 
 
 def main():
@@ -121,10 +76,10 @@ def main():
     parser.add_argument("--output", metavar="FILE", help="Write JSON output to file")
     args = parser.parse_args()
 
-    supply = load_jsonl(SUPPLY_PATH)
+    supply = load_users(SUPPLY_PATH)
 
     if args.user:
-        users = [u for u in supply if u.get("user_id") == args.user]
+        users = [u for u in supply if u.user_id == args.user]
         if not users:
             print(f"User '{args.user}' not found in supply.jsonl", file=sys.stderr)
             sys.exit(1)
@@ -134,14 +89,14 @@ def main():
         # Default: first user only
         users = supply[:1]
         print(
-            f"No flag given — matching first user: {users[0].get('user_id')}\n"
+            f"No flag given — matching first user: {users[0].user_id}\n"
             f"Use --user <id> or --all to match other users.\n",
             file=sys.stderr,
         )
 
     results = asyncio.run(run(users))
 
-    output_json = json.dumps(results, indent=2, default=str)
+    output_json = json.dumps([r.model_dump(mode="json") for r in results], indent=2)
 
     if args.output:
         Path(args.output).write_text(output_json, encoding="utf-8")
