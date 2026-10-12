@@ -6,43 +6,40 @@ from app.ranking.scoring import (
 )
 from app.ranking.preference import UnifiedPreferenceScorer
 from app.artifacts.repository import get_artifacts_repository
-
-
-def _items():
-    # Same DCE attributes -> same u_hat; both postings carry essential skills (so they are
-    # "parsed" and get a real ranking coverage).
-    attrs = {"earnings_per_month": "earn_50k"}
-    return {
-        "HI": {
-            "uuid": "HI",
-            "essential_skills": [{"id": "s1", "label": "sql"}],
-            "attributes": attrs,
-        },
-        "LO": {
-            "uuid": "LO",
-            "essential_skills": [{"id": "s2", "label": "welding"}],
-            "attributes": attrs,
-        },
-    }
+from tests.domain_factories import (
+    make_attributes,
+    make_candidate,
+    make_job,
+    make_skills,
+    make_user,
+)
 
 
 def _recs():
-    # Different stage-1 cosines -> different p_hat -> a real ordering to preserve.
+    # Same DCE attributes -> same u_hat; both postings carry essential skills (so they are
+    # "parsed" and get a real ranking coverage). Different stage-1 cosines -> different p_hat ->
+    # a real ordering to preserve.
+    attrs = make_attributes(earnings_per_month="earn_50k")
+    hi = make_job(
+        uuid="HI", essential_skills=make_skills(("s1", "sql")), attributes=attrs
+    )
+    lo = make_job(
+        uuid="LO", essential_skills=make_skills(("s2", "welding")), attributes=attrs
+    )
     return [
-        {"job_uuid": "HI", "rank": 1, "concat_cosine_similarity": 0.80},
-        {"job_uuid": "LO", "rank": 2, "concat_cosine_similarity": 0.40},
+        make_candidate(hi, rank=1, cosine=0.80),
+        make_candidate(lo, rank=2, cosine=0.40),
     ]
 
 
 def _user():
-    return {"user_id": "u1", "preference_vector": {"earnings_per_month": 0.7}}
+    return make_user(user_id="u1", preference_vector={"earnings_per_month": 0.7})
 
 
 def _enrich(coverage, **kwargs):
     return enrich_recommendations_with_preferences(
         _user(),
         _recs(),
-        _items(),
         preference_scorer=UnifiedPreferenceScorer(
             get_artifacts_repository().load_attribute_schema()
         ),
@@ -57,57 +54,53 @@ class TestZeroCoverage:
         out = _enrich({"HI": 0.0, "LO": 0.0})
         assert len(out) == 2
         for row in out:
-            assert row["final_score"] > 0.0, row["score_breakdown"]
-            assert row["u_hat"] > 0.0 and row["p_hat"] > 0.0
+            assert row.final_score > 0.0, row.breakdown
+            assert row.preference.u_hat > 0.0 and row.p_hat > 0.0
 
     def test_u_hat_x_p_hat_ordering_survives(self):
         # Same u_hat, higher p_hat -> HI must rank first. Un-floored, both scored 0.0 and the
         # order came from the p_hat tie-break rather than the score.
         out = _enrich({"HI": 0.0, "LO": 0.0})
-        assert [r["job_uuid"] for r in out] == ["HI", "LO"]
-        assert out[0]["final_score"] > out[1]["final_score"]
+        assert [r.uuid for r in out] == ["HI", "LO"]
+        assert out[0].final_score > out[1].final_score
 
     def test_the_floor_is_the_only_surviving_factor(self):
         out = _enrich({"HI": 0.0, "LO": 0.0})
-        row = next(r for r in out if r["job_uuid"] == "HI")
+        row = next(r for r in out if r.uuid == "HI")
         floor = scoring.V4_FULL_COVERAGE_FLOOR
-        assert row["score_breakdown"]["coverage_factor"] == pytest.approx(
-            floor, abs=1e-4
-        )
-        assert row["final_score"] == pytest.approx(
-            row["u_hat"] * row["p_hat"] * floor, abs=1e-3
+        assert row.breakdown.coverage_factor == pytest.approx(floor, abs=1e-4)
+        assert row.final_score == pytest.approx(
+            row.preference.u_hat * row.p_hat * floor, abs=1e-3
         )
 
     def test_floor_zero_restores_the_un_floored_behaviour(self, monkeypatch):
         # V4_FULL_COVERAGE_FLOOR=0.0 is the documented rollback.
         monkeypatch.setattr(scoring, "V4_FULL_COVERAGE_FLOOR", 0.0)
         out = _enrich({"HI": 0.0, "LO": 0.0})
-        assert all(r["final_score"] == 0.0 for r in out)
+        assert all(r.final_score == 0.0 for r in out)
 
 
 class TestCoverageStillRanks:
     def test_full_coverage_is_not_penalised(self):
         out = _enrich({"HI": 1.0, "LO": 1.0})
-        row = next(r for r in out if r["job_uuid"] == "HI")
-        assert row["score_breakdown"]["coverage_factor"] == pytest.approx(1.0)
-        assert row["final_score"] == pytest.approx(
-            row["u_hat"] * row["p_hat"], abs=1e-3
+        row = next(r for r in out if r.uuid == "HI")
+        assert row.breakdown.coverage_factor == pytest.approx(1.0)
+        assert row.final_score == pytest.approx(
+            row.preference.u_hat * row.p_hat, abs=1e-3
         )
 
     def test_low_coverage_is_still_demoted_below_full_coverage(self):
         # LO has the better coverage but the worse cosine; the demotion has to be strong enough
         # to keep achievability meaningful — a 0-coverage item stays well below a 1.0-coverage one.
         out = _enrich({"HI": 0.0, "LO": 1.0})
-        by = {r["job_uuid"]: r for r in out}
-        assert by["LO"]["final_score"] > by["HI"]["final_score"]
-        assert out[0]["job_uuid"] == "LO"
+        by = {r.uuid: r for r in out}
+        assert by["LO"].final_score > by["HI"].final_score
+        assert out[0].uuid == "LO"
 
     def test_factor_is_monotone_in_coverage(self):
         def factor(cov):
             out = _enrich({"HI": cov, "LO": cov})
-            return next(r for r in out if r["job_uuid"] == "HI")["score_breakdown"][
-                "coverage_factor"
-            ]
+            return next(r for r in out if r.uuid == "HI").breakdown.coverage_factor
 
         factors = [factor(c) for c in (0.0, 0.25, 0.5, 0.75, 1.0)]
         assert factors == sorted(factors)
@@ -119,14 +112,14 @@ class TestLocationTier:
         out = _enrich(
             {"HI": 1.0, "LO": 1.0}, location_tier_by_uuid={"HI": 0.0, "LO": 1.0}
         )
-        assert [r["job_uuid"] for r in out] == ["LO"]
+        assert [r.uuid for r in out] == ["LO"]
 
     def test_in_chain_tier_scales_the_score(self):
         out = _enrich(
             {"HI": 1.0, "LO": 1.0}, location_tier_by_uuid={"HI": 0.5, "LO": 1.0}
         )
-        row = next(r for r in out if r["job_uuid"] == "HI")
-        assert row["score_breakdown"]["location_tier_factor"] == pytest.approx(0.5)
-        assert row["final_score"] == pytest.approx(
-            row["u_hat"] * row["p_hat"] * 0.5, abs=1e-3
+        row = next(r for r in out if r.uuid == "HI")
+        assert row.breakdown.location_tier_factor == pytest.approx(0.5)
+        assert row.final_score == pytest.approx(
+            row.preference.u_hat * row.p_hat * 0.5, abs=1e-3
         )

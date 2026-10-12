@@ -15,6 +15,7 @@ import pytest
 
 from app.matching import service as svc
 from app.matching.service import MatchingService
+from tests.domain_factories import make_occupation, make_user, occupations_load_timing
 
 
 def _service() -> MatchingService:
@@ -36,20 +37,14 @@ def _service() -> MatchingService:
 
 @pytest.fixture()
 def v4_user():
-    return {
-        "user_id": "u1",
-        "city": "Nairobi",
-        "province": "Nairobi",
-        "skills_vector": {"top_skills": []},
-        "preference_vector": {},
-    }
+    return make_user(user_id="u1", city="Nairobi", province="Nairobi")
 
 
 @pytest.fixture()
 def occupation_rows():
     return [
-        {"uuid": "occ-1", "originUuid": "code-1", "province": "Nairobi"},
-        {"uuid": "occ-2", "originUuid": "code-2", "province": "Kitui"},
+        make_occupation(uuid="occ-1", originUuid="code-1", county="Nairobi"),
+        make_occupation(uuid="occ-2", originUuid="code-2", county="Kitui"),
     ]
 
 
@@ -71,7 +66,7 @@ def _run(users, jobs, occupations, *, disabled: bool):
 class TestEngineKillSwitch:
     def test_disabled_returns_no_occupations(self, v4_user, occupation_rows):
         rows, _ = _run([v4_user], [], occupation_rows, disabled=True)
-        assert rows[0]["occupation_recommendations"] == []
+        assert rows[0].occupation_recommendations == []
 
     def test_disabled_skips_the_occupation_retrieval_pass(
         self, v4_user, occupation_rows
@@ -90,9 +85,9 @@ class TestEngineKillSwitch:
         self, v4_user, occupation_rows
     ):
         rows, _ = _run([v4_user], [], occupation_rows, disabled=True)
-        assert rows[0]["user_id"] == "u1"
-        assert rows[0]["opportunity_recommendations"] == []
-        assert rows[0]["skill_gap_recommendations"] == []
+        assert rows[0].user_id == "u1"
+        assert rows[0].opportunity_recommendations == []
+        assert rows[0].skill_gap_recommendations == []
 
 
 class TestServiceCorpusLoad:
@@ -106,13 +101,13 @@ class TestServiceCorpusLoad:
         ):
             occ, timing = asyncio.run(_service()._load_occupations())
         assert occ == []
-        assert timing == {}
+        assert timing is None
         loader.assert_not_called()
         attach.assert_not_called()
 
     def test_enabled_loads_and_embeds_the_corpus(self):
         loader = AsyncMock(
-            return_value=([{"uuid": "occ-1"}], {"occupation_cache_hit": True})
+            return_value=([make_occupation(uuid="occ-1")], occupations_load_timing())
         )
         attach = MagicMock(side_effect=lambda rows: rows)
         with (
@@ -121,6 +116,6 @@ class TestServiceCorpusLoad:
             patch.object(svc, "attach_occupation_embeddings", attach),
         ):
             occ, timing = asyncio.run(_service()._load_occupations())
-        assert [o["uuid"] for o in occ] == ["occ-1"]
-        assert timing["occupation_cache_hit"] is True
+        assert [o.uuid for o in occ] == ["occ-1"]
+        assert timing.occupation_cache_hit is True
         attach.assert_called_once()
