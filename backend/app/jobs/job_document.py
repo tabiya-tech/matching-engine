@@ -1,11 +1,31 @@
-"""Shape of a stored job document and its mapping to the flat job dict used by matching.
+"""Shape of a stored ranked-job document and its mapping to the ``Job`` domain model.
 
-``RANKED_JOB_FIND_PROJECTION`` and ``build_job_dict_from_ranked`` must stay aligned: every field the
-mapper reads has to be projected. This is the contract with the llm-reranker's output.
+``RankedJobDocument`` validates the raw Mongo document (the llm-reranker's output contract) and
+``build_job_from_ranked`` maps it to a ``Job``. ``RANKED_JOB_FIND_PROJECTION`` must stay aligned with
+both: every field the mapper reads has to be projected. Field sources are documented in
+``app/domain/README.md``.
 """
 
 import logging
+from collections.abc import Mapping
 from typing import Any
+
+import numpy as np
+from pydantic import ConfigDict, Field
+
+from app.domain.attributes import JobAttributes
+from app.domain.base import SourceRecord
+from app.domain.coercion import (
+    OptionalFlag,
+    OptionalLevel,
+    OptionalText,
+    OptionalVector,
+    TextList,
+    parse_flag,
+)
+from app.domain.job import Job
+from app.domain.skills import SkillReference
+from app.domain.work_activities import WorkActivityRecord, work_activities_from_records
 
 logger = logging.getLogger(__name__)
 
@@ -13,13 +33,13 @@ logger = logging.getLogger(__name__)
 # Every jobs query leads with this; see JOBS_INDEX_MODELS in app.server_dependencies.db_dependencies.
 RANKED_JOBS_ACTIVE_FILTER: dict[str, Any] = {"is_active": True}
 
-# Ranked / enriched job docs: listing fields on classifier_metadata (see build_job_dict_from_ranked).
+# Ranked / enriched job docs: listing fields on classifier_metadata (see build_job_from_ranked).
 CITY_FIELD = "classifier_metadata.city"
 COUNTY_FIELD = "classifier_metadata.county"
 PROVINCE_FIELD = "classifier_metadata.province"
 
 
-# Inclusion projection for job find (must stay aligned with build_job_dict_from_ranked).
+# Inclusion projection for job find (must stay aligned with RankedJobDocument / build_job_from_ranked).
 RANKED_JOB_FIND_PROJECTION: dict[str, int] = {
     "job_id": 1,
     "job_fingerprint": 1,
@@ -76,172 +96,354 @@ RANKED_JOB_FIND_PROJECTION: dict[str, int] = {
 }
 
 
-def _str_or_empty(v: Any) -> str:
-    if v is None:
-        return ""
-    return str(v).strip() if isinstance(v, str) else str(v)
+class ClassifierMetadata(SourceRecord):
+    """Listing fields of a ranked job (``classifier_metadata``), copied from the scraped ad.
 
-
-def build_job_dict_from_ranked(rd: dict[str, Any]) -> dict[str, Any] | None:
-    """Build the flat job dict used by matching from one stored job document.
-
-    Listing metadata (title, employer, location, …) comes from ``classifier_metadata``.
-    Skills and preference attributes come from ``llm_classified_skills`` and ``llm_job_attributes``.
-
-    ``onet_work_activities`` and ``skill_groups_origin_uuids`` must be present on the document
-    (e.g. ``RankedJobsEnriched`` produced by the enrichment script / reranker). They are not
-    computed at request time.
-
-    Returns ``None`` if the job should be skipped (document ``is_active`` is False).
+    Several fields have alternative names because producers differ by country/pipeline version;
+    ``build_job_from_ranked`` documents the precedence.
     """
-    if rd.get("is_active") is False:
+
+    title: OptionalText = Field(default=None, description="Job title.")
+    employer: OptionalText = Field(default=None, description="Employer name.")
+    city: OptionalText = Field(default=None, description="City/town.")
+    county: OptionalText = Field(
+        default=None, description="County (older documents; replaced by ``province``)."
+    )
+    province: OptionalText = Field(default=None, description="Province / admin region.")
+    employment_type: OptionalText = Field(
+        default=None, description="Employment type as stated in the ad."
+    )
+    salary: OptionalText = Field(
+        default=None, description="Salary as stated in the ad."
+    )
+    closing_date: OptionalText = Field(
+        default=None, description="Application closing date."
+    )
+    application_url: OptionalText = Field(
+        default=None, description="Link to the posting / application."
+    )
+    job_description: OptionalText = Field(
+        default=None, description="Full job description."
+    )
+    description: OptionalText = Field(
+        default=None, description="Job description (older documents)."
+    )
+    posted_date: OptionalText = Field(default=None, description="Date posted.")
+    date_posted: OptionalText = Field(
+        default=None, description="Date posted (alternative name)."
+    )
+    posted_at: OptionalText = Field(
+        default=None, description="Date posted (alternative name)."
+    )
+    isco_occupation_group: OptionalText = Field(
+        default=None, description="ISCO occupation group label."
+    )
+    isco_occupation_group_id: OptionalText = Field(
+        default=None, description="ISCO occupation group code."
+    )
+    category: OptionalText = Field(default=None, description="Sector/category.")
+    sector: OptionalText = Field(default=None, description="Sector (alternative name).")
+    source_platform: OptionalText = Field(
+        default=None, description="Platform the ad was scraped from."
+    )
+    source: OptionalText = Field(
+        default=None, description="Source platform (alternative name)."
+    )
+    platform: OptionalText = Field(
+        default=None, description="Source platform (alternative name)."
+    )
+    zqf_min: OptionalLevel = Field(
+        default=None, description="Minimum ZQF level (TestZambiaJobs naming)."
+    )
+    zqf_max: OptionalLevel = Field(
+        default=None, description="Maximum ZQF level (TestZambiaJobs naming)."
+    )
+    zqf_min_label: OptionalText = Field(
+        default=None, description="Label of ``zqf_min``."
+    )
+    zqf_max_label: OptionalText = Field(
+        default=None, description="Label of ``zqf_max``."
+    )
+    min_zqf_level: OptionalLevel = Field(
+        default=None, description="Minimum ZQF level (demand-side naming)."
+    )
+    max_zqf_level: OptionalLevel = Field(
+        default=None, description="Maximum ZQF level (demand-side naming)."
+    )
+    min_zqf_label: OptionalText = Field(
+        default=None, description="Label of ``min_zqf_level``."
+    )
+    max_zqf_label: OptionalText = Field(
+        default=None, description="Label of ``max_zqf_level``."
+    )
+
+
+class ClassifiedSkill(SourceRecord):
+    """One skill ranked essential/optional by the llm-reranker (``llm_classified_skills.*[]``)."""
+
+    tabiya_skill_id: OptionalText = Field(
+        default=None, description="Tabiya taxonomy skill id; None when unmapped."
+    )
+    label: OptionalText = Field(
+        default=None, description="Skill label; may be empty upstream."
+    )
+
+
+class LlmClassifiedSkills(SourceRecord):
+    """Skills the llm-reranker kept for the job (``llm_classified_skills``)."""
+
+    essential: list[ClassifiedSkill] | None = Field(
+        default=None, description="Essential skills."
+    )
+    optional: list[ClassifiedSkill] | None = Field(
+        default=None, description="Optional skills."
+    )
+
+
+class LlmJobAttributes(SourceRecord):
+    """Job attributes estimated by the llm-reranker (``llm_job_attributes``)."""
+
+    attributes: dict[str, str | bool | int | float | None] | None = Field(
+        default=None,
+        description="Attribute name to level id, plus the ``requires_post_secondary`` flag.",
+    )
+
+
+class ConcatSkillEmbedding(SourceRecord):
+    """Concat skill embedding synced from an NPZ (``concat_skill_embedding_gemini``)."""
+
+    vector_bin: bytes | None = Field(
+        default=None, description="float32 vector as BSON binary."
+    )
+
+
+class EmbeddingWhitening(SourceRecord):
+    """``llm_reranker_meta.embedding.whitening``."""
+
+    enabled: bool | int | str | None = Field(
+        default=None,
+        description="True when ``job_embedding`` was whitened by the llm-reranker.",
+    )
+
+
+class EmbeddingMeta(SourceRecord):
+    """``llm_reranker_meta.embedding``: provenance of ``job_embedding``."""
+
+    whitening: EmbeddingWhitening | None = Field(
+        default=None, description="Whitening provenance."
+    )
+
+
+class LlmRerankerMeta(SourceRecord):
+    """``llm_reranker_meta``: pipeline metadata written by the llm-reranker."""
+
+    embedding: EmbeddingMeta | None = Field(
+        default=None, description="Embedding provenance."
+    )
+
+
+class RankedJobDocument(SourceRecord):
+    """A ranked job document as read from MongoDB (``MONGO_JOBS_COLLECTION``).
+
+    Only the fields the matching service reads are declared; everything else is ignored.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    job_id: OptionalText = Field(
+        default=None, description="Job id assigned by the scraper."
+    )
+    job_fingerprint: OptionalText = Field(
+        default=None, description="Content fingerprint of the ad."
+    )
+    origin_uuid: OptionalText = Field(
+        default=None, description="Source-system id, when the producer sets one."
+    )
+    originUuid: OptionalText = Field(
+        default=None, description="Source-system id (alternative name)."
+    )
+    related_occupation_id: OptionalText = Field(
+        default=None, description="Occupation the job maps to."
+    )
+    is_active: OptionalFlag = Field(
+        default=None, description="False for expired / withdrawn ads."
+    )
+    classifier_metadata: ClassifierMetadata | None = Field(
+        default=None, description="Listing fields."
+    )
+    llm_classified_skills: LlmClassifiedSkills | None = Field(
+        default=None, description="Ranked skills."
+    )
+    llm_job_attributes: LlmJobAttributes | None = Field(
+        default=None, description="Estimated attributes."
+    )
+    onet_work_activities: list[WorkActivityRecord] | None = Field(
+        default=None, description="O*NET work activities with importance and level."
+    )
+    skill_groups_origin_uuids: TextList = Field(
+        default_factory=list, description="Skill-group origin UUIDs."
+    )
+    concat_skill_embedding_gemini: ConcatSkillEmbedding | None = Field(
+        default=None,
+        description="NPZ-synced concat embedding (preferred over ``job_embedding``).",
+    )
+    job_embedding: OptionalVector = Field(
+        default=None, description="Concat skill embedding as a float list."
+    )
+    llm_reranker_meta: LlmRerankerMeta | None = Field(
+        default=None, description="Pipeline metadata."
+    )
+    zqf_min: OptionalLevel = Field(
+        default=None, description="Minimum ZQF level (root-level backfill)."
+    )
+    zqf_max: OptionalLevel = Field(
+        default=None, description="Maximum ZQF level (root-level backfill)."
+    )
+
+
+def _skill_references(skills: list[ClassifiedSkill] | None) -> list[SkillReference]:
+    """Skills that are mapped to a taxonomy id, as ``SkillReference``; unmapped ones are dropped."""
+    return [
+        SkillReference(id=s.tabiya_skill_id, label=s.label or "")
+        for s in skills or []
+        if s.tabiya_skill_id
+    ]
+
+
+def _stage1_embedding(doc: RankedJobDocument) -> np.ndarray | None:
+    """The job's concat embedding: the NPZ-synced ``vector_bin`` if it has the right size, else
+    ``job_embedding`` if it has the right size, else None."""
+    from app.clients.gemini_embedding_client import EMBEDDING_DIM
+
+    synced = doc.concat_skill_embedding_gemini
+    if synced is not None and synced.vector_bin is not None:
+        vector = np.frombuffer(bytes(synced.vector_bin), dtype=np.float32)
+        if vector.size == EMBEDDING_DIM:
+            return vector
+    if doc.job_embedding is not None and doc.job_embedding.size == EMBEDDING_DIM:
+        return doc.job_embedding
+    return None
+
+
+def _embedding_is_whitened(doc: RankedJobDocument) -> bool:
+    meta = doc.llm_reranker_meta
+    whitening = meta.embedding.whitening if meta and meta.embedding else None
+    return whitening is not None and whitening.enabled is True
+
+
+def _strip(text: str | None) -> str:
+    return text.strip() if text else ""
+
+
+def job_from_document(doc: RankedJobDocument) -> Job | None:
+    """Map a validated ranked-job document to a ``Job``.
+
+    Listing metadata (title, employer, location, …) comes from ``classifier_metadata``; skills and
+    preference attributes come from ``llm_classified_skills`` and ``llm_job_attributes``.
+    ``onet_work_activities`` and ``skill_groups_origin_uuids`` must already be on the document
+    (written by the llm-reranker's enrichment); they are not computed at request time.
+
+    :param doc: The validated document
+    :return: The job, or None when the document is inactive (``is_active`` is False)
+    """
+    if doc.is_active is False:
         return None
 
-    meta = rd.get("classifier_metadata") or {}
-    job_id = str(rd.get("job_id", ""))
+    meta = doc.classifier_metadata or ClassifierMetadata()
+    job_id = doc.job_id or ""
 
-    lcs = rd.get("llm_classified_skills", {})
-    essential_skills = [
-        {"id": s["tabiya_skill_id"], "label": s.get("label", "")}
-        for s in lcs.get("essential", [])
-        if s.get("tabiya_skill_id")
-    ]
-    optional_skills = [
-        {"id": s["tabiya_skill_id"], "label": s.get("label", "")}
-        for s in lcs.get("optional", [])
-        if s.get("tabiya_skill_id")
-    ]
+    llm_skills = doc.llm_classified_skills or LlmClassifiedSkills()
+    essential_skills = _skill_references(llm_skills.essential)
+    optional_skills = _skill_references(llm_skills.optional)
     # Label-primary resolver requires non-empty labels. Surface jobs that arrived
     # without them so the upstream pipeline gap (NEL/llm-reranker emitting empty
     # label when a URI isn't in ranker_candidates) is visible at consumer side.
-    n_missing_ess = sum(1 for s in essential_skills if not s.get("label"))
-    n_missing_opt = sum(1 for s in optional_skills if not s.get("label"))
+    n_missing_ess = sum(1 for s in essential_skills if not s.label)
+    n_missing_opt = sum(1 for s in optional_skills if not s.label)
     if n_missing_ess or n_missing_opt:
         logger.warning(
-            "build_job_dict_from_ranked: job_id=%s job_fingerprint=%s arrived with "
+            "build_job_from_ranked: job_id=%s job_fingerprint=%s arrived with "
             "empty labels: %d/%d essential, %d/%d optional",
             job_id or "?",
-            (rd.get("job_fingerprint") or "")[:16] or "?",
+            (doc.job_fingerprint or "")[:16] or "?",
             n_missing_ess,
             len(essential_skills),
             n_missing_opt,
             len(optional_skills),
         )
 
-    llm_attrs = rd.get("llm_job_attributes", {})
-    attributes = llm_attrs.get("attributes", {})
+    raw_attributes = (
+        doc.llm_job_attributes.attributes if doc.llm_job_attributes else None
+    ) or {}
 
-    city = _str_or_empty(meta.get("city"))
-    province = _str_or_empty(meta.get("province")) or _str_or_empty(meta.get("county"))
-    loc_parts = [p for p in (city, province) if p]
-    location = " ".join(loc_parts) if loc_parts else ""
+    city = _strip(meta.city)
+    province = _strip(meta.province) or _strip(meta.county)
+    location = " ".join(p for p in (city, province) if p)
 
-    onet_wa = list(rd.get("onet_work_activities") or [])
-    raw_sgu = rd.get("skill_groups_origin_uuids")
-    if raw_sgu is None:
-        skill_groups: list[str] = []
-    elif isinstance(raw_sgu, list):
-        skill_groups = [str(x) for x in raw_sgu]
-    else:
-        skill_groups = [str(raw_sgu)]
+    job_fingerprint = _strip(doc.job_fingerprint)
+    isco_group = meta.isco_occupation_group
+    isco_group_id = meta.isco_occupation_group_id
 
-    raw_closing = meta.get("closing_date")
-    closing_s = "" if raw_closing is None else str(raw_closing)
-    et = meta.get("employment_type") or "full_time"
-
-    job_fp = rd.get("job_fingerprint")
-    job_fp_s = str(job_fp).strip() if job_fp is not None else ""
-
-    # Opportunity passthrough for the consumer contract. originUuid uses the stable
-    # content fingerprint (falls back to job_id); posted_date / occupation classification are
-    # best-effort from candidate Mongo fields and stay None when the document lacks them.
-    posted_date = (
-        _str_or_empty(
-            meta.get("posted_date") or meta.get("date_posted") or meta.get("posted_at")
-        )
-        or None
-    )
-    isco_group = meta.get("isco_occupation_group")
-    isco_group_id = meta.get("isco_occupation_group_id")
-    # Compass jobs-board consumer contract: sector/category (explicit field, else the ISCO
-    # occupation group label as a sensible fallback), the source platform the posting was
-    # scraped from, and the flat list of skill labels (essential first, then optional).
-    category = meta.get("category") or meta.get("sector") or isco_group
-    source_platform = (
-        meta.get("source_platform") or meta.get("source") or meta.get("platform")
-    )
+    # Flat list of skill labels for the jobs board: essential first, then optional, de-duplicated.
     skill_labels: list[str] = []
-    _seen_labels: set = set()
     for s in essential_skills + optional_skills:
-        lbl = s.get("label")
-        if lbl and lbl not in _seen_labels:
-            _seen_labels.add(lbl)
-            skill_labels.append(lbl)
-    out: dict[str, Any] = {
-        "uuid": job_id,
-        "originUuid": (
-            rd.get("origin_uuid") or rd.get("originUuid") or job_fp_s or job_id
-        )
+        if s.label and s.label not in skill_labels:
+            skill_labels.append(s.label)
+
+    return Job(
+        uuid=job_id,
+        # Stable content fingerprint, falling back to job_id.
+        originUuid=(doc.origin_uuid or doc.originUuid or job_fingerprint or job_id)
         or None,
-        "opportunity_title": meta.get("title") or "Unknown",
-        "location": location,
-        "city": city,
-        "province": province,
-        "employer": meta.get("employer"),
-        "employment_type": meta.get("employment_type"),
-        "salary_text": meta.get("salary"),
-        "closing_date": closing_s,
-        "posted_date": posted_date,
-        "opportunity_isco_occupation_group": isco_group,
-        "opportunity_isco_occupation_group_id": isco_group_id,
-        "related_occupation_id": (rd.get("related_occupation_id") or isco_group_id)
+        job_fingerprint=job_fingerprint or None,
+        opportunity_title=meta.title or "Unknown",
+        location=location,
+        city=city,
+        province=province,
+        employer=meta.employer,
+        employment_type=meta.employment_type,
+        contract_type=meta.employment_type or "full_time",
+        salary_text=meta.salary,
+        closing_date=meta.closing_date or "",
+        posted_date=_strip(meta.posted_date or meta.date_posted or meta.posted_at)
         or None,
-        "contract_type": et,
-        "url": meta.get("application_url"),
-        "essential_skills": essential_skills,
-        "optional_skills": optional_skills,
-        "skill_groups_origin_uuids": skill_groups,
-        "attributes": attributes,
+        url=meta.application_url,
+        opportunity_description=meta.job_description or meta.description or "",
+        opportunity_isco_occupation_group=isco_group,
+        opportunity_isco_occupation_group_id=isco_group_id,
+        related_occupation_id=(doc.related_occupation_id or isco_group_id) or None,
+        # Sector/category: explicit field, else the ISCO occupation group label.
+        category=meta.category or meta.sector or isco_group,
+        source_platform=meta.source_platform or meta.source or meta.platform,
+        essential_skills=essential_skills,
+        optional_skills=optional_skills,
+        skills=skill_labels,
+        skill_groups_origin_uuids=doc.skill_groups_origin_uuids,
+        attributes=JobAttributes.from_levels(raw_attributes),
+        onet_work_activities=work_activities_from_records(
+            doc.onet_work_activities or [], source_id=f"job {job_id or '?'}"
+        ),
         # Post-secondary education gate (see app.ranking.retrieval).
-        # llm_job_attributes is fully projected, so this subfield is already loaded.
-        "requires_post_secondary": attributes.get("requires_post_secondary"),
+        requires_post_secondary=parse_flag(
+            raw_attributes.get("requires_post_secondary")
+        ),
         # ZQF education annotation (Zambia): classifier_metadata (two naming conventions) or root.
-        "zqf_min": meta.get("min_zqf_level")
-        or meta.get("zqf_min")
-        or rd.get("zqf_min"),
-        "zqf_max": meta.get("max_zqf_level")
-        or meta.get("zqf_max")
-        or rd.get("zqf_max"),
-        "zqf_min_label": meta.get("min_zqf_label") or meta.get("zqf_min_label"),
-        "zqf_max_label": meta.get("max_zqf_label") or meta.get("zqf_max_label"),
-        "opportunity_description": meta.get("job_description")
-        or meta.get("description")
-        or "",
-        "category": category,
-        "source_platform": source_platform,
-        "skills": skill_labels,
-        "onet_work_activities": onet_wa,
-    }
-    if job_fp_s:
-        out["job_fingerprint"] = job_fp_s
+        zqf_min=meta.min_zqf_level or meta.zqf_min or doc.zqf_min,
+        zqf_max=meta.max_zqf_level or meta.zqf_max or doc.zqf_max,
+        zqf_min_label=meta.min_zqf_label or meta.zqf_min_label,
+        zqf_max_label=meta.max_zqf_label or meta.zqf_max_label,
+        embedding=_stage1_embedding(doc),
+        # True iff job_embedding has been whitened on the DB side (same concat artifact the code
+        # ships); the engine then consumes it directly. Absent/False => raw (safe default).
+        embedding_whitened=_embedding_is_whitened(doc),
+    )
 
-    # Passthrough for concat-Gemini cosine (see POST /match_v3); not returned on HTTP envelopes.
-    gem_sub = rd.get("concat_skill_embedding_gemini")
-    if isinstance(gem_sub, dict) and gem_sub.get("vector_bin") is not None:
-        out["concat_skill_embedding_gemini"] = gem_sub
-    raw_je = rd.get("job_embedding")
-    if isinstance(raw_je, list) and raw_je:
-        from app.clients.gemini_embedding_client import (
-            EMBEDDING_DIM as _gem_concat_dim,
-        )
 
-        if len(raw_je) == _gem_concat_dim:
-            out["job_embedding"] = raw_je
-    # True iff job_embedding has been whitened on the DB side (same concat artifact the code ships).
-    # The matching engine consumes such vectors directly; raw vectors (offline, occupations, not-yet-
-    # whitened jobs) are whitened in-process. Absent/False => raw (safe default).
-    out["job_embedding_whitened"] = (
-        ((rd.get("llm_reranker_meta") or {}).get("embedding") or {}).get("whitening")
-        or {}
-    ).get("enabled") is True
-    return out
+def build_job_from_ranked(raw: Mapping[str, Any]) -> Job | None:
+    """Validate one stored ranked-job document and map it to a ``Job``.
+
+    :param raw: The document as read from MongoDB
+    :return: The job, or None when the document is inactive
+    :raises pydantic.ValidationError: If the document does not have the ranked-job shape
+    """
+    return job_from_document(RankedJobDocument.model_validate(raw))

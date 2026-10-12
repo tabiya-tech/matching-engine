@@ -66,8 +66,8 @@ class JobsService(IJobsService):
             "http /jobs",
             "request (summary)",
             n_jobs=len(jobs),
-            has_more=timing.get("has_more"),
-            limit=timing.get("limit"),
+            has_more=timing.has_more,
+            limit=timing.limit,
             total=total,
             request_total_ms=_ms(t_req),
         )
