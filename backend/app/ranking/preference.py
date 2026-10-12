@@ -5,18 +5,29 @@ from __future__ import annotations
 import logging
 import math
 import re
-from typing import Any, Literal
+from typing import Literal
 
+from pydantic import Field
+
+from app.artifacts.types import AttributeSchema, AttributeSpec
 from app.config import (
     BWS_ALPHA,
     BWS_GAIN_GAMMA,
     BWS_INTEGRATION_MODE,
     DCE_ATTR_SCALE,
     DCE_LOGIT_EPS,
-    HYBRID_PREF_VIGNETTES_FOR_FULL_CONFIDENCE,
     PREFERENCE_CONFIG,
     PREFERENCE_LEGACY_SCORE_SCALE,
     PREFERENCE_SIGMOID_NUMERATOR,
+)
+from app.domain.base import DomainModel
+from app.domain.user import UserProfile
+from app.ranking.types import (
+    AttributePreference,
+    MatchItem,
+    PreferenceScore,
+    WorkActivityContribution,
+    WorkActivityUtility,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,6 +103,7 @@ COST_ORIENTED_ATTRIBUTES: frozenset[str] = frozenset(
 
 
 def attribute_orientation(attr_name: str) -> Orientation:
+    """``cost`` for attributes where less is better (physical demand), else ``gain``."""
     if attr_name in COST_ORIENTED_ATTRIBUTES:
         return "cost"
     return "gain"
@@ -103,9 +115,8 @@ def _level_index(level_id: str, level_ids: list[str]) -> int | None:
     return level_ids.index(level_id)
 
 
-def _schema_spec(attr_name: str, schema: dict) -> dict | None:
-    meta = {a["name"]: a for a in schema.get("attributes", [])}
-    return meta.get(attr_name)
+def _schema_spec(attr_name: str, schema: AttributeSchema) -> AttributeSpec | None:
+    return schema.spec(attr_name)
 
 
 def _earnings_level_from_kes(kes: float, level_ids: list[str]) -> str | None:
@@ -130,7 +141,7 @@ def _earnings_level_from_kes(kes: float, level_ids: list[str]) -> str | None:
 def resolve_schema_level_id(
     attr_name: str,
     raw_level_id: str | None,
-    schema: dict,
+    schema: AttributeSchema,
 ) -> str | None:
     """
     Normalize job level tags to ids declared in the attribute schema.
@@ -146,7 +157,7 @@ def resolve_schema_level_id(
     spec = _schema_spec(attr_name, schema)
     if not spec:
         return None
-    level_ids = [lv["id"] for lv in spec.get("levels", [])]
+    level_ids = spec.level_ids
     if raw in level_ids:
         return raw
 
@@ -165,7 +176,9 @@ def resolve_schema_level_id(
     return None
 
 
-def ladder_position(attr_name: str, level_id: str | None, schema: dict) -> float:
+def ladder_position(
+    attr_name: str, level_id: str | None, schema: AttributeSchema
+) -> float:
     """Ladder position ∈ [0, 1]: lowest schema bucket → 0, highest → 1."""
     resolved = resolve_schema_level_id(attr_name, level_id, schema)
     if resolved is None:
@@ -174,7 +187,7 @@ def ladder_position(attr_name: str, level_id: str | None, schema: dict) -> float
     spec = _schema_spec(attr_name, schema)
     if not spec:
         return 0.0
-    level_ids = [lv["id"] for lv in spec.get("levels", [])]
+    level_ids = spec.level_ids
     if not level_ids:
         return 0.0
     if len(level_ids) == 1:
@@ -185,7 +198,9 @@ def ladder_position(attr_name: str, level_id: str | None, schema: dict) -> float
     return float(idx) / float(len(level_ids) - 1)
 
 
-def job_level_to_vj(attr_name: str, level_id: str | None, schema: dict) -> float:
+def job_level_to_vj(
+    attr_name: str, level_id: str | None, schema: AttributeSchema
+) -> float:
     """
     Vⱼ for Part A (client directional mapping).
 
@@ -198,15 +213,15 @@ def job_level_to_vj(attr_name: str, level_id: str | None, schema: dict) -> float
     return pos
 
 
-def attribute_label(attr_name: str, schema: dict) -> str:
-    meta = {a["name"]: a for a in schema.get("attributes", [])}
-    spec = meta.get(attr_name)
-    if spec and spec.get("label"):
-        return str(spec["label"])
+def attribute_label(attr_name: str, schema: AttributeSchema) -> str:
+    """Display label of an attribute (title-cased name when the schema has none)."""
+    spec = schema.spec(attr_name)
+    if spec and spec.label:
+        return spec.label
     return attr_name.replace("_", " ").title()
 
 
-def level_label(attr_name: str, level_id: str | None, schema: dict) -> str:
+def level_label(attr_name: str, level_id: str | None, schema: AttributeSchema) -> str:
     """Human-readable job level for dashboards (uses schema label after resolve)."""
     resolved = resolve_schema_level_id(attr_name, level_id, schema)
     if not resolved:
@@ -214,23 +229,10 @@ def level_label(attr_name: str, level_id: str | None, schema: dict) -> str:
     spec = _schema_spec(attr_name, schema)
     if not spec:
         return str(level_id or "—")
-    for lv in spec.get("levels", []):
-        if lv.get("id") == resolved:
-            return str(lv.get("label") or resolved)
-    return str(resolved)
-
-
-def job_level_to_vj_detail(
-    attr_name: str, level_id: str | None, schema: dict
-) -> dict[str, float | str]:
-    pos = ladder_position(attr_name, level_id, schema)
-    orient = attribute_orientation(attr_name)
-    vj = (1.0 - pos) if orient == "cost" else pos
-    return {
-        "orientation": orient,
-        "ladder_position": round(pos, 4),
-        "vj": round(vj, 4),
-    }
+    for lv in spec.levels:
+        if lv.id == resolved:
+            return lv.label or resolved
+    return resolved
 
 
 # --------------------------------------------------------------------------------------------------
@@ -240,23 +242,46 @@ def job_level_to_vj_detail(
 # src/preference_scorer.py
 
 
-class PreferenceScorer:
-    @staticmethod
-    def detect_bws_score_type(bws_scores: dict) -> str:
-        """
-        Detects if bws_scores keys are occupation IDs (2 digits) or Work Activity IDs (e.g., '4.A.2.a.4').
-        Returns 'occupation_id', 'work_activity_id', or 'unknown'.
-        """
-        if not bws_scores:
-            return "unknown"
-        occupation_id_pattern = re.compile(r"^\d{2}$")
-        work_activity_id_pattern = re.compile(r"^\d+(\.[A-Za-z0-9]+)+$")
-        keys = list(bws_scores.keys())
-        if all(occupation_id_pattern.match(k) for k in keys):
-            return "occupation_id"
-        if any(work_activity_id_pattern.match(k) for k in keys):
-            return "work_activity_id"
+def detect_bws_score_type(bws_scores: dict[str, float]) -> str:
+    """Whether BWS keys are occupation ids (2 digits) or work-activity ids (e.g. ``4.A.2.a.4``).
+
+    :return: ``occupation_id``, ``work_activity_id`` or ``unknown``
+    """
+    if not bws_scores:
         return "unknown"
+    occupation_id_pattern = re.compile(r"^\d{2}$")
+    work_activity_id_pattern = re.compile(r"^\d+(\.[A-Za-z0-9]+)+$")
+    keys = list(bws_scores.keys())
+    if all(occupation_id_pattern.match(k) for k in keys):
+        return "occupation_id"
+    if any(work_activity_id_pattern.match(k) for k in keys):
+        return "work_activity_id"
+    return "unknown"
+
+
+def _bws_scores(user: UserProfile) -> dict[str, float]:
+    return user.preference_vector.bws_scores or {}
+
+
+def _pref_value(user: UserProfile, attr_name: str) -> float | None:
+    """Per-attribute DCE value v_k = sigmoid(beta_k) in [0,1]; None if not supplied."""
+    value = getattr(user.preference_vector, attr_name, None)
+    return value if isinstance(value, float) else None
+
+
+def _job_level(item: MatchItem, attr_name: str) -> str | None:
+    """The item's level id for an attribute; None when the item does not describe it."""
+    value = getattr(item.attributes, attr_name, None)
+    return value if isinstance(value, str) else None
+
+
+class PreferenceScorer:
+    """LEGACY attribute scorer: configured betas × user weights × encoded levels, logistic u_hat."""
+
+    @staticmethod
+    def detect_bws_score_type(bws_scores: dict[str, float]) -> str:
+        """See :func:`detect_bws_score_type`."""
+        return detect_bws_score_type(bws_scores)
 
     def __init__(self):
         self.config = PREFERENCE_CONFIG
@@ -279,7 +304,7 @@ class PreferenceScorer:
         self._dce_normalizer = max_positive_sum
 
     @staticmethod
-    def _humanize_label(value: str):
+    def _humanize_label(value: str | None) -> str | None:
         if value is None:
             return None
         text = str(value)
@@ -291,29 +316,29 @@ class PreferenceScorer:
         text = text.replace("_", " ").strip()
         return text.title() if text else None
 
-    def calculate_score(self, user_profile: dict, job_posting: dict) -> dict:
-        """S_pref = base_constant + raw_sum * scaling_factor. Optionally includes ONET BWS scores for work activities."""
+    def calculate_score(
+        self,
+        user: UserProfile,
+        item: MatchItem,
+        *,
+        include_work_activities: bool = True,
+    ) -> PreferenceScore:
+        """S_pref = base_constant + raw_sum * scaling_factor, plus the BWS work-activity term.
+
+        :param include_work_activities: Accepted for interface parity with
+            ``UnifiedPreferenceScorer``; the legacy scorer always scores work activities
+        """
 
         raw_score_sum = 0.0
-        details = []
-
-        user_weights = user_profile.get("preference_vector", {})
-        job_attrs = job_posting.get("attributes", {})
-
-        # BWS scores may be at top level or nested inside preference_vector
-        bws_scores = (
-            user_profile.get("bws_scores") or user_weights.get("bws_scores") or {}
-        )
-        top_10_bws = (
-            user_profile.get("top_10_bws") or user_weights.get("top_10_bws") or []
-        )
-        bws_score_type = self.detect_bws_score_type(bws_scores)
+        rows: list[AttributePreference] = []
+        bws_scores = _bws_scores(user)
+        bws_score_type = detect_bws_score_type(bws_scores)
 
         # Standard preference scoring (only enabled attributes)
         for attr_key, settings in self._enabled_attrs.items():
             beta = settings["beta"]
-            user_weight = user_weights.get(attr_key, 0.0)
-            job_value_raw = job_attrs.get(attr_key)
+            user_weight = _pref_value(user, attr_key) or 0.0
+            job_value_raw = _job_level(item, attr_key)
 
             encoded_value = 0.0
             if settings["type"] == "dummy":
@@ -326,30 +351,27 @@ class PreferenceScorer:
             contribution = beta * user_weight * encoded_value
             raw_score_sum += contribution
 
-            details.append(
-                {
-                    "attribute": attr_key,
-                    "job_value": job_value_raw,
-                    "job_value_label": self._humanize_label(job_value_raw),
-                    "user_weight": round(float(user_weight), 4),
-                    "beta": round(float(beta), 4),
-                    "encoded_value": round(float(encoded_value), 4),
-                    "contribution": round(float(contribution), 4),
-                    "matched": encoded_value > 0,
-                }
+            rows.append(
+                AttributePreference(
+                    attribute=attr_key,
+                    job_value=job_value_raw,
+                    job_value_label=self._humanize_label(job_value_raw),
+                    user_weight=round(float(user_weight), 4),
+                    beta=round(float(beta), 4),
+                    encoded_value=round(float(encoded_value), 4),
+                    contribution=round(float(contribution), 4),
+                    matched=encoded_value > 0,
+                )
             )
 
         # ``raw_score_sum`` now holds the pure DCE-attribute utility (V_dce, BWS-excluded).
         dce_sum = raw_score_sum
-        extra: dict = {}
+        work_activities: WorkActivityUtility | None = None
+        comb: CombinedUtility | None = None
 
         if BWS_INTEGRATION_MODE == "additive_rum":
             # Additive-RUM: harmonise V_task and V_dce to [-1,1], combine, logistic.
-            # Local import avoids a circular import (work_activities imports PreferenceScorer).
-
-            v_task, wa_detail = compute_task_utility(user_profile, job_posting)
-            if wa_detail:
-                details.append(wa_detail)
+            v_task, work_activities = compute_task_utility(user, item)
             comb = combine_utilities(
                 v_task,
                 dce_sum,
@@ -357,49 +379,33 @@ class PreferenceScorer:
                 alpha=BWS_ALPHA,
                 gamma=BWS_GAIN_GAMMA,
             )
-            u_hat = comb["u_hat"]
-            extra = {
-                "V": comb["V"],
-                "V_task": comb["v_task"],
-                "V_task_hat": comb["v_task_h"],
-                "V_dce_hat": comb["v_dce_h"],
-                "alpha": comb["alpha"],
-                "gamma": comb["gamma"],
-            }
+            u_hat = comb.u_hat
         else:
             # Legacy: BWS×(Imp/5)×(Lev/7) summed into the same sigmoid as the attributes.
             if bws_score_type == "work_activity_id":
-                wa_contributions = []
-                wa_details = []
-                wa_list = job_posting.get("onet_work_activities", [])
-                for wa in wa_list:
-                    wa_code = wa.get("WA_code")
-                    wa_importance = float(wa.get("WA_Importance", 0))
-                    wa_level = float(wa.get("WA_Level", 0))
-                    user_bws = float(bws_scores.get(wa_code, 0.0))
-                    norm_importance = wa_importance / 5.0 if wa_importance else 0.0
-                    norm_level = wa_level / 7.0 if wa_level else 0.0
+                wa_details: list[WorkActivityContribution] = []
+                wa_score_sum = 0.0
+                for wa in item.onet_work_activities:
+                    user_bws = float(bws_scores.get(wa.code, 0.0))
+                    norm_importance = wa.importance / 5.0 if wa.importance else 0.0
+                    norm_level = wa.level / 7.0 if wa.level else 0.0
                     wa_contribution = user_bws * norm_importance * norm_level
-                    wa_contributions.append(wa_contribution)
+                    wa_score_sum += wa_contribution
                     wa_details.append(
-                        {
-                            "wa_code": wa_code,
-                            "user_bws": user_bws,
-                            "wa_importance": wa_importance,
-                            "wa_level": wa_level,
-                            "norm_importance": round(norm_importance, 4),
-                            "norm_level": round(norm_level, 4),
-                            "wa_contribution": round(wa_contribution, 4),
-                        }
+                        WorkActivityContribution(
+                            wa_code=wa.code,
+                            wa_label=wa.label or wa.code,
+                            user_bws=user_bws,
+                            wa_importance=wa.importance,
+                            wa_level=wa.level,
+                            norm_importance=round(norm_importance, 4),
+                            norm_level=round(norm_level, 4),
+                            wa_contribution=round(wa_contribution, 4),
+                        )
                     )
-                wa_score_sum = sum(wa_contributions)
                 raw_score_sum += wa_score_sum
-                details.append(
-                    {
-                        "attribute": "work_activity_bws",
-                        "wa_details": wa_details,
-                        "wa_score_sum": round(wa_score_sum, 4),
-                    }
+                work_activities = WorkActivityUtility(
+                    wa_details=wa_details, wa_score_sum=round(wa_score_sum, 4)
                 )
 
             sigmoid_input = raw_score_sum * self._sigmoid_factor
@@ -413,16 +419,18 @@ class PreferenceScorer:
         scaled_sum_legacy = dce_sum * PREFERENCE_LEGACY_SCORE_SCALE
         legacy_score = max(0.0, min(1.0, self.base_constant + scaled_sum_legacy))
 
-        # Return BWS scores, type, and top_10_bws as part of the details for downstream use
-        return {
-            "u_hat": round(u_hat, 4),
-            "score": legacy_score,
-            "details": details,
-            "bws_scores": bws_scores,
-            "bws_score_type": bws_score_type,
-            "top_10_bws": top_10_bws,
-            **extra,
-        }
+        return PreferenceScore(
+            u_hat=round(u_hat, 4),
+            score=legacy_score,
+            attributes=rows,
+            work_activities=work_activities,
+            V=comb.V if comb else None,
+            V_dce_hat=comb.v_dce_h if comb else None,
+            alpha=comb.alpha if comb else None,
+            gamma=comb.gamma if comb else None,
+            bws_score_type=bws_score_type,
+            scoring_model="legacy_preference_scorer",
+        )
 
 
 # --------------------------------------------------------------------------------------------------
@@ -446,27 +454,28 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, float(x)))
 
 
-def _pref_value(user_profile: dict, attr_name: str) -> float | None:
-    """Per-attribute DCE value v_k = sigmoid(beta_k) in [0,1]; None if not supplied."""
-    pv = user_profile.get("preference_vector", {}) or {}
-    for src in (pv, user_profile):
-        if attr_name in src:
-            try:
-                return float(src[attr_name])
-            except (TypeError, ValueError):
-                return None
-    return None
+class DceUtility(DomainModel):
+    """Part A of the unified preference score: the DCE attribute utility."""
+
+    rows: list[AttributePreference] = Field(
+        description="One row per schema attribute the user valued and the item describes."
+    )
+    V_dce: float = Field(description="Σ β̂_k · ṽ_k, rounded.")
+    V_dce_hat: float = Field(
+        description="confidence · clamp(V_dce / Σ|β̂_k|, -1, 1), rounded (0 when Σ|β̂_k| = 0)."
+    )
+    confidence_f: float = Field(description="Confidence shrinkage factor applied.")
 
 
 def compute_dce_utility(
-    user_profile: dict,
-    job_posting: dict,
-    schema: dict,
+    user: UserProfile,
+    item: MatchItem,
+    schema: AttributeSchema,
     *,
     logit_eps: float = 0.01,
     attr_scale: dict[str, float] | None = None,
     confidence: float = 1.0,
-) -> tuple[float, float, dict[str, Any]]:
+) -> tuple[float, float, DceUtility]:
     """DCE-attribute utility from per-user betas recovered from the [0,1] contract.
 
     For each schema attribute with a user value v_k and a job level:
@@ -476,26 +485,22 @@ def compute_dce_utility(
     V_dce = sum(contribution);  D = sum(|beta_hat|).
     V_dce_hat = confidence * clamp(V_dce / D, -1, 1)   (0 when D == 0).
 
-    Returns (V_dce, V_dce_hat, detail dict). Direction comes from the sign of beta_hat,
-    so no gain/cost orientation is applied; the schema ordering fixes each attribute's
-    reference (0) and target (1).
+    Direction comes from the sign of beta_hat, so no gain/cost orientation is applied; the schema
+    ordering fixes each attribute's reference (0) and target (1).
+
+    :return: ``(V_dce, V_dce_hat, detail)``
     """
     scale = attr_scale or {}
-    attr_names = [
-        a.get("name") for a in (schema.get("attributes") or []) if a.get("name")
-    ]
-    spec_by_name = {
-        a["name"]: a for a in (schema.get("attributes") or []) if a.get("name")
-    }
 
     v_dce = 0.0
     denom = 0.0
-    rows: list[dict] = []
-    for attr in attr_names:
-        v = _pref_value(user_profile, attr)
+    rows: list[AttributePreference] = []
+    for spec in schema.attributes:
+        attr = spec.name
+        v = _pref_value(user, attr)
         if v is None:
             continue
-        raw_level = (job_posting.get("attributes", {}) or {}).get(attr)
+        raw_level = _job_level(item, attr)
         resolved = resolve_schema_level_id(attr, raw_level, schema)
         if resolved is None:
             continue  # job doesn't describe this attribute
@@ -511,127 +516,97 @@ def compute_dce_utility(
         v_dce += contribution
         denom += abs(beta_hat)
 
-        spec = spec_by_name.get(attr, {})
-        levels = [lv["id"] for lv in spec.get("levels", [])]
-        # MatchedPreference-compatible field names (attribute, job_value, user_weight,
-        # beta, encoded_value, contribution, matched) so these rows flow straight into
-        # the /match response and the /match_v4 dashboard (layer/on_job) unchanged.
+        levels = spec.level_ids
         rows.append(
-            {
-                "attribute": attr,
-                "attr_label": attribute_label(attr, schema),
-                "job_value": resolved,
-                "job_value_label": level_label(
-                    attr, raw_level, schema
-                ),  # level label, e.g. "~70k"
-                "user_weight": round(v, 4),  # per-user [0,1] preference value v_k
-                "beta": round(beta_hat, 4),  # recovered signed coefficient β̂_k
-                "encoded_value": round(v_tilde, 4),  # graded ladder position ṽ_k
-                "contribution": round(contribution, 4),
-                "matched": contribution != 0.0,
-                "reference_level": levels[0] if levels else None,
-                "target_level": levels[-1] if levels else None,
-                "on_job": True,
-                "layer": "dce_attributes",
-            }
+            AttributePreference(
+                attribute=attr,
+                attr_label=attribute_label(attr, schema),
+                job_value=resolved,
+                job_value_label=level_label(attr, raw_level, schema),  # e.g. "~70k"
+                user_weight=round(v, 4),  # per-user [0,1] preference value v_k
+                beta=round(beta_hat, 4),  # recovered signed coefficient β̂_k
+                encoded_value=round(v_tilde, 4),  # graded ladder position ṽ_k
+                contribution=round(contribution, 4),
+                matched=contribution != 0.0,
+                reference_level=levels[0] if levels else None,
+                target_level=levels[-1] if levels else None,
+            )
         )
 
     v_dce_hat = (confidence * _clamp(v_dce / denom, -1.0, 1.0)) if denom > 0 else 0.0
-
-    detail = {
-        "attribute": "dce_utility",
-        "dce_details": rows,
-        "V_dce": round(v_dce, 4),
-        "V_dce_hat": round(v_dce_hat, 4),
-        "confidence_f": round(float(confidence), 4),
-        "n_attributes": len(rows),
-        "layer": "dce_attributes",
-    }
+    detail = DceUtility(
+        rows=rows,
+        V_dce=round(v_dce, 4),
+        V_dce_hat=round(v_dce_hat, 4),
+        confidence_f=round(float(confidence), 4),
+    )
     return v_dce, v_dce_hat, detail
 
 
-def _bws_scores(user_profile: dict) -> dict:
-    user_weights = user_profile.get("preference_vector", {}) or {}
-    return user_profile.get("bws_scores") or user_weights.get("bws_scores") or {}
-
-
 def compute_task_utility(
-    user_profile: dict,
-    job_posting: dict,
-) -> tuple[float, dict[str, Any]]:
+    user: UserProfile,
+    item: MatchItem,
+) -> tuple[float, WorkActivityUtility | None]:
     """Importance-weighted BWS task utility.
 
-    ``V_task = Σ_c ŵ_c · β_c`` with ``ŵ_c = WA_Importance_c / Σ WA_Importance`` (sum to 1).
+    ``V_task = Σ_c ŵ_c · β_c`` with ``ŵ_c = importance_c / Σ importance`` (sum to 1).
     Level is intentionally NOT used (it is a skill-demand, not task-preference, signal).
 
-    Returns ``(V_task ∈ [-2, 2], detail_dict)``; ``(0.0, {})`` when bws are not work-activity
-    ids, the job has no activities, or total importance is zero.
+    :return: ``(V_task ∈ [-2, 2], detail)``; ``(0.0, None)`` when the BWS keys are not
+        work-activity ids, the item has no activities, or total importance is zero
     """
-    bws_scores = _bws_scores(user_profile)
-    if PreferenceScorer.detect_bws_score_type(bws_scores) != "work_activity_id":
-        return 0.0, {}
+    bws_scores = _bws_scores(user)
+    if detect_bws_score_type(bws_scores) != "work_activity_id":
+        return 0.0, None
 
-    wa_list = job_posting.get("onet_work_activities", []) or []
-    if not wa_list:
-        return 0.0, {}
-
-    # First pass: collect importance weights (the normaliser).
-    rows: list[dict[str, Any]] = []
-    total_importance = 0.0
-    for wa in wa_list:
-        wa_code = wa.get("WA_code")
-        if not wa_code:
-            continue
-        importance = float(wa.get("WA_Importance", 0) or 0)
-        if importance <= 0:
-            continue
-        rows.append(
-            {
-                "wa_code": wa_code,
-                "wa_label": str(wa.get("WA_label") or wa_code),
-                "importance": importance,
-                "wa_level": float(wa.get("WA_Level", 0) or 0),
-                "beta": float(bws_scores.get(wa_code, 0.0)),
-            }
-        )
-        total_importance += importance
-
-    if total_importance <= 0 or not rows:
-        return 0.0, {}
+    rated = [wa for wa in item.onet_work_activities if wa.code and wa.importance > 0]
+    total_importance = sum(wa.importance for wa in rated)
+    if total_importance <= 0 or not rated:
+        return 0.0, None
 
     v_task = 0.0
-    wa_details: list[dict] = []
-    for r in rows:
-        weight = r["importance"] / total_importance  # ŵ_c, Σ = 1
-        contribution = weight * r["beta"]
+    wa_details: list[WorkActivityContribution] = []
+    for wa in rated:
+        beta = float(bws_scores.get(wa.code, 0.0))
+        weight = wa.importance / total_importance  # ŵ_c, Σ = 1
+        contribution = weight * beta
         v_task += contribution
         wa_details.append(
-            {
-                "wa_code": r["wa_code"],
-                "wa_label": r["wa_label"],
-                "user_bws": r["beta"],
-                "wa_importance": r["importance"],
-                "wa_level": r["wa_level"],
-                "norm_importance": round(r["importance"] / 5.0, 4),  # display only
-                "norm_level": round(
-                    r["wa_level"] / 7.0, 4
-                ),  # display only (unused in score)
-                "weight": round(weight, 6),  # ŵ_c (drives V_task)
-                "beta": round(r["beta"], 4),  # β_c
-                "wa_contribution": round(contribution, 6),  # ŵ_c · β_c
-            }
+            WorkActivityContribution(
+                wa_code=wa.code,
+                wa_label=wa.label or wa.code,
+                user_bws=beta,
+                wa_importance=wa.importance,
+                wa_level=wa.level,
+                norm_importance=round(wa.importance / 5.0, 4),  # display only
+                norm_level=round(wa.level / 7.0, 4),  # display only (unused in score)
+                weight=round(weight, 6),  # ŵ_c (drives V_task)
+                beta=round(beta, 4),  # β_c
+                wa_contribution=round(contribution, 6),  # ŵ_c · β_c
+            )
         )
 
-    detail = {
-        "attribute": "work_activity_bws",
-        "wa_details": wa_details,
-        "wa_score_sum": round(v_task, 4),  # == V_task
-        "wa_aggregation": "importance_weighted",
-        "n_work_activities": len(wa_details),
-        "V_task": round(v_task, 4),
-        "V_task_hat": round(_clamp(v_task / 2.0, -1.0, 1.0), 4),
-    }
+    detail = WorkActivityUtility(
+        wa_details=wa_details,
+        wa_score_sum=round(v_task, 4),  # == V_task
+        wa_aggregation="importance_weighted",
+        n_work_activities=len(wa_details),
+        V_task=round(v_task, 4),
+        V_task_hat=round(_clamp(v_task / 2.0, -1.0, 1.0), 4),
+    )
     return v_task, detail
+
+
+class CombinedUtility(DomainModel):
+    """The additive-RUM combination of the task and attribute utilities (all rounded)."""
+
+    v_task: float = Field(description="Raw task utility.")
+    v_task_h: float = Field(description="Task utility harmonised to [-1, 1].")
+    v_dce_h: float = Field(description="Attribute utility harmonised to [-1, 1].")
+    alpha: float = Field(description="Task-utility weight.")
+    gamma: float = Field(description="Logistic gain.")
+    V: float = Field(description="γ·[α·Ṽ_task + (1-α)·Ṽ_dce].")
+    u_hat: float = Field(description="logistic(V), in [0, 1].")
 
 
 def combine_utilities(
@@ -642,7 +617,7 @@ def combine_utilities(
     alpha: float,
     gamma: float,
     v_dce_already_harmonized: bool = False,
-) -> dict[str, Any]:
+) -> CombinedUtility:
     """Additive-RUM combination of the task and DCE-attribute utilities into ``u_hat``.
 
     ``Ṽ_task = clamp(v_task/2, -1, 1)`` (β∈[-2,2], Σŵ=1 ⇒ v_task∈[-2,2]).
@@ -665,68 +640,62 @@ def combine_utilities(
     else:
         u_hat = 1.0 / (1.0 + math.exp(-v))
 
-    return {
-        "v_task": round(v_task, 4),
-        "v_task_h": round(v_task_h, 4),
-        "v_dce_h": round(v_dce_h, 4),
-        "alpha": round(float(alpha), 4),
-        "gamma": round(float(gamma), 4),
-        "V": round(v, 4),
-        "u_hat": round(u_hat, 4),
-    }
+    return CombinedUtility(
+        v_task=round(v_task, 4),
+        v_task_h=round(v_task_h, 4),
+        v_dce_h=round(v_dce_h, 4),
+        alpha=round(float(alpha), 4),
+        gamma=round(float(gamma), 4),
+        V=round(v, 4),
+        u_hat=round(u_hat, 4),
+    )
 
 
 def work_activity_block(
-    user_profile: dict,
-    job_posting: dict,
-) -> tuple[float, dict[str, Any]]:
+    user: UserProfile,
+    item: MatchItem,
+) -> tuple[float, WorkActivityUtility | None]:
     """LEGACY (``BWS_INTEGRATION_MODE="legacy"``): S_wa = (1/N) Σ [ BWS(c) × (I_c/5) × (L_c/7) ].
 
-    Returns (S_wa, detail dict for preference_details).
+    :return: ``(S_wa, detail)``; ``(0.0, None)`` when there is nothing to score
     """
-    bws_scores = _bws_scores(user_profile)
-    if PreferenceScorer.detect_bws_score_type(bws_scores) != "work_activity_id":
-        return 0.0, {}
+    bws_scores = _bws_scores(user)
+    if detect_bws_score_type(bws_scores) != "work_activity_id":
+        return 0.0, None
+    if not item.onet_work_activities:
+        return 0.0, None
 
-    wa_list = job_posting.get("onet_work_activities", []) or []
-    if not wa_list:
-        return 0.0, {}
-
-    wa_details: list[dict] = []
+    wa_details: list[WorkActivityContribution] = []
     contributions: list[float] = []
-    for wa in wa_list:
-        wa_code = wa.get("WA_code")
-        if not wa_code:
+    for wa in item.onet_work_activities:
+        if not wa.code:
             continue
-        wa_importance = float(wa.get("WA_Importance", 0) or 0)
-        wa_level = float(wa.get("WA_Level", 0) or 0)
-        user_bws = float(bws_scores.get(wa_code, 0.0))
-        norm_importance = wa_importance / 5.0 if wa_importance else 0.0
-        norm_level = wa_level / 7.0 if wa_level else 0.0
+        user_bws = float(bws_scores.get(wa.code, 0.0))
+        norm_importance = wa.importance / 5.0 if wa.importance else 0.0
+        norm_level = wa.level / 7.0 if wa.level else 0.0
         wa_contribution = user_bws * norm_importance * norm_level
         contributions.append(wa_contribution)
         wa_details.append(
-            {
-                "wa_code": wa_code,
-                "wa_label": str(wa.get("WA_label") or wa_code),
-                "user_bws": user_bws,
-                "wa_importance": wa_importance,
-                "wa_level": wa_level,
-                "norm_importance": round(norm_importance, 4),
-                "norm_level": round(norm_level, 4),
-                "wa_contribution": round(wa_contribution, 4),
-            }
+            WorkActivityContribution(
+                wa_code=wa.code,
+                wa_label=wa.label or wa.code,
+                user_bws=user_bws,
+                wa_importance=wa.importance,
+                wa_level=wa.level,
+                norm_importance=round(norm_importance, 4),
+                norm_level=round(norm_level, 4),
+                wa_contribution=round(wa_contribution, 4),
+            )
         )
 
     n = len(contributions)
     wa_score_sum = sum(contributions) / n if n else 0.0
-    return wa_score_sum, {
-        "attribute": "work_activity_bws",
-        "wa_details": wa_details,
-        "wa_score_sum": round(wa_score_sum, 4),
-        "wa_aggregation": "mean",
-        "n_work_activities": n,
-    }
+    return wa_score_sum, WorkActivityUtility(
+        wa_details=wa_details,
+        wa_score_sum=round(wa_score_sum, 4),
+        wa_aggregation="mean",
+        n_work_activities=n,
+    )
 
 
 # --------------------------------------------------------------------------------------------------
@@ -736,88 +705,54 @@ def work_activity_block(
 #
 # Part A (DCE attributes): V_dce = Σ_k β̂_k · ṽ_k, with β̂_k recovered from the per-user
 # [0,1] contract via logit, and ṽ_k the graded ladder position (reference→target) from the
-# committed schema. See work_activities.compute_dce_utility.
+# committed schema. See compute_dce_utility.
 #
-# Part B (BWS work activities): importance-weighted V_task (work_activities.compute_task_utility).
+# Part B (BWS work activities): importance-weighted V_task (compute_task_utility).
 #
-# Combination: u_hat = logistic(γ·[α·Ṽ_task + (1-α)·Ṽ_dce]) (work_activities.combine_utilities).
+# Combination: u_hat = logistic(γ·[α·Ṽ_task + (1-α)·Ṽ_dce]) (combine_utilities).
 # --------------------------------------------------------------------------------------------------
 
-
-def _clamp01(x: float) -> float:
-    return max(0.0, min(1.0, float(x)))
-
-
-def _confidence_f(user_profile: dict) -> float:
-    """f ∈ [0,1] from explicit confidence or vignette count / full-confidence threshold.
-
-    Defaults to 1.0 (no shrinkage) when the request carries no confidence signal.
-    """
-    for key in ("preference_confidence", "confidence", "pref_confidence"):
-        v = user_profile.get(key)
-        if v is not None:
-            try:
-                return _clamp01(float(v))
-            except (TypeError, ValueError):
-                pass
-    pv = user_profile.get("preference_vector", {}) or {}
-    for key in ("preference_confidence", "confidence"):
-        v = pv.get(key)
-        if v is not None:
-            try:
-                return _clamp01(float(v))
-            except (TypeError, ValueError):
-                pass
-    n_vig = (
-        user_profile.get("vignette_count")
-        or user_profile.get("n_vignettes_completed")
-        or pv.get("vignette_count")
-        or pv.get("n_vignettes_completed")
-    )
-    if n_vig is not None:
-        try:
-            full = max(1, int(HYBRID_PREF_VIGNETTES_FOR_FULL_CONFIDENCE))
-            return _clamp01(float(n_vig) / full)
-        except (TypeError, ValueError):
-            pass
-    return 1.0
+# The request carries no preference-confidence signal (vignette count / explicit confidence),
+# so the DCE term is never shrunk.
+_PREFERENCE_CONFIDENCE = 1.0
 
 
 class UnifiedPreferenceScorer:
     """DCE-attribute utility + BWS task utility, combined via additive-RUM into u_hat."""
 
-    def __init__(self, schema: dict):
+    def __init__(self, schema: AttributeSchema):
         self._schema = schema
 
     def calculate_score(
         self,
-        user_profile: dict,
-        job_posting: dict,
+        user: UserProfile,
+        item: MatchItem,
         *,
         include_work_activities: bool = True,
-    ) -> dict:
-        details: list[dict] = []
+    ) -> PreferenceScore:
+        """Preference utility of the item for the user.
 
+        :param user: The user
+        :param item: The job or occupation
+        :param include_work_activities: Score Part B (BWS work activities)
+        :return: u_hat and its per-attribute / per-activity contributions
+        """
         # Part A — DCE attributes (signed, from logit-recovered per-user betas).
-        f = _confidence_f(user_profile)
-        _, v_dce_hat, dce_detail = compute_dce_utility(
-            user_profile,
-            job_posting,
+        f = _PREFERENCE_CONFIDENCE
+        _, v_dce_hat, dce = compute_dce_utility(
+            user,
+            item,
             self._schema,
             logit_eps=DCE_LOGIT_EPS,
             attr_scale=DCE_ATTR_SCALE,
             confidence=f,
         )
-        # Flat per-attribute rows (MatchedPreference-shaped) → matched_preferences / dashboard.
-        details.extend(dce_detail["dce_details"])
 
         # Part B — BWS work activities (importance-weighted task utility).
+        work_activities: WorkActivityUtility | None = None
+        v_task = 0.0
         if include_work_activities:
-            v_task, wa_detail = compute_task_utility(user_profile, job_posting)
-            if wa_detail:
-                details.append(wa_detail)
-        else:
-            v_task = 0.0
+            v_task, work_activities = compute_task_utility(user, item)
 
         # Combine (additive-RUM). v_dce_hat is already harmonised to [-1,1].
         comb = combine_utilities(
@@ -829,33 +764,19 @@ class UnifiedPreferenceScorer:
             v_dce_already_harmonized=True,
         )
 
-        bws_scores = (
-            user_profile.get("bws_scores")
-            or (user_profile.get("preference_vector") or {}).get("bws_scores")
-            or {}
+        return PreferenceScore(
+            u_hat=comb.u_hat,
+            score=comb.u_hat,
+            attributes=dce.rows,
+            work_activities=work_activities,
+            S_attrs=round(v_dce_hat, 4),  # harmonised DCE utility ∈ [-1,1]
+            S_wa=comb.v_task_h,  # harmonised task utility ∈ [-1,1]
+            V=comb.V,
+            V_dce=dce.V_dce,
+            V_dce_hat=comb.v_dce_h,
+            confidence_f=round(f, 4),
+            alpha=comb.alpha,
+            gamma=comb.gamma,
+            bws_score_type=detect_bws_score_type(_bws_scores(user)),
+            scoring_model="unified_dce_bws_v1",
         )
-
-        return {
-            "u_hat": comb["u_hat"],
-            "score": comb["u_hat"],
-            "details": details,
-            "S_attrs": round(v_dce_hat, 4),  # harmonised DCE utility ∈ [-1,1]
-            "S_wa": comb["v_task_h"],  # harmonised task utility ∈ [-1,1]
-            "raw": comb["V"],
-            "V": comb["V"],
-            "V_task": comb["v_task"],
-            "V_task_hat": comb["v_task_h"],
-            "V_dce": dce_detail["V_dce"],
-            "V_dce_hat": comb["v_dce_h"],
-            "confidence_f": round(f, 4),
-            "alpha": comb["alpha"],
-            "gamma": comb["gamma"],
-            "bws_scores": bws_scores,
-            "bws_score_type": PreferenceScorer.detect_bws_score_type(bws_scores),
-            "top_10_bws": (
-                user_profile.get("top_10_bws")
-                or (user_profile.get("preference_vector") or {}).get("top_10_bws")
-                or []
-            ),
-            "scoring_model": "unified_dce_bws_v1",
-        }
