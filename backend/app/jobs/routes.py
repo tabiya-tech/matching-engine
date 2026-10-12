@@ -80,7 +80,7 @@ def add_jobs_routes(router: APIRouter) -> None:
             description="When true, include the total count of jobs matching the filters.",
         ),
         jobs_service: IJobsService = Depends(get_jobs_service),
-    ):
+    ) -> JobsPage:
         """
         Browse active jobs with cursor-based pagination and optional filters.
 

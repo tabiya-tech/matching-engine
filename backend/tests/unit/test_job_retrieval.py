@@ -10,15 +10,17 @@ from app.services.location_query import (
     build_mongo_filter_active_and_location,
     location_or_clauses_for_one_user,
 )
+from tests.domain_factories import jobs_load_timing, make_job, make_user
 
-_NAIROBI_USER = {"user_id": "u1", "city": "Nairobi", "province": "Nairobi"}
+_NAIROBI_USER = make_user(user_id="u1", city="Nairobi", province="Nairobi")
+_JOB = make_job(uuid="j1")
 
 
 def _repository() -> AsyncMock:
     repository = AsyncMock(spec=IJobsRepository)
     repository.find_jobs_with_timing.side_effect = lambda *_a, **_kw: (
-        [{"uuid": "j1"}],
-        {"n_jobs": 1},
+        [_JOB],
+        jobs_load_timing(n_jobs=1),
     )
     return repository
 
@@ -32,8 +34,8 @@ class TestRetrieveJobsWithTiming:
         )
 
         assert repository.find_jobs_with_timing.await_args.args == (None,)
-        assert jobs == [{"uuid": "j1"}]
-        assert timing["jobs_retrieval_filter_applied"] is False
+        assert jobs == [_JOB]
+        assert timing.jobs_retrieval_filter_applied is False
 
     def test_with_users_applies_the_location_prefilter_and_limit(self):
         repository = _repository()
@@ -49,7 +51,7 @@ class TestRetrieveJobsWithTiming:
         call = repository.find_jobs_with_timing.await_args
         assert call.args == (build_mongo_filter_active_and_location([_NAIROBI_USER]),)
         assert call.kwargs == {"limit": 123}
-        assert timing["jobs_retrieval_filter_applied"] is True
+        assert timing.jobs_retrieval_filter_applied is True
 
     def test_prefilter_switched_off_loads_every_active_job(self):
         repository = _repository()
@@ -60,7 +62,7 @@ class TestRetrieveJobsWithTiming:
             )
 
         assert repository.find_jobs_with_timing.await_args.args == (None,)
-        assert timing["jobs_retrieval_filter_applied"] is False
+        assert timing.jobs_retrieval_filter_applied is False
 
 
 class TestLocationQuery:
@@ -76,7 +78,7 @@ class TestLocationQuery:
         } in actual["$and"][1]["$or"]
 
     def test_user_without_city_and_province_only_matches_remote_jobs(self):
-        actual = location_or_clauses_for_one_user({"user_id": "u1"})
+        actual = location_or_clauses_for_one_user(make_user(user_id="u1"))
 
         assert actual == [
             {"classifier_metadata.city": {"$regex": "remote", "$options": "i"}},

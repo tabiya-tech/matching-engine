@@ -1,117 +1,94 @@
-"""Flatten the occupation taxonomy JSON into the per-(occupation, county) rows matching scores.
+"""Flatten the occupation file into the per-(occupation, county) ``Occupation`` rows matching scores.
 
-Pure transformation (no I/O, no caching): ``app.occupations.loader`` reads the file and caches the result.
+Pure transformation (no I/O, no caching): ``app.occupations.loader`` reads and validates the file and
+caches the result.
 """
 
-from typing import Any
+from collections.abc import Sequence
+
+from app.domain.attributes import JobAttributes
+from app.domain.occupation import Occupation
+from app.domain.skills import SkillReference
+from app.domain.work_activities import work_activities_from_records
+from app.occupations.occupation_file import CountyData, OccupationFileEntry, SkillList
 
 
-def _occ_skill_pairs(uuids: list, labels: list) -> list[dict[str, str]]:
-    """Zip occupation skill uuids with their labels (from the occupation JSON; '' if absent)."""
-    pairs: list[dict[str, str]] = []
-    for i, u in enumerate(uuids):
-        lab = labels[i] if i < len(labels) else ""
-        pairs.append({"id": str(u), "label": str(lab) if lab else ""})
-    return pairs
+def _skill_references(skills: SkillList | None) -> list[SkillReference]:
+    """Zip occupation skill uuids with their labels ('' when the label list is shorter or blank)."""
+    if skills is None:
+        return []
+    refs: list[SkillReference] = []
+    for i, uuid in enumerate(skills.uuids):
+        label = skills.labels[i] if i < len(skills.labels) else None
+        refs.append(SkillReference(id=uuid, label=label or ""))
+    return refs
 
 
-def flatten_occupations(raw_occupations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _county_attributes(county_data: CountyData) -> JobAttributes:
+    """Attribute levels of one county (list or mapping form), plus its expected demand."""
+    raw = county_data.job_attributes.attributes if county_data.job_attributes else None
+    levels: dict[str, str | None] = {}
+    if isinstance(raw, list):
+        for estimate in raw:
+            if estimate.attribute_name and estimate.selected_level_id:
+                levels[estimate.attribute_name] = estimate.selected_level_id
+    elif isinstance(raw, dict):
+        levels = dict(raw)
+    # Demand label so DemandScorer can read attributes["expected_demand"]
+    # (engine-agnostic; powers score_breakdown.demand_* on /match).
+    demand = (
+        county_data.labor_demand.expected_demand if county_data.labor_demand else None
+    )
+    if demand:
+        levels["expected_demand"] = demand
+    return JobAttributes.from_levels(levels)
+
+
+def flatten_occupations(entries: Sequence[OccupationFileEntry]) -> list[Occupation]:
     """One row per occupation × county (or one county-less row when the entry has no counties).
 
-    Rows use the same ``{id, label}`` skill shape as job dicts so the engines treat both alike.
-    """
-    flattened = []
-    for entry in raw_occupations:
-        occ = entry.get("occupation", {})
-        skills = entry.get("skills", {})
-        ess_block = (
-            skills.get("essential", {})
-            if isinstance(skills.get("essential"), dict)
-            else {}
-        )
-        opt_block = (
-            skills.get("optional", {})
-            if isinstance(skills.get("optional"), dict)
-            else {}
-        )
-        ess_uuids = ess_block.get("uuids", []) or []
-        opt_uuids = opt_block.get("uuids", []) or []
-        ess_labels = ess_block.get("labels", []) or []
-        opt_labels = opt_block.get("labels", []) or []
-        counties = entry.get("counties_data", [])
+    Rows use the same ``SkillReference`` / ``WorkActivity`` types as jobs so the engines treat both
+    alike. Work activities without a numeric importance and level are dropped.
 
-        code = occ.get("code", "")
-        label = occ.get("preferred_label", "Unknown")
-        description = occ.get("description", "")
+    :param entries: The validated occupation file
+    :return: The occupation rows, in file order
+    """
+    flattened: list[Occupation] = []
+    for entry in entries:
+        occ = entry.occupation
+        code = occ.code or ""
+        label = occ.preferred_label or "Unknown"
 
         # Post-secondary education gate (see app.ranking.retrieval):
         # occupation-level flag, applied to all of this occupation's county rows.
-        requires_post_secondary = occ.get("requires_post_secondary")
+        requires_post_secondary = occ.requires_post_secondary
         if requires_post_secondary is None:
-            requires_post_secondary = entry.get("requires_post_secondary")
+            requires_post_secondary = entry.requires_post_secondary
 
-        raw_wa = entry.get("onet_work_activities", [])
-        onet_wa = []
-        for w in raw_wa:
-            wc = w.get("WA_code")
-            imp = w.get("WA_Importance", "")
-            lvl = w.get("WA_Level", "")
-            if wc and imp != "" and lvl != "":
-                onet_wa.append(
-                    {
-                        "WA_code": wc,
-                        "WA_label": w.get("WA_label", ""),
-                        "WA_Importance": float(imp),
-                        "WA_Level": float(lvl),
-                    }
-                )
+        work_activities = work_activities_from_records(
+            entry.onet_work_activities, source_id=f"occupation {code or '?'}"
+        )
+        essential_skills = _skill_references(entry.skills.essential)
+        optional_skills = _skill_references(entry.skills.optional)
 
-        if not counties:
-            counties = [{"county": "", "job_attributes": {}}]
-
-        for cd in counties:
-            county = cd.get("county", "")
-            job_attrs = cd.get("job_attributes", {})
-            attrs_raw = job_attrs.get("attributes", [])
-            attributes = {}
-            if isinstance(attrs_raw, list):
-                for a in attrs_raw:
-                    name = a.get("attribute_name")
-                    val = a.get("selected_level_id")
-                    if name and val:
-                        attributes[name] = val
-            elif isinstance(attrs_raw, dict):
-                attributes = attrs_raw
-
-            # Demand label so DemandScorer can read attributes["expected_demand"]
-            # (engine-agnostic; powers score_breakdown.demand_* on /match_v4).
-            expected_demand = (cd.get("labor_demand") or {}).get("expected_demand")
-            if expected_demand:
-                attributes = {**attributes, "expected_demand": expected_demand}
-
-            # Wrap skills in the same {id, label} shape used by job dicts. Labels come
-            # from the occupation JSON (skills.*.labels) when present, else empty; gap
-            # analysis reads id directly without going through label resolution.
+        for county_data in entry.counties_data or [CountyData(county="")]:
+            county = county_data.county or ""
             flattened.append(
-                {
-                    "uuid": f"{code}_{county}" if county else code,
-                    "originUuid": code,
-                    "occupation_label": label,
-                    "preferredLabel": label,
-                    "description": description,
-                    "location": county,
-                    "city": county,
-                    "province": county,
-                    "essential_skills": _occ_skill_pairs(ess_uuids, ess_labels),
-                    "optional_skills": _occ_skill_pairs(opt_uuids, opt_labels),
-                    "skill_groups_origin_uuids": [],
-                    "attributes": attributes,
-                    "requires_post_secondary": requires_post_secondary,
-                    "onet_work_activities": onet_wa,
+                Occupation(
+                    uuid=f"{code}_{county}" if county else code,
+                    originUuid=code,
+                    occupation_label=label,
+                    description=occ.description or "",
+                    county=county,
+                    essential_skills=essential_skills,
+                    optional_skills=optional_skills,
+                    attributes=_county_attributes(county_data),
+                    onet_work_activities=work_activities,
+                    requires_post_secondary=requires_post_secondary,
                     # Occupation-specific tasks (sparse in source); formatter falls back to
-                    # O*NET WA labels when absent. See match_v4_formatting._typical_tasks.
-                    "included_tasks": occ.get("included_tasks") or "",
-                }
+                    # O*NET WA labels when absent. See app.matching.formatting._typical_tasks.
+                    included_tasks=occ.included_tasks or "",
+                )
             )
 
     return flattened
