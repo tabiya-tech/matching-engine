@@ -22,90 +22,83 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
+
+from app.services.bm25_scoring.bm25library import (
+    Bm25Recommendation,
+    Bm25RunResult,
+    Bm25UserResult,
+)
+
+# The page's embedded JSON (short keys read by the inline script); built from the typed run.
+CompactRow = dict[str, object]
 
 
-def _compact_rec(raw: Dict[str, Any], *, max_matched_skills: int) -> Dict[str, Any]:
-    msk_full = [str(x) for x in (raw.get("matched_skills") or [])]
-    msk_take = msk_full[:max_matched_skills]
-    ov_compact: List[Dict[str, str]] = []
-    for d in raw.get("matched_skills_detail") or []:
-        if not isinstance(d, dict):
-            continue
-        ov_compact.append(
-            {
-                "p": str(d.get("phrase_token") or ""),
-                "u": str(d.get("user_label") or "")[:200],
-                "j": str(d.get("job_label") or "")[:200],
-            }
-        )
-    ov_full_n = len(ov_compact)
-    ov_take = ov_compact[:max_matched_skills]
+def _compact_rec(rec: Bm25Recommendation, *, max_matched_skills: int) -> CompactRow:
+    msk_full = rec.matched_skills
+    ov = rec.matched_skills_detail
     return {
-        "r": raw.get("rank"),
-        "uuid": str(raw.get("job_uuid") or ""),
-        "t": str(raw.get("job_title") or "")[:280],
-        "e": str(raw.get("employer") or "")[:180],
-        "l": str(raw.get("location") or "")[:200],
-        "s": float(raw.get("bm25_score") or 0.0),
-        "ssr": (
-            float(raw["bm25_skills_score_raw"])
-            if "bm25_skills_score_raw" in raw
-            else None
-        ),
-        "tsr": (
-            float(raw["bm25_text_score_raw"]) if "bm25_text_score_raw" in raw else None
-        ),
-        "sr": (float(raw["bm25_score_raw"]) if "bm25_score_raw" in raw else None),
-        "msk": [s[:120] for s in msk_take],
+        "r": rec.rank,
+        "uuid": rec.job_uuid,
+        "t": rec.job_title[:280],
+        "e": (rec.employer or "")[:180],
+        "l": rec.location[:200],
+        "s": rec.bm25_score,
+        "ssr": rec.bm25_skills_score_raw,
+        "tsr": rec.bm25_text_score_raw,
+        "sr": rec.bm25_score_raw,
+        "msk": [s[:120] for s in msk_full[:max_matched_skills]],
         "n_msk": len(msk_full),
         "msk_trunc": len(msk_full) > max_matched_skills,
-        "ov": ov_take,
-        "n_ov": ov_full_n,
-        "ov_trunc": ov_full_n > max_matched_skills,
+        "ov": [
+            {"p": d.phrase_token, "u": d.user_label[:200], "j": d.job_label[:200]}
+            for d in ov[:max_matched_skills]
+        ],
+        "n_ov": len(ov),
+        "ov_trunc": len(ov) > max_matched_skills,
     }
 
 
-def _compact_user(row: Dict[str, Any], *, max_matched_skills: int) -> Dict[str, Any]:
+def _compact_user(row: Bm25UserResult, *, max_matched_skills: int) -> CompactRow:
     return {
-        "uid": str(row.get("user_id") or ""),
-        "city": str(row.get("city") or ""),
-        "prov": str(row.get("province") or ""),
-        "nq": int(row.get("n_query_tokens") or 0),
-        "q": [str(t) for t in (row.get("query_tokens") or [])],
+        "uid": row.user_id or "",
+        "city": row.city,
+        "prov": row.province,
+        "nq": row.n_query_tokens,
+        "q": row.query_tokens,
         "recs": [
             _compact_rec(r, max_matched_skills=max_matched_skills)
-            for r in (row.get("recommendations") or [])
+            for r in row.recommendations
         ],
     }
 
 
-def build_html(payload_raw: Dict[str, Any], *, max_matched_skills: int = 120) -> str:
-    cfg = payload_raw.get("config") or {}
-    idx_stats = payload_raw.get("index_stats") or {}
-    meta = {
-        "n_users": payload_raw.get("n_users"),
-        "n_jobs": payload_raw.get("n_jobs"),
-        "variant": cfg.get("variant"),
-        "k1": cfg.get("k1"),
-        "b": cfg.get("b"),
-        "skills_weight": cfg.get("skills_weight"),
-        "text_weight": cfg.get("text_weight"),
-        "jobs_source": cfg.get("jobs_source"),
-        "top_k_stored": cfg.get("top_k"),
-        "users_path": cfg.get("users_path"),
-        "mongo_filter_by_users": cfg.get("mongo_filter_by_users"),
-        "include_programme_context": cfg.get("include_programme_context"),
-        "skills_vocab_size": idx_stats.get("skills_vocab_size"),
-        "full_vocab_size": idx_stats.get("full_vocab_size"),
-        "skills_avg_doc_len": idx_stats.get("skills_avg_doc_len"),
-        "full_avg_doc_len": idx_stats.get("full_avg_doc_len"),
-    }
+def build_html(payload: Bm25RunResult, *, max_matched_skills: int = 120) -> str:
+    """The dashboard HTML for a BM25 run."""
+    cfg = payload.config
+    idx_stats = payload.index_stats
     compact = {
-        "meta": meta,
+        "meta": {
+            "n_users": payload.n_users,
+            "n_jobs": payload.n_jobs,
+            "variant": cfg.variant,
+            "k1": cfg.k1,
+            "b": cfg.b,
+            "skills_weight": cfg.skills_weight,
+            "text_weight": cfg.text_weight,
+            "jobs_source": cfg.jobs_source,
+            "top_k_stored": cfg.top_k,
+            "users_path": cfg.users_path,
+            "mongo_filter_by_users": cfg.mongo_filter_by_users,
+            "include_programme_context": cfg.include_programme_context,
+            "skills_vocab_size": idx_stats.skills_vocab_size,
+            "full_vocab_size": idx_stats.full_vocab_size,
+            "skills_avg_doc_len": idx_stats.skills_avg_doc_len,
+            "full_avg_doc_len": idx_stats.full_avg_doc_len,
+        },
         "users": [
             _compact_user(u, max_matched_skills=max_matched_skills)
-            for u in payload_raw.get("results") or []
+            for u in payload.results
         ],
     }
     data_json = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
@@ -444,7 +437,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = p.parse_args(argv)
 
-    payload = json.loads(args.input.read_text(encoding="utf-8"))
+    payload = Bm25RunResult.model_validate_json(args.input.read_bytes())
     html_doc = build_html(payload, max_matched_skills=args.max_matched_skills)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(html_doc, encoding="utf-8")
