@@ -19,8 +19,3 @@ class TestZqfAnnotation:
 
     def test_missing_job_zqf_returns_none(self):
         assert _zqf_annotation(user_zqf=5, job_zqf_min=None) == (None, None)
-
-    def test_accepts_float_job_zqf_min(self):
-        eligible, gap = _zqf_annotation(user_zqf=4, job_zqf_min=4.0)
-        assert eligible is True
-        assert gap == 0

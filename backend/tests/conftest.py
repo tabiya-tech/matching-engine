@@ -31,26 +31,18 @@ from app.matching.service import MatchingService  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-def _mock_match_response(user, *_args, **_kwargs):
-    """Return a minimal MatchResponse-shaped dict without any ML dependencies."""
-    return {
-        "user_id": user.get("user_id", "unknown"),
-        "opportunity_recommendations": [],
-        "occupation_recommendations": [],
-        "skill_gap_recommendations": [],
-    }
-
-
 def _mock_run_match_full(users, *_args, **_kwargs):
-    """Batch matcher stub used by the POST /match route."""
-    return [_mock_match_response(u) for u in users]
+    """Batch matcher stub: one empty ``MatchResponse`` per ``UserProfile``."""
+    from app.schemas import MatchResponse
+
+    return [MatchResponse(user_id=u.user_id or "unknown") for u in users]
 
 
 class _StubMatchingService(MatchingService):
     """The real request handling (validation, retrieval, response model) over a stubbed engine."""
 
     async def _load_occupations(self):
-        return [], {}
+        return [], None
 
     def rank(self, users, *_args, **_kwargs):
         return _mock_run_match_full(users)
@@ -61,8 +53,13 @@ def mocked_jobs_repository():
     """Stand-in for the jobs repository injected into routes; set side effects per test."""
     from app.jobs.repository import IJobsRepository
 
+    from tests.domain_factories import jobs_load_timing
+
     repository = AsyncMock(spec=IJobsRepository)
-    repository.find_jobs_with_timing.side_effect = lambda *_a, **_kw: ([], {})
+    repository.find_jobs_with_timing.side_effect = lambda *_a, **_kw: (
+        [],
+        jobs_load_timing(),
+    )
     return repository
 
 
