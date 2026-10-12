@@ -1,6 +1,7 @@
 """CosineSkillMatcher component tests."""
 
 from tests.components.conftest import _job_with_essential, _user_with_skills
+from tests.domain_factories import make_job
 
 _SKILL = "manage staff"
 
@@ -10,22 +11,21 @@ class TestSkillScorer:
         user = _user_with_skills([_SKILL])
         job = _job_with_essential([_SKILL])
         out = cosine_matcher.score_pair(user, job)
-        assert "mean_best_cosine" in out
-        assert "per_job_skill" in out
-        assert 0.0 <= out["mean_best_cosine"] <= 1.0
+        assert out.per_job_skill
+        assert 0.0 <= out.mean_best_cosine <= 1.0
 
     def test_empty_user_skills_yield_zero_score(self, cosine_matcher):
-        user = {"skills_vector": {"top_skills": []}}
+        user = _user_with_skills([])
         job = _job_with_essential([_SKILL])
         out = cosine_matcher.score_pair(user, job)
-        assert out["mean_best_cosine"] == 0.0
-        assert out["per_job_skill"] == []
+        assert out.mean_best_cosine == 0.0
+        assert out.per_job_skill == []
 
     def test_empty_job_skills_yield_zero_score(self, cosine_matcher):
         user = _user_with_skills([_SKILL])
-        job = {"essential_skills": [], "optional_skills": []}
+        job = make_job()
         out = cosine_matcher.score_pair(user, job)
-        assert out["mean_best_cosine"] == 0.0
+        assert out.mean_best_cosine == 0.0
 
 
 class TestDisplayLabelLanguage:
@@ -68,8 +68,8 @@ class TestDisplayLabelLanguage:
     def test_scored_rows_use_that_language(self, cosine_matcher):
         user = _user_with_skills([_SKILL])
         job = _job_with_essential([_SKILL])
-        rows = cosine_matcher.score_pair_v4(user, job)["per_job_skill"]
+        rows = cosine_matcher.score_pair_v4(user, job)
         assert rows, "expected the resolved skill to score"
         for row in rows:
-            expected = cosine_matcher.skill_labels.get(row["job_skill_id"])
-            assert row["job_skill_label"] == expected
+            expected = cosine_matcher.skill_labels.get(row.job_skill_id)
+            assert row.job_skill_label == expected

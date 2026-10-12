@@ -29,64 +29,105 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-from copy import deepcopy
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
 
 from app.config import EMBEDDING_MODEL_PATH, SKILLS_CSV_PATH, SKILL_TO_ROW_PATH
-from app.ranking.skills import SkillScorer
+from app.domain.user import UserProfile
+from app.jobs.repository import JobsLoadTiming
+from app.ranking.skills import CosineSkillMatcher, SkillScorer, SkillUtilityComponents
+from app.ranking.types import MatchItem
 from app.server_dependencies.model_dependencies import (
     build_skill_matcher,
     build_skill_scorer,
 )
+from app.services.cosine_similarity.run_cosine_matching import CosineIndexStats
+from app.services.hybrid_scoring.run_bm25_cosine_hybrid import ResolutionStats
+from app.services.offline_io import JobsSource, load_jobs, load_users
 
-from app.services.cosine_similarity.run_cosine_matching import load_jobs, _load_users
-from app.ranking.skills import CosineSkillMatcher
 
+class ComparisonRow(BaseModel):
+    """One job scored by pooled cosine and by the legacy skill utility U."""
 
-def _attach_global_ranks(
-    rows: List[Dict[str, Any]],
-    *,
-    sort_key_primary: str,
-    sort_key_secondary: str,
-    rank_field: str,
-) -> List[Dict[str, Any]]:
-    keyed = sorted(
-        rows,
-        key=lambda x: (
-            -float(x.get(sort_key_primary) or 0),
-            -float(x.get(sort_key_secondary) or 0),
-        ),
+    job_uuid: str = Field(description="Job id.")
+    job_title: str = Field(description="Job title.")
+    employer: str | None = Field(default=None, description="Employer.")
+    location: str = Field(description="Location.")
+    mean_best_cosine_union_pool: float = Field(description="Pooled mean best cosine.")
+    min_best_cosine_union_pool: float = Field(description="Pooled min best cosine.")
+    n_job_skills_embedded_union_pool: int = Field(
+        description="Job skills with a vector."
     )
-    out: List[Dict[str, Any]] = []
-    for i, row in enumerate(keyed, 1):
-        d = dict(row)
-        d[rank_field] = i
-        out.append(d)
-    return out
+    n_user_skills_embedded: int = Field(description="User skills with a vector.")
+    legacy_U_final: float = Field(description="Legacy U.")
+    legacy_is_eligible: bool = Field(description="Legacy eligibility.")
+    legacy_penalty: float = Field(description="Legacy gap penalty.")
+    legacy_components: SkillUtilityComponents = Field(
+        description="Legacy U components."
+    )
+    rank_pooled_cosine: int | None = Field(default=None, description="Rank by cosine.")
+    rank_legacy_U: int | None = Field(default=None, description="Rank by legacy U.")
+    cross_rank_pooled_cosine: int | None = Field(
+        default=None, description="Cosine rank (legacy column)."
+    )
+    delta_rank_cosine_minus_legacy: int | None = Field(
+        default=None, description="Cosine rank − legacy rank."
+    )
 
 
-def _user_profile_for_skill_scorer(user: Dict[str, Any]) -> Dict[str, Any]:
-    """Expose the same labeled skills cosine sees via ``resolved_skills`` to SkillScorer.
+class ComparisonUserResult(BaseModel):
+    """Both rankings for one user."""
 
-    SkillScorer only reads ``skills_vector.top_skills`` with ``preferredLabel``;
-    :class:`CosineSkillMatcher` prefers ``resolved_skills[].label``.
-    """
+    user_id: str | None = Field(description="The user's id.")
+    city: str = Field(description="The user's city.")
+    province: str = Field(description="The user's province.")
+    n_resolved_user_skills: int = Field(description="User skills with a vector.")
+    resolved_user_skill_labels: list[str] = Field(description="Their labels.")
+    overlap_jaccard_top_cosine_vs_legacy: float = Field(
+        description="Jaccard overlap of the two top-k lists."
+    )
+    top_pooled_cosine: list[ComparisonRow] = Field(description="Top-k by cosine.")
+    top_legacy_U: list[ComparisonRow] = Field(description="Top-k by legacy U.")
 
-    resolved = user.get("resolved_skills") or []
-    if not resolved:
-        return user
-    out = dict(user)
-    top_skills: List[Dict[str, str]] = []
-    for s in resolved:
-        if isinstance(s, dict) and s.get("label"):
-            top_skills.append({"preferredLabel": str(s["label"]).strip()})
-    sv = dict(user.get("skills_vector") or {})
-    sv["top_skills"] = top_skills
-    out["skills_vector"] = sv
-    return out
+
+class ComparisonConfig(BaseModel):
+    """Configuration of one comparison run."""
+
+    users_path: str = Field(description="Users file.")
+    jobs_source: JobsSource = Field(description="``file`` or ``mongo``.")
+    top_compare: int = Field(description="Rows per column.")
+    mode: str = Field(description="Comparison mode.")
+    embedding_model_path: str = Field(description="Embedding artifact.")
+    skill_to_row_path: str = Field(description="Skill -> row map.")
+    skills_csv_path: str = Field(description="Taxonomy skills CSV.")
+    comparison_note: str = Field(description="What each column ranks by.")
+    jobs_path: str | None = Field(default=None, description="Jobs file (file source).")
+    mongo_filter_by_users: bool | None = Field(
+        default=None, description="Location prefilter (mongo source)."
+    )
+
+
+class ComparisonResult(BaseModel):
+    """The JSON payload of one comparison run."""
+
+    config: ComparisonConfig = Field(description="Run configuration.")
+    index_stats: CosineIndexStats = Field(description="Corpus / embedding size.")
+    n_users: int = Field(description="Users compared.")
+    n_jobs: int = Field(description="Jobs scored.")
+    results: list[ComparisonUserResult] = Field(description="One entry per user.")
+    mongo_timing: JobsLoadTiming | None = Field(
+        default=None, description="Job-load timing (mongo source)."
+    )
+    skill_scorer_resolution_stats: ResolutionStats = Field(
+        description="SkillScorer label misses."
+    )
+    cosine_resolution_stats: ResolutionStats = Field(
+        description="CosineSkillMatcher label misses."
+    )
 
 
 def _jacc_top_k(uuids_a: List[str], uuids_b: List[str]) -> float:
@@ -98,188 +139,172 @@ def _jacc_top_k(uuids_a: List[str], uuids_b: List[str]) -> float:
     return len(aa & bb) / float(len(aa | bb))
 
 
-def _legacy_summary(legacy: Dict[str, Any]) -> Dict[str, Any]:
-    comps = legacy.get("components") or {}
-    return {
-        "legacy_U_final": float(legacy.get("U_final") or 0),
-        "legacy_is_eligible": bool(legacy.get("is_eligible")),
-        "legacy_penalty": float(legacy.get("penalty") or 0),
-        "legacy_components": {
-            k: comps.get(k) for k in ("loc", "ess", "opt", "grp") if k in comps
-        },
-        "legacy_sort_secondary": float(comps.get("ess") or 0),
-    }
-
-
 def _one_row_skeleton(
     matcher: CosineSkillMatcher,
     scorer: SkillScorer,
-    user_raw: Dict[str, Any],
-    user_legacy: Dict[str, Any],
-    job: Dict[str, Any],
-) -> Dict[str, Any]:
-    uni = matcher.score_pair(user_raw, job)
-    legacy = scorer.calculate_score(user_legacy, job)
-    leg = _legacy_summary(legacy)
-    jid = job.get("uuid") or job.get("_id")
+    user: UserProfile,
+    job: MatchItem,
+) -> ComparisonRow:
+    uni = matcher.score_pair(user, job)
+    legacy = scorer.calculate_score(user, job)
+    return ComparisonRow(
+        job_uuid=job.uuid,
+        job_title=job.title,
+        employer=getattr(job, "employer", None),
+        location=job.location,
+        mean_best_cosine_union_pool=uni.mean_best_cosine,
+        min_best_cosine_union_pool=uni.min_best_cosine,
+        n_job_skills_embedded_union_pool=uni.n_job_skills_embedded,
+        n_user_skills_embedded=uni.n_user_skills_embedded,
+        legacy_U_final=legacy.U_final,
+        legacy_is_eligible=legacy.is_eligible,
+        legacy_penalty=legacy.penalty,
+        legacy_components=legacy.components,
+    )
 
-    return {
-        "job_uuid": str(jid) if jid is not None else "",
-        "job_title": job.get("opportunity_title"),
-        "employer": job.get("employer"),
-        "location": job.get("location"),
-        "mean_best_cosine_union_pool": uni["mean_best_cosine"],
-        "min_best_cosine_union_pool": uni["min_best_cosine"],
-        "n_job_skills_embedded_union_pool": uni["n_job_skills_embedded"],
-        "n_user_skills_embedded": uni["n_user_skills_embedded"],
-        **leg,
-    }
+
+def _ranked(rows: Sequence[ComparisonRow], *, by_cosine: bool) -> List[ComparisonRow]:
+    """Rows sorted by pooled cosine (then min cosine), or by legacy U (then its ``ess``)."""
+    if by_cosine:
+        return sorted(
+            rows,
+            key=lambda r: (
+                -r.mean_best_cosine_union_pool,
+                -r.min_best_cosine_union_pool,
+            ),
+        )
+    return sorted(rows, key=lambda r: (-r.legacy_U_final, -r.legacy_components.ess))
 
 
 def run_comparison(
     users_path: Path,
-    jobs_source: Literal["file", "mongo"],
+    jobs_source: JobsSource,
     jobs_path: Optional[Path],
     output_path: Optional[Path],
     *,
     top_compare: int = 15,
     mongo_filter_by_users: bool = True,
-) -> Dict[str, Any]:
-    users_raw = _load_users(users_path)
+) -> ComparisonResult:
+    """Rank every job per user by pooled cosine and by legacy U, and write both top-k lists."""
+    users = load_users(users_path)
     jobs, mongo_timing = load_jobs(
-        jobs_source, jobs_path, users_raw, mongo_filter_by_users
+        jobs_source,
+        jobs_path,
+        users,
+        mongo_filter_by_users,
+        log_prefix="[cosine_vs_legacy]",
     )
 
     matcher = build_skill_matcher()
     scorer = build_skill_scorer()
 
-    users_legacy = [_user_profile_for_skill_scorer(u) for u in users_raw]
-
     print(
-        f"[cosine_vs_legacy] {len(users_raw)} users × {len(jobs)} jobs "
+        f"[cosine_vs_legacy] {len(users)} users × {len(jobs)} jobs "
         f"(dim={matcher.W.shape[1]})",
         file=sys.stderr,
     )
 
-    results_out: List[Dict[str, Any]] = []
+    results_out: List[ComparisonUserResult] = []
 
-    for user_raw, user_legacy in zip(users_raw, users_legacy):
-        labels = matcher.resolved_user_skill_labels_ordered(user_raw)
-        skinny: List[Dict[str, Any]] = []
-        for job in jobs:
-            skinny.append(
-                _one_row_skeleton(matcher, scorer, user_raw, user_legacy, job)
+    for user in users:
+        labels = matcher.resolved_user_skill_labels_ordered(user)
+        skinny = [_one_row_skeleton(matcher, scorer, user, job) for job in jobs]
+
+        cos_ranked = _ranked(skinny, by_cosine=True)
+        leg_ranked = _ranked(skinny, by_cosine=False)
+        cos_rank = {r.job_uuid: i for i, r in enumerate(cos_ranked, 1)}
+        leg_rank = {r.job_uuid: i for i, r in enumerate(leg_ranked, 1)}
+
+        top_cosine = [
+            r.model_copy(
+                update={
+                    "rank_pooled_cosine": i,
+                    "rank_legacy_U": leg_rank.get(r.job_uuid, 999999),
+                    "delta_rank_cosine_minus_legacy": i
+                    - leg_rank.get(r.job_uuid, 999999),
+                }
             )
-
-        cos_ranked = _attach_global_ranks(
-            skinny,
-            sort_key_primary="mean_best_cosine_union_pool",
-            sort_key_secondary="min_best_cosine_union_pool",
-            rank_field="rank_pooled_cosine",
-        )
-        leg_ranked = _attach_global_ranks(
-            skinny,
-            sort_key_primary="legacy_U_final",
-            sort_key_secondary="legacy_sort_secondary",
-            rank_field="rank_legacy_U",
-        )
-
-        jid_to_legacy_rank = {
-            str(r["job_uuid"]): int(r["rank_legacy_U"]) for r in leg_ranked
-        }
-        jid_to_cos_rank = {
-            str(r["job_uuid"]): int(r["rank_pooled_cosine"]) for r in cos_ranked
-        }
-
-        cos_annotated: List[Dict[str, Any]] = []
-        for r in cos_ranked:
-            dd = dict(r)
-            jid = str(dd["job_uuid"])
-            ir = jid_to_legacy_rank.get(jid, 999999)
-            dd["rank_legacy_U"] = ir
-            dd["delta_rank_cosine_minus_legacy"] = int(dd["rank_pooled_cosine"]) - ir
-            cos_annotated.append(dd)
-
-        leg_annotated: List[Dict[str, Any]] = []
-        for r in leg_ranked:
-            dd = dict(r)
-            jid = str(dd["job_uuid"])
-            ic = jid_to_cos_rank.get(jid, 999999)
-            dd["cross_rank_pooled_cosine"] = ic
-            dd["delta_rank_cosine_minus_legacy"] = ic - int(dd["rank_legacy_U"])
-            leg_annotated.append(dd)
-
-        top_cosine = cos_annotated[: max(0, top_compare)]
-        top_legacy = leg_annotated[: max(0, top_compare)]
-
-        jacc = _jacc_top_k(
-            [str(r["job_uuid"]) for r in top_cosine],
-            [str(r["job_uuid"]) for r in top_legacy],
-        )
+            for i, r in enumerate(cos_ranked, 1)
+        ][: max(0, top_compare)]
+        top_legacy = [
+            r.model_copy(
+                update={
+                    "rank_legacy_U": i,
+                    "cross_rank_pooled_cosine": cos_rank.get(r.job_uuid, 999999),
+                    "delta_rank_cosine_minus_legacy": cos_rank.get(r.job_uuid, 999999)
+                    - i,
+                }
+            )
+            for i, r in enumerate(leg_ranked, 1)
+        ][: max(0, top_compare)]
 
         results_out.append(
-            {
-                "user_id": user_raw.get("user_id"),
-                "city": user_raw.get("city"),
-                "province": user_raw.get("province"),
-                "n_resolved_user_skills": len(labels),
-                "resolved_user_skill_labels": labels,
-                "overlap_jaccard_top_cosine_vs_legacy": round(jacc, 4),
-                "top_pooled_cosine": top_cosine,
-                "top_legacy_U": top_legacy,
-            }
+            ComparisonUserResult(
+                user_id=user.user_id,
+                city=user.city,
+                province=user.province,
+                n_resolved_user_skills=len(labels),
+                resolved_user_skill_labels=labels,
+                overlap_jaccard_top_cosine_vs_legacy=round(
+                    _jacc_top_k(
+                        [r.job_uuid for r in top_cosine],
+                        [r.job_uuid for r in top_legacy],
+                    ),
+                    4,
+                ),
+                top_pooled_cosine=top_cosine,
+                top_legacy_U=top_legacy,
+            )
         )
 
-    config: Dict[str, Any] = {
-        "users_path": str(users_path),
-        "jobs_source": jobs_source,
-        "top_compare": top_compare,
-        "mode": "cosine_pooled_union_vs_legacy_skills_match_U",
-        "embedding_model_path": str(EMBEDDING_MODEL_PATH),
-        "skill_to_row_path": str(SKILL_TO_ROW_PATH),
-        "skills_csv_path": str(SKILLS_CSV_PATH),
-        "comparison_note": (
-            "Left column ranks by pooled cosine (CosineSkillMatcher.score_pair: "
-            "essential ∪ optional, mean of row-wise max cosines vs user skills). "
-            "Right column ranks by SkillScorer.calculate_score → compute_U_complete "
-            "(location + skill groups + weighted ess/opt/grp + gap penalty; embedding "
-            "rescaling applies when SKILL_RESCALE_TARGET is set from artefact/env). "
-            "Legacy user skills use the same labels as cosine when resolved_skills is "
-            "present (mapped to skills_vector.top_skills for SkillScorer)."
+    payload = ComparisonResult(
+        config=ComparisonConfig(
+            users_path=str(users_path),
+            jobs_source=jobs_source,
+            top_compare=top_compare,
+            mode="cosine_pooled_union_vs_legacy_skills_match_U",
+            embedding_model_path=str(EMBEDDING_MODEL_PATH),
+            skill_to_row_path=str(SKILL_TO_ROW_PATH),
+            skills_csv_path=str(SKILLS_CSV_PATH),
+            comparison_note=(
+                "Left column ranks by pooled cosine (CosineSkillMatcher.score_pair: "
+                "essential ∪ optional, mean of row-wise max cosines vs user skills). "
+                "Right column ranks by SkillScorer.calculate_score → compute_U_complete "
+                "(location + skill groups + weighted ess/opt/grp + gap penalty; embedding "
+                "rescaling applies when SKILL_RESCALE_TARGET is set from artefact/env). "
+                "Both scorers read the user's skills_vector.top_skills labels."
+            ),
+            jobs_path=(str(jobs_path) if jobs_path else None)
+            if jobs_source == "file"
+            else None,
+            mongo_filter_by_users=mongo_filter_by_users
+            if jobs_source == "mongo"
+            else None,
         ),
-    }
-    if jobs_source == "file":
-        config["jobs_path"] = str(jobs_path) if jobs_path else None
-    else:
-        config["mongo_filter_by_users"] = mongo_filter_by_users
+        index_stats=CosineIndexStats(
+            n_jobs=len(jobs),
+            embedding_dim=int(matcher.W.shape[1]),
+            n_embedding_rows=int(matcher.W.shape[0]),
+        ),
+        n_users=len(users),
+        n_jobs=len(jobs),
+        results=results_out,
+        mongo_timing=mongo_timing,
+        skill_scorer_resolution_stats=ResolutionStats.model_validate(
+            scorer.get_resolution_stats()
+        ),
+        cosine_resolution_stats=ResolutionStats.model_validate(
+            matcher.get_resolution_stats()
+        ),
+    )
 
-    payload: Dict[str, Any] = {
-        "config": config,
-        "index_stats": {
-            "n_jobs": len(jobs),
-            "embedding_dim": int(matcher.W.shape[1]),
-            "n_embedding_rows": int(matcher.W.shape[0]),
-        },
-        "n_users": len(users_raw),
-        "n_jobs": len(jobs),
-        "results": results_out,
-    }
-    if mongo_timing is not None:
-        payload["mongo_timing"] = mongo_timing
-
-    sc_stats = scorer.get_resolution_stats()
-    payload["skill_scorer_resolution_stats"] = deepcopy(sc_stats)
-    mr_stats = matcher.get_resolution_stats()
-    payload["cosine_resolution_stats"] = mr_stats
-
+    text = payload.model_dump_json(indent=2, exclude_none=True)
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
+        output_path.write_text(text, encoding="utf-8")
         print(f"[cosine_vs_legacy] wrote {output_path}", file=sys.stderr)
     else:
-        json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
-        sys.stdout.write("\n")
+        sys.stdout.write(text + "\n")
 
     return payload
 
@@ -313,7 +338,7 @@ Examples:
 
     args = p.parse_args(argv)
 
-    js: Literal["file", "mongo"] = "mongo" if args.from_mongo else "file"
+    js: JobsSource = "mongo" if args.from_mongo else "file"
     jp = None if js == "mongo" else args.jobs
 
     if js == "file" and jp is not None and not jp.expanduser().is_file():

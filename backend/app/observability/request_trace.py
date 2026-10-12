@@ -23,9 +23,12 @@ import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Sequence
+from typing import TYPE_CHECKING, Any, Iterator, Sequence
 
 from app.observability import tracing
+
+if TYPE_CHECKING:
+    from app.domain.user import UserProfile
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +79,7 @@ def note_embedding_call(*, retries: int, failed: bool, tokens: int | None) -> No
         state.embedding_tokens += tokens or 0
 
 
-def set_request_users(users: Sequence[dict[str, Any]], **params: Any) -> None:
+def set_request_users(users: Sequence[UserProfile], **params: Any) -> None:
     """Attach the request's pseudonymous user id(s) and query parameters to the trace.
 
     Only ``user_id`` is read from each user — never location, skills or preferences. A single-user
@@ -89,7 +92,7 @@ def set_request_users(users: Sequence[dict[str, Any]], **params: Any) -> None:
     try:
         from langfuse import LangfuseOtelSpanAttributes
 
-        ids = [str(u.get("user_id") or "") for u in users]
+        ids = [u.user_id or "" for u in users]
         if len(ids) == 1 and ids[0]:
             # The root span's own attribute: propagate_attributes would only reach spans opened
             # after this point, and the trace's user is a property of the root.

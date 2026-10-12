@@ -5,14 +5,18 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from app.domain.job import Job
+from app.domain.user import UserProfile
+from tests.domain_factories import make_job, make_user
+
 
 @pytest.fixture()
-def base_user():
-    return {
-        "user_id": "ml-u1",
-        "city": "Lusaka",
-        "province": "Lusaka",
-        "skills_vector": {
+def base_user() -> UserProfile:
+    return make_user(
+        user_id="ml-u1",
+        city="Lusaka",
+        province="Lusaka",
+        skills_vector={
             "top_skills": [
                 {
                     "originUUID": "00000000-0000-4000-8000-000000000001",
@@ -20,41 +24,33 @@ def base_user():
                 }
             ]
         },
-        "preference_vector": {"earnings_per_month": 0.5},
-    }
+        preference_vector={"earnings_per_month": 0.5},
+    )
+
+
+def _job_at(uuid: str, city: str, province: str, location: str) -> Job:
+    return make_job(
+        uuid=uuid,
+        city=city,
+        province=province,
+        location=location,
+        requires_post_secondary=False,
+    )
 
 
 @pytest.fixture()
-def remote_job():
-    return {
-        "uuid": "job-remote",
-        "city": "Remote",
-        "province": "",
-        "location": "Remote",
-        "requires_post_secondary": False,
-    }
+def remote_job() -> Job:
+    return _job_at("job-remote", "Remote", "", "Remote")
 
 
 @pytest.fixture()
-def local_job():
-    return {
-        "uuid": "job-local",
-        "city": "Lusaka",
-        "province": "Lusaka",
-        "location": "Lusaka",
-        "requires_post_secondary": False,
-    }
+def local_job() -> Job:
+    return _job_at("job-local", "Lusaka", "Lusaka", "Lusaka")
 
 
 @pytest.fixture()
-def foreign_job():
-    return {
-        "uuid": "job-foreign",
-        "city": "Nairobi",
-        "province": "Nairobi",
-        "location": "Nairobi",
-        "requires_post_secondary": False,
-    }
+def foreign_job() -> Job:
+    return _job_at("job-foreign", "Nairobi", "Nairobi", "Nairobi")
 
 
 @pytest.fixture()

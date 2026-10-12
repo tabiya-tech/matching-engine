@@ -13,7 +13,7 @@
 | Response shapes | `data_validation/test_response_contracts.py` | All Swagger fields exist | Whether scores are correct |
 | API wiring | `data_schema/` | Endpoints registered, auth | Ranking logic |
 | Smoke | `smoke/` | 4 response keys on all 5 endpoints (mocked matchers) | Real scoring |
-| Mongo mapping | `unit/test_build_job_dict_from_ranked.py` | Job dict fields from Mongo | Whether jobs rank well |
+| Mongo mapping | `unit/test_build_job_from_ranked.py` | Job fields from Mongo | Whether jobs rank well |
 
 **Summary:** We validate **input/output contracts** and **DB mapping**. The **matcher is mocked** in smoke tests — no real AI logic is exercised yet.
 

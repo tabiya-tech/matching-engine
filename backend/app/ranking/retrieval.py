@@ -5,74 +5,52 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import Any
+from typing import TypeVar
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
+from app.artifacts.types import ConcatWhitening
+from app.domain.base import DomainModel
+from app.domain.user import UserProfile
 from app.ranking.skills import CosineSkillMatcher
+from app.ranking.types import Candidate, MatchItem
 
 logger = logging.getLogger(__name__)
+
+ItemT = TypeVar("ItemT", bound=MatchItem)
 
 # --------------------------------------------------------------------------------------------------
 # vectors
 #
-# Stage-1 concat embedding vectors on job / occupation dicts, and row normalisation.
+# Stage-1 concat embedding vectors on jobs / occupations, and row normalisation.
 # --------------------------------------------------------------------------------------------------
 
 
 def l2_normalize_rows(mat: np.ndarray) -> np.ndarray:
+    """Rows scaled to unit L2 norm (zero rows unchanged), as float32."""
     norms = np.linalg.norm(mat, axis=1, keepdims=True).astype(np.float32)
     norms = np.where(norms > 0, norms, 1.0).astype(np.float32)
     return (mat / norms).astype(np.float32)
 
 
-def stage1_vector(job: dict[str, Any], *, dim: int) -> np.ndarray | None:
-    """Prefer NPZ-sync BSON; fall back to ``job_embedding`` float list on the job doc."""
-
-    sub = job.get("concat_skill_embedding_gemini")
-    if isinstance(sub, dict):
-        vb = sub.get("vector_bin")
-        if vb is not None:
-            raw = getattr(vb, "bytes", None) or bytes(vb)
-            arr = np.frombuffer(raw, dtype=np.float32)
-            if arr.size == dim:
-                return arr
-
-    je = job.get("job_embedding")
-    # Accept a float list (Mongo job docs) or a numpy array (occupation embeddings attached
-    # in-process by app.occupations.loader.attach_occupation_embeddings).
-    if isinstance(je, np.ndarray):
-        if je.ndim == 1 and je.size == dim:
-            return je.astype(np.float32, copy=False)
-    elif isinstance(je, list) and je:
-        arr = np.asarray(je, dtype=np.float32)
-        if arr.ndim == 1 and arr.size == dim:
-            return arr
-    return None
+def stage1_vector(item: MatchItem, *, dim: int) -> np.ndarray | None:
+    """The item's concat embedding as float32, or None when absent or not ``dim`` long."""
+    vec = item.embedding
+    if vec is None or vec.ndim != 1 or vec.size != dim:
+        return None
+    return vec.astype(np.float32, copy=False)
 
 
-def is_prewhitened(job: dict[str, Any]) -> bool:
-    """True iff this job's stage-1 embedding is ALREADY whitened on the DB side (set by
-    build_job_dict_from_ranked from llm_reranker_meta.embedding.whitening.enabled). Occupations and
-    offline jobs lack the flag -> raw (whitened in-process)."""
-    return bool(job.get("job_embedding_whitened"))
+def is_prewhitened(item: MatchItem) -> bool:
+    """True iff the item's stage-1 embedding is ALREADY whitened (DB-side for jobs, once at load
+    for occupations); raw vectors are whitened in-process."""
+    return item.embedding_whitened
 
 
-def strip_vectors(job: dict[str, Any]) -> dict[str, Any]:
-    out = dict(job)
-    out.pop("concat_skill_embedding_gemini", None)
-    out.pop("job_embedding", None)
-    return out
-
-
-def index_by_uuid(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    out: dict[str, dict[str, Any]] = {}
-    for it in items:
-        uid = str(it.get("uuid") or it.get("_id") or "")
-        if uid:
-            out[uid] = it
-    return out
+def index_by_uuid(items: Sequence[ItemT]) -> dict[str, ItemT]:
+    """Items keyed by ``uuid`` (items without one are dropped; the last duplicate wins)."""
+    return {it.uuid: it for it in items if it.uuid}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -85,13 +63,12 @@ def index_by_uuid(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 class ConcatWhitener:
     """Whitening for the user/job concat embedding space.
 
-    ``artifact`` is ``{mu, W, target}`` (see ``ArtifactsRepository.load_concat_whitening``), or
-    empty/None when the artifact is unavailable — then rows are only L2-normalised and the rescale
-    target is 0.0.
+    ``artifact`` comes from ``ArtifactsRepository.load_concat_whitening``; None when the artifact is
+    unavailable — then rows are only L2-normalised and the rescale target is 0.0.
     """
 
-    def __init__(self, artifact: dict[str, Any] | None):
-        self._artifact = artifact or None
+    def __init__(self, artifact: ConcatWhitening | None):
+        self._artifact = artifact
 
     def whiten_rows(self, vecs: np.ndarray) -> np.ndarray:
         """L2-normalise rows, apply the concat whitening ((.-mu)@W), re-normalise -> unit whitened rows.
@@ -100,12 +77,12 @@ class ConcatWhitener:
         cw = self._artifact
         if cw is None:
             return v
-        return l2_normalize_rows((v - cw["mu"]) @ cw["W"])
+        return l2_normalize_rows((v - cw.mu) @ cw.W)
 
     def rescale_target(self) -> float:
         """p99 rescale target for the whitened concat cosine (0.0 if the artifact is unavailable)."""
         cw = self._artifact
-        return cw["target"] if cw else 0.0
+        return cw.target if cw is not None else 0.0
 
 
 # --------------------------------------------------------------------------------------------------
@@ -142,55 +119,39 @@ def build_concat_embedding_text(
     return separator.join(_dedupe_stable(list(labels)))
 
 
-def user_skill_labels_for_concat(user: dict[str, Any]) -> list[str]:
-    """Collect user-side skill label strings from ``resolved_skills`` or ``skills_vector.top_skills``."""
-
-    out: list[str] = []
-    for s in user.get("resolved_skills") or []:
-        if isinstance(s, dict) and s.get("label"):
-            out.append(str(s["label"]))
-    if out:
-        return _dedupe_stable(out)
-    for s in (user.get("skills_vector") or {}).get("top_skills") or []:
-        if isinstance(s, dict):
-            lab = s.get("preferredLabel") or s.get("label")
-            if lab:
-                out.append(str(lab))
-    return _dedupe_stable(out)
+def user_skill_labels_for_concat(user: UserProfile) -> list[str]:
+    """The user's skill labels (``skills_vector.top_skills[].preferredLabel``), de-duplicated."""
+    return _dedupe_stable(
+        [s.preferredLabel for s in user.skills_vector.top_skills if s.preferredLabel]
+    )
 
 
-def job_skill_labels_for_concat(job: dict[str, Any]) -> list[str]:
-    """Collect job essential ∪ optional skill labels."""
-
-    out: list[str] = []
-
-    def _take(items: Any) -> None:
-        for s in items or []:
-            if isinstance(s, dict) and s.get("label"):
-                out.append(str(s["label"]))
-
-    _take(job.get("essential_skills"))
-    _take(job.get("optional_skills"))
-    return _dedupe_stable(out)
+def job_skill_labels_for_concat(item: MatchItem) -> list[str]:
+    """The item's essential ∪ optional skill labels, de-duplicated."""
+    return _dedupe_stable(
+        [s.label for s in [*item.essential_skills, *item.optional_skills] if s.label]
+    )
 
 
 def user_concat_embedding_text(
-    user: dict[str, Any],
+    user: UserProfile,
     *,
     separator: str = DEFAULT_SEPARATOR,
 ) -> str:
+    """The user's embedding text: skill labels joined by ``separator``."""
     return build_concat_embedding_text(
         user_skill_labels_for_concat(user), separator=separator
     )
 
 
 def job_concat_embedding_text(
-    job: dict[str, Any],
+    item: MatchItem,
     *,
     separator: str = DEFAULT_SEPARATOR,
 ) -> str:
+    """The item's embedding text: skill labels joined by ``separator``."""
     return build_concat_embedding_text(
-        job_skill_labels_for_concat(job), separator=separator
+        job_skill_labels_for_concat(item), separator=separator
     )
 
 
@@ -200,9 +161,8 @@ def job_concat_embedding_text(
 # Post-secondary education eligibility gate (shared by all matching endpoints).
 #
 # A job may declare ``requires_post_secondary`` (boolean) under
-# ``llm_job_attributes.attributes`` in Mongo; it is surfaced as a top-level
-# ``requires_post_secondary`` key on the flat job dict by
-# :func:`app.jobs.job_document.build_job_dict_from_ranked`.
+# ``llm_job_attributes.attributes`` in Mongo; ``build_job_from_ranked`` normalises it onto
+# ``Job.requires_post_secondary`` (occupations carry the same field).
 #
 # The user side comes from ``MatchRequest.any_post_secondary_educ`` (0/1, optional).
 #
@@ -218,84 +178,45 @@ def job_concat_embedding_text(
 # --------------------------------------------------------------------------------------------------
 
 
-def _coerce_flag(val: Any) -> bool | None:
-    """Normalise a binary flag that may arrive as bool, int (0/1), float, or string.
+def job_requires_post_secondary(item: MatchItem) -> bool:
+    """True only when the item explicitly requires post-secondary education.
 
-    Both the job side (``requires_post_secondary``) and the user side
-    (``any_post_secondary_educ``) may be stored as a boolean (``true``/``false``) OR as an
-    integer (``1``/``0``), depending on the producer. This collapses both representations:
-
-    * Returns ``True``  for ``True`` / ``1`` / ``"1"`` / ``"true"`` / ``"yes"``.
-    * Returns ``False`` for ``False`` / ``0`` / ``"0"`` / ``"false"`` / ``"no"`` / ``""``.
-    * Returns ``None`` for missing/unrecognised values (e.g. ``None`` or a stray ``2``),
-      so callers can apply their own fail-open default rather than guessing.
+    Absent / unknown (None) is "not required", so an item is never hidden for lacking the field.
+    The flag is normalised from bool / 0/1 / strings when the document is read (``parse_flag``).
     """
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, (int, float)):
-        if val == 1:
-            return True
-        if val == 0:
-            return False
-        return None
-    if isinstance(val, str):
-        s = val.strip().lower()
-        if s in ("1", "true", "yes", "y", "t"):
-            return True
-        if s in ("0", "false", "no", "n", "f", ""):
-            return False
-    return None
+    return item.requires_post_secondary is True
 
 
-def job_requires_post_secondary(job: dict[str, Any]) -> bool:
-    """True only when the job explicitly requires post-secondary education.
+def user_lacks_post_secondary(user: UserProfile) -> bool:
+    """True only when the user explicitly reported no post-secondary education (``0``).
 
-    Accepts the flag as bool or int (``true``/``1`` => requires), at the top level or nested
-    under ``attributes``. Anything else (absent / unrecognised) is treated as "not required"
-    so a job is never hidden for lacking the field.
+    ``1``, a stray value, or an omitted field (None) is not treated as lacking.
     """
-    val = job.get("requires_post_secondary")
-    if val is None:
-        attrs = job.get("attributes")
-        if isinstance(attrs, dict):
-            val = attrs.get("requires_post_secondary")
-    return _coerce_flag(val) is True
+    return user.any_post_secondary_educ == 0
 
 
-def user_lacks_post_secondary(user: dict[str, Any]) -> bool:
-    """True only when the user explicitly reported no post-secondary education.
-
-    Accepts the flag as bool or int (``false``/``0`` => lacks). A stray/unknown value or an
-    absent field is NOT treated as lacking here — but note ``MatchRequest`` defaults
-    ``any_post_secondary_educ`` to ``0``, so an omitted field becomes "lacks" after validation.
-    """
-    return _coerce_flag(user.get("any_post_secondary_educ")) is False
+def is_education_eligible(user: UserProfile, item: MatchItem) -> bool:
+    """Education gate: ineligible iff the item requires post-secondary and the user has none."""
+    return not (job_requires_post_secondary(item) and user_lacks_post_secondary(user))
 
 
-def is_education_eligible(user: dict[str, Any], job: dict[str, Any]) -> bool:
-    """Education gate: ineligible iff the job requires post-secondary and the user has none."""
-    return not (job_requires_post_secondary(job) and user_lacks_post_secondary(user))
-
-
-def filter_jobs_by_education(
-    user: dict[str, Any], jobs: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Drop jobs the user is education-ineligible for.
+def filter_jobs_by_education(user: UserProfile, items: Sequence[ItemT]) -> list[ItemT]:
+    """Drop items the user is education-ineligible for.
 
     No-op (returns a shallow copy) when the user has — or did not report lacking —
     post-secondary education, so the common path stays cheap.
     """
     if not user_lacks_post_secondary(user):
-        return list(jobs)
-    return [j for j in jobs if not job_requires_post_secondary(j)]
+        return list(items)
+    return [j for j in items if not job_requires_post_secondary(j)]
 
 
-def zqf_annotation(user_zqf, job_zqf_min):
+def zqf_annotation(
+    user_zqf: int | None, job_zqf_min: int | None
+) -> tuple[bool | None, int | None]:
     """(zqf_eligible, zqf_gap) or (None, None) when either side is missing."""
-    if user_zqf is not None and isinstance(job_zqf_min, (int, float)):
-        jmin = int(job_zqf_min)
-        ulevel = int(user_zqf)
-        return (ulevel >= jmin, abs(ulevel - jmin))
+    if user_zqf is not None and job_zqf_min is not None:
+        return (user_zqf >= job_zqf_min, abs(user_zqf - job_zqf_min))
     return (None, None)
 
 
@@ -324,11 +245,11 @@ def zqf_annotation(user_zqf, job_zqf_min):
 # --------------------------------------------------------------------------------------------------
 
 
-def _cf(s: Any) -> str:
+def _cf(s: str | None) -> str:
     """Casefold + strip, aligned with _norm / app.services.location_query._norm_loc_value."""
     if s is None:
         return ""
-    t = str(s).strip()
+    t = s.strip()
     return t.casefold() if t else ""
 
 
@@ -336,17 +257,45 @@ def _norm(v: str | None) -> str:
     return str(v).strip().casefold() if v is not None else ""
 
 
-def job_matches_user_location(job: dict[str, Any], user: dict[str, Any]) -> bool:
+class Place(DomainModel):
+    """A location as the matching rules see it: city, province and a free-text location."""
+
+    city: str = Field(default="", description="City/town; empty when unknown.")
+    province: str = Field(
+        default="", description="Province/county; empty when unknown."
+    )
+    location: str = Field(
+        default="",
+        description="Free-text location (jobs: ``city province``); empty when unknown.",
+    )
+
+    @classmethod
+    def of_item(cls, item: MatchItem) -> Place:
+        """Where a job is, or the county an occupation row applies to."""
+        return cls(city=item.city, province=item.province, location=item.location)
+
+    @classmethod
+    def of_user(cls, user: UserProfile) -> Place:
+        """Where the user is (no free-text location)."""
+        return cls(city=user.city, province=user.province)
+
+    @classmethod
+    def region(cls, name: str) -> Place:
+        """A single region name used for every field (counties, hubs)."""
+        return cls(city=name, province=name, location=name)
+
+
+def job_matches_user_location(job: Place, user: Place) -> bool:
     """Lenient location match.
     - Always matches 'Remote' jobs
     - Matches if city or province match (case-insensitive, substring)
     """
-    user_city = _norm(user.get("city"))
-    user_province = _norm(user.get("province"))
+    user_city = _norm(user.city)
+    user_province = _norm(user.province)
 
-    job_city = _norm(job.get("city"))
-    job_province = _norm(job.get("province"))
-    job_loc = _norm(job.get("location"))
+    job_city = _norm(job.city)
+    job_province = _norm(job.province)
+    job_loc = _norm(job.location)
 
     #  Always include Remote jobs
     if "remote" in job_city or "remote" in job_province or "remote" in job_loc:
@@ -372,16 +321,10 @@ def job_matches_user_location(job: dict[str, Any], user: dict[str, Any]) -> bool
     return False
 
 
-def user_matches_any_county(user: dict[str, Any], counties: list[str]) -> bool:
+def user_matches_any_county(user: UserProfile, counties: Sequence[str]) -> bool:
     """True if the user's location matches at least one of the given occupation counties."""
-    for c in counties:
-        if job_matches_user_location({"city": c, "province": c, "location": c}, user):
-            return True
-    return False
-
-
-def _job_matches(job: dict[str, Any], region_user: dict[str, Any]) -> bool:
-    return job_matches_user_location(job, region_user)
+    where = Place.of_user(user)
+    return any(job_matches_user_location(Place.region(c), where) for c in counties)
 
 
 class HubChains:
@@ -426,7 +369,7 @@ class HubChains:
 
     def tier_factor_for_job(
         self,
-        job: dict[str, Any],
+        job: Place,
         county_cf: str,
         *,
         w_regional: float,
@@ -444,8 +387,7 @@ class HubChains:
             return 1.0  # no chain (unknown national hub) -> don't penalise; degrade to neutral
         local = chain[0]
         for region in chain:
-            ruser = {"city": region, "province": region, "location": region}
-            if _job_matches(job, ruser):
+            if job_matches_user_location(job, Place.region(region)):
                 if region == local:
                     return 1.0
                 if region == self.national:
@@ -467,21 +409,24 @@ class Stage1Corpus(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    rows: SkipValidation[list[dict[str, Any]]]
-    """Items with a stage-1 vector (their vector fields are stripped in place). Not validated, so
-    these are the caller's own dicts rather than copies."""
-
-    n_loaded: int
-    """Items passed in, with or without a vector."""
-
-    matrix: np.ndarray = Field(default_factory=lambda: np.zeros((0, 0)))
-    """Raw stacked vectors (float64)."""
-
-    normalized: np.ndarray = Field(default_factory=lambda: np.zeros((0, 0)))
-    """L2-normalised ``matrix`` (float64)."""
-
-    ids: list[str] = Field(default_factory=list)
-    requires_post_secondary: list[bool] = Field(default_factory=list)
+    rows: SkipValidation[list[MatchItem]] = Field(
+        description="Items with a stage-1 vector, in input order (the caller's own objects)."
+    )
+    n_loaded: int = Field(description="Items passed in, with or without a vector.")
+    matrix: np.ndarray = Field(
+        default_factory=lambda: np.zeros((0, 0)),
+        description="Raw stacked vectors (float64).",
+    )
+    normalized: np.ndarray = Field(
+        default_factory=lambda: np.zeros((0, 0)),
+        description="L2-normalised ``matrix`` (float64).",
+    )
+    ids: list[str] = Field(
+        default_factory=list, description="Item uuids, aligned with ``rows``."
+    )
+    requires_post_secondary: list[bool] = Field(
+        default_factory=list, description="Education-gate flags, aligned with ``rows``."
+    )
 
 
 def _sorted_indices_desc(sim_row: np.ndarray) -> np.ndarray:
@@ -492,9 +437,9 @@ class IStage1Retriever(ABC):
     """Interface for the stage-1 shortlist."""
 
     @abstractmethod
-    def prepare(self, items: list[dict[str, Any]]) -> Stage1Corpus:
+    def prepare(self, items: Sequence[MatchItem]) -> Stage1Corpus:
         """
-        Collects the items that carry a stage-1 vector and strips the vectors off those dicts.
+        Collects the items that carry a stage-1 vector.
 
         :param items: Jobs or occupation rows
         :return: The aligned corpus (``rows`` empty when no item has a vector)
@@ -504,7 +449,7 @@ class IStage1Retriever(ABC):
     @abstractmethod
     def shortlist(
         self,
-        users: list[dict[str, Any]],
+        users: Sequence[UserProfile],
         corpus: Stage1Corpus,
         user_unit_vectors: np.ndarray,
         *,
@@ -514,61 +459,59 @@ class IStage1Retriever(ABC):
         hub_chains: HubChains | None = None,
         w_regional: float = 1.0,
         w_national: float = 1.0,
-    ) -> list[list[dict[str, Any]]]:
+    ) -> list[list[Candidate]]:
         """
         Ranks the corpus per user and keeps the top ``retrieve_top_k`` eligible rows.
 
         :param users: The users, aligned with ``user_unit_vectors``
         :param corpus: A non-empty corpus from ``prepare``
         :param user_unit_vectors: L2-normalised user embeddings ``[n_users, dim]``
-        :param matcher: Per-skill matcher whose ``score_pair`` detail is attached to each row
+        :param matcher: Per-skill matcher whose ``score_pair`` detail is attached to each candidate
         :param whitener: Concat whitening (a no-op when its artifact is unavailable)
         :param retrieve_top_k: Shortlist size per user
         :param hub_chains: Location tiers to weight the ranking by, or None to skip tiering
-        :return: One shortlist (cosine-ranked rows) per user
+        :param w_regional: Tier weight of a regional hub
+        :param w_national: Tier weight of the national hub
+        :return: One cosine-ranked shortlist per user
         """
         raise NotImplementedError()
 
 
 class Stage1Retriever(IStage1Retriever):
+    """Whitened concat-cosine shortlist with the education gate and optional location tiers."""
+
     def __init__(self, *, embedding_dim: int):
         self._embedding_dim = embedding_dim
 
-    def prepare(self, items: list[dict[str, Any]]) -> Stage1Corpus:
-        job_rows: list[dict[str, Any]] = []
+    def prepare(self, items: Sequence[MatchItem]) -> Stage1Corpus:
+        rows: list[MatchItem] = []
         vectors: list[np.ndarray] = []
-        for j in items:
-            v = stage1_vector(j, dim=self._embedding_dim)
+        for item in items:
+            v = stage1_vector(item, dim=self._embedding_dim)
             if v is None:
                 continue
-            job_rows.append(j)
+            rows.append(item)
             vectors.append(v)
 
-        for j in job_rows:
-            j.pop("concat_skill_embedding_gemini", None)
-            j.pop("job_embedding", None)
-
-        # Post-secondary education gate: aligned with job_rows, used to skip candidates per user.
-        job_requires_ps = [job_requires_post_secondary(j) for j in job_rows]
-
         corpus = Stage1Corpus(
-            rows=job_rows,
+            rows=rows,
             n_loaded=len(items),
-            requires_post_secondary=job_requires_ps,
+            # Post-secondary education gate: aligned with rows, used to skip candidates per user.
+            requires_post_secondary=[job_requires_post_secondary(j) for j in rows],
         )
-        if not job_rows:
+        if not rows:
             return corpus
 
         corpus.matrix = np.stack(vectors, axis=0).astype(np.float64)
         corpus.normalized = l2_normalize_rows(corpus.matrix.astype(np.float32)).astype(
             np.float64
         )
-        corpus.ids = [str(j.get("uuid") or "") for j in job_rows]
+        corpus.ids = [j.uuid for j in rows]
         return corpus
 
     def shortlist(
         self,
-        users: list[dict[str, Any]],
+        users: Sequence[UserProfile],
         corpus: Stage1Corpus,
         user_unit_vectors: np.ndarray,
         *,
@@ -578,12 +521,11 @@ class Stage1Retriever(IStage1Retriever):
         hub_chains: HubChains | None = None,
         w_regional: float = 1.0,
         w_national: float = 1.0,
-    ) -> list[list[dict[str, Any]]]:
+    ) -> list[list[Candidate]]:
         rt = max(1, int(retrieve_top_k))
-        job_rows = corpus.rows
+        rows = corpus.rows
         j_mat = corpus.matrix
         j_norm = corpus.normalized
-        jid_list = corpus.ids
         job_requires_ps = corpus.requires_post_secondary
         u_norm = user_unit_vectors
 
@@ -593,35 +535,35 @@ class Stage1Retriever(IStage1Retriever):
         # as-is; RAW vectors (occupations, offline, not-yet-whitened jobs) are whitened in-process once
         # (numerically identical to the DB result — same artifact). When the artifact is unavailable
         # (target==0) we fall back to the legacy raw cosine and log loudly (DB-whitened jobs degrade).
-        _whiten_target = whitener.rescale_target()
-        if _whiten_target > 0:
+        if whitener.rescale_target() > 0:
             j_used = j_norm.copy()
-            raw_idx = [k for k, jr in enumerate(job_rows) if not is_prewhitened(jr)]
+            raw_idx = [k for k, jr in enumerate(rows) if not is_prewhitened(jr)]
             if raw_idx:
                 j_used[raw_idx] = whitener.whiten_rows(j_mat[raw_idx])
             u_used = whitener.whiten_rows(u_norm)
         else:
-            if any(is_prewhitened(jr) for jr in job_rows):
+            if any(is_prewhitened(jr) for jr in rows):
                 logger.error(
                     "concat whitening artifact unavailable but DB job_embedding is whitened; stage-1 "
                     "cosine will be raw-user vs whitened-job (degraded). Ship concat_whitening_gemini.npz."
                 )
             j_used, u_used = j_norm, u_norm
 
-        shortlists: list[list[dict[str, Any]]] = []
+        places = [Place.of_item(jr) for jr in rows] if hub_chains is not None else []
+        shortlists: list[list[Candidate]] = []
         for i, user in enumerate(users):
             sim_row = (u_used[i : i + 1] @ j_used.T).reshape(-1)
             # Location-tier weighting of the stage-1 ranking (urban-pull). Rank by cosine * tier so local
             # jobs are favoured for the shortlist; keep the RAW cosine for the stored similarity downstream.
             loc_tier_vec = None
             if hub_chains is not None:
-                county = user.get("province") or user.get("city") or ""
+                county = user.province or user.city or ""
                 loc_tier_vec = np.array(
                     [
                         hub_chains.tier_factor_for_job(
-                            jr, county, w_regional=w_regional, w_national=w_national
+                            p, county, w_regional=w_regional, w_national=w_national
                         )
-                        for jr in job_rows
+                        for p in places
                     ],
                     dtype=float,
                 )
@@ -631,37 +573,23 @@ class Stage1Retriever(IStage1Retriever):
             order = _sorted_indices_desc(rank_row)
             user_no_ps = user_lacks_post_secondary(user)
 
-            cosine_recs: list[dict[str, Any]] = []
+            candidates: list[Candidate] = []
             for ji in order:
-                if user_no_ps and job_requires_ps[int(ji)]:
+                ji = int(ji)
+                if user_no_ps and job_requires_ps[ji]:
                     continue  # job requires post-secondary education the user does not have
-                if loc_tier_vec is not None and loc_tier_vec[int(ji)] <= 0.0:
+                if loc_tier_vec is not None and loc_tier_vec[ji] <= 0.0:
                     continue  # off-chain location for this user: excluded at retrieval
-                jid = jid_list[int(ji)]
-                job_obj = job_rows[int(ji)]
-                job_plain = strip_vectors(job_obj)
-                concat_sim = float(sim_row[int(ji)])
-                detail = matcher.score_pair(user, job_plain)
-                detail = dict(detail)
-                detail["concat_cosine_similarity"] = round(concat_sim, 6)
-                detail["mean_best_cosine"] = round(concat_sim, 4)
-                detail["min_best_cosine"] = round(concat_sim, 4)
-
-                cosine_recs.append(
-                    {
-                        "rank": len(cosine_recs) + 1,
-                        "job_uuid": jid,
-                        "job_title": job_plain.get("opportunity_title"),
-                        "employer": job_plain.get("employer"),
-                        "location": job_plain.get("location"),
-                        **detail,
-                    }
+                item = rows[ji]
+                candidates.append(
+                    Candidate(
+                        item=item,
+                        rank=len(candidates) + 1,
+                        concat_cosine_similarity=round(float(sim_row[ji]), 6),
+                        per_job_skill=matcher.score_pair(user, item).per_job_skill,
+                    )
                 )
-                if len(cosine_recs) >= rt:
+                if len(candidates) >= rt:
                     break
-
-            for r_i, row in enumerate(cosine_recs, start=1):
-                row["rank"] = r_i
-
-            shortlists.append(cosine_recs)
+            shortlists.append(candidates)
         return shortlists

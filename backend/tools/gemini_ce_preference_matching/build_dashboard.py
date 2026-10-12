@@ -17,13 +17,15 @@ from __future__ import annotations
 
 import argparse
 import base64
-import json
 from pathlib import Path
-from typing import Any, Dict, List
+from pydantic import BaseModel, Field
 
-from app.ranking.scoring import (
-    preference_details_for_dashboard,
-    work_activity_match_for_dashboard,
+from tools.gemini_ce_preference_matching.run_matching import (
+    CeRow,
+    PreferenceFactor,
+    PreferenceRow,
+    PreferenceRunResult,
+    UserBwsSummary,
 )
 
 SCRIPT_NAME = "app.services.gemini_ce_preference_matching.build_dashboard"
@@ -109,95 +111,89 @@ _HTML_STYLE = """
 """
 
 
-def _compact_row(raw: Dict[str, Any], *, include_uxp: bool) -> Dict[str, Any]:
-    sb = raw.get("score_breakdown") or {}
-    row: Dict[str, Any] = {
-        "rank": raw.get("rank"),
-        "job_uuid": str(raw.get("job_uuid") or ""),
-        "job_title": raw.get("job_title"),
-        "employer": raw.get("employer"),
-        "location": raw.get("location"),
-        "concat_cosine_similarity": raw.get("concat_cosine_similarity"),
-        "cross_encoder_logit": raw.get("cross_encoder_logit"),
-        "rank_cosine": raw.get("rank_cosine"),
-        "job_concat_skills": list(raw.get("job_concat_skills") or []),
-    }
-    if include_uxp:
-        row["u_hat"] = (
-            raw.get("u_hat") if raw.get("u_hat") is not None else sb.get("u_hat")
-        )
-        row["p_hat"] = (
-            raw.get("p_hat") if raw.get("p_hat") is not None else sb.get("p_hat")
-        )
-        row["final_score"] = (
-            raw.get("final_score")
-            if raw.get("final_score") is not None
-            else sb.get("final_score")
-        )
-        row["rank_cross_encoder"] = raw.get("rank_cross_encoder")
-        details = raw.get("preference_details") or raw.get("preference_match_rows")
-        row["pref_match"] = preference_details_for_dashboard(details)
-        row["wa_match"] = work_activity_match_for_dashboard(details)
-        if raw.get("work_activity_match"):
-            row["wa_match"] = raw.get("work_activity_match")
-        row["S_attrs"] = raw.get("S_attrs")
-        row["S_wa"] = raw.get("S_wa")
-    return row
+class DashboardMeta(BaseModel):
+    """Header facts shown on the dashboard."""
+
+    brand: str = Field(description="Page title.")
+    n_users: int = Field(description="Users.")
+    n_jobs: int = Field(description="Jobs.")
+    rows_per_column: int = Field(description="Rows per column.")
+    final_formula: str = Field(description="Final-score formula.")
+    preference_scorer_mode: str = Field(description="Scorer mode.")
+    preference_module: str = Field(description="Scorer class path.")
+    stage1_scorer: str | None = Field(default=None, description="Stage-1 method.")
+    stage3_variants: list[str] | None = Field(
+        default=None, description="Stage-3 columns."
+    )
+    cross_encoder_model: str = Field(description="Cross-encoder checkpoint.")
 
 
-def build_dual_payload(results: Dict[str, Any], *, top_k: int) -> Dict[str, Any]:
-    cfg = results.get("config") or {}
-    users_out: List[Dict[str, Any]] = []
-    for r in results.get("results") or []:
-        if not isinstance(r, dict):
-            continue
-        uid = str(r.get("user_id") or "").strip()
-        user_skills = list(
-            r.get("user_concat_skills") or r.get("resolved_user_skill_labels") or []
-        )
-        ce_rows = [
-            _compact_row(row, include_uxp=False)
-            for row in (r.get("cross_encoder_recommendations") or [])[:top_k]
-            if isinstance(row, dict)
-        ]
-        uxp_rows = [
-            _compact_row(row, include_uxp=True)
-            for row in (r.get("recommendations") or [])[:top_k]
-            if isinstance(row, dict)
-        ]
-        users_out.append(
-            {
-                "uid": uid,
-                "city": r.get("city"),
-                "prov": r.get("province"),
-                "user_skills": user_skills,
-                "has_skills": bool(r.get("has_user_skills", len(user_skills) > 0)),
-                "skip_reason": r.get("skip_reason"),
-                "user_prefs": list(r.get("user_preference_factors") or []),
-                "user_bws": r.get("user_bws") or {"has_bws": False, "rows": []},
-                "ce_final": ce_rows,
-                "uxp": uxp_rows,
-            }
-        )
-    return {
-        "meta": {
-            "brand": BRAND,
-            "n_users": len(users_out),
-            "n_jobs": results.get("n_jobs"),
-            "rows_per_column": top_k,
-            "final_formula": cfg.get("final_formula") or "u_hat * p_hat",
-            "preference_scorer_mode": cfg.get("preference_scorer_mode"),
-            "preference_module": cfg.get("preference_module"),
-            "stage1_scorer": cfg.get("stage1_scorer"),
-            "cross_encoder_model": cfg.get("cross_encoder_model"),
-        },
-        "topN_default": top_k,
-        "users": users_out,
-    }
+class DualUser(BaseModel):
+    """One user of the two-column dashboard."""
+
+    uid: str = Field(description="User id.")
+    city: str = Field(description="City.")
+    prov: str = Field(description="Province.")
+    user_skills: list[str] = Field(description="Concat skill labels.")
+    has_skills: bool = Field(description="The user has skill labels.")
+    user_prefs: list[PreferenceFactor] = Field(description="Preference weights.")
+    user_bws: UserBwsSummary = Field(description="BWS summary.")
+    ce_final: list[CeRow] = Field(description="Column 1: CE order.")
+    uxp: list[PreferenceRow] = Field(description="Column 2: u_hat × p_hat order.")
 
 
-def _b64_utf8(obj: Dict[str, Any]) -> str:
-    raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+class DualPayload(BaseModel):
+    """The JSON embedded in the two-column dashboard."""
+
+    meta: DashboardMeta = Field(description="Header facts.")
+    topN_default: int = Field(description="Default rows per column.")
+    users: list[DualUser] = Field(description="Users.")
+
+
+def dashboard_meta(
+    results: PreferenceRunResult, *, brand: str, n_users: int, top_k: int
+) -> DashboardMeta:
+    """Header facts from a run's config."""
+    cfg = results.config
+    return DashboardMeta(
+        brand=brand,
+        n_users=n_users,
+        n_jobs=results.n_jobs,
+        rows_per_column=top_k,
+        final_formula=cfg.final_formula or "u_hat * p_hat",
+        preference_scorer_mode=cfg.preference_scorer_mode,
+        preference_module=cfg.preference_module,
+        stage1_scorer=cfg.stage1_scorer,
+        stage3_variants=cfg.stage3_variants,
+        cross_encoder_model=cfg.cross_encoder_model,
+    )
+
+
+def build_dual_payload(results: PreferenceRunResult, *, top_k: int) -> DualPayload:
+    """The two-column dashboard payload (CE order vs u_hat × p_hat order)."""
+    users_out = [
+        DualUser(
+            uid=(r.user_id or "").strip(),
+            city=r.city,
+            prov=r.province,
+            user_skills=r.user_concat_skills,
+            has_skills=r.has_user_skills,
+            user_prefs=r.user_preference_factors,
+            user_bws=r.user_bws,
+            ce_final=r.cross_encoder_recommendations[:top_k],
+            uxp=r.recommendations[:top_k],
+        )
+        for r in results.results
+    ]
+    return DualPayload(
+        meta=dashboard_meta(results, brand=BRAND, n_users=len(users_out), top_k=top_k),
+        topN_default=top_k,
+        users=users_out,
+    )
+
+
+def _b64_utf8(obj: BaseModel) -> str:
+    raw = obj.model_dump_json().encode("utf-8")
     return base64.standard_b64encode(raw).decode("ascii")
 
 
@@ -494,7 +490,8 @@ def render_dual_page(b64: str) -> str:
 """
 
 
-def build_html(payload: Dict[str, Any], *, top_k: int = 50) -> str:
+def build_html(payload: PreferenceRunResult, *, top_k: int = 50) -> str:
+    """The dashboard HTML for a run."""
     dual = build_dual_payload(payload, top_k=top_k)
     return render_dual_page(_b64_utf8(dual))
 
@@ -506,9 +503,8 @@ def main() -> int:
     p.add_argument("--top-k", type=int, default=None)
     args = p.parse_args()
 
-    payload = json.loads(args.input.read_text(encoding="utf-8"))
-    cfg = payload.get("config") or {}
-    top_k = args.top_k if args.top_k is not None else int(cfg.get("final_top_k") or 50)
+    payload = PreferenceRunResult.model_validate_json(args.input.read_bytes())
+    top_k = args.top_k if args.top_k is not None else payload.config.final_top_k or 50
     top_k = max(1, min(500, top_k))
 
     html = build_html(payload, top_k=top_k)
