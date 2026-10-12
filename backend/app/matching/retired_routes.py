@@ -7,7 +7,7 @@ as they were when retired.
 import asyncio
 import logging
 import time
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Dict, List, Optional
 
 from fastapi import Body, Depends, HTTPException, Query
 
@@ -21,6 +21,9 @@ from app.config import (
     MATCH_V4_FINAL_TOP_K,
     MATCH_V4_RETRIEVE_TOP_K,
 )
+from app.domain.job import Job
+from app.domain.occupation import Occupation
+from app.domain.user import UserProfile
 from app.jobs.get_jobs_repository import get_jobs_repository
 from app.jobs.repository import IJobsRepository
 from app.match_timing_log import log_match_step
@@ -32,6 +35,7 @@ from app.matching.examples import (
 from app.matching.get_matching_service import get_matching_service
 from app.matching.service import IMatchingService, _retrieval_trace_meta
 from app.occupations.loader import (
+    OccupationsLoadTiming,
     attach_occupation_embeddings,
     get_all_occupations_with_timing,
 )
@@ -42,6 +46,11 @@ from app.schemas import (
     MatchResponse,
     MatchResponseV5,
     MatchV2JobRecommendation,
+    OpportunityRecommendationV5,
+)
+from app.services.hybrid_scoring.run_bm25_cosine_hybrid import (
+    HybridFusedRow,
+    HybridRunResult,
 )
 from app.services.job_retrieval import retrieve_jobs_with_timing
 from app.services.match_v2_full_service import run_match_v2_full
@@ -55,69 +64,59 @@ def _ms(t0: float) -> float:
     return (time.perf_counter() - t0) * 1000.0
 
 
-async def _load_v4_occupations():
+async def _load_v4_occupations() -> tuple[
+    list[Occupation], OccupationsLoadTiming | None
+]:
     """Occupation corpus (+ concat embeddings) for the v4 engine, as ``(rows, timing)``.
 
-    Returns ``([], {})`` without touching disk or the embedding cache when
+    Returns ``([], None)`` without touching disk or the embedding cache when
     ``MATCH_V4_DISABLE_OCCUPATIONS`` is set — the v4/v5 routes are the only occupation consumers of
     this corpus, so the flag must short-circuit the load too, not just the response rows.
     """
     if MATCH_V4_DISABLE_OCCUPATIONS:
-        return [], {}
+        return [], None
     occ, timing = await get_all_occupations_with_timing()
     return attach_occupation_embeddings(occ), timing
 
 
-def _jobs_by_uuid(job_list: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    out: Dict[str, Dict[str, Any]] = {}
-    for job in job_list:
-        uid = str(job.get("uuid") or job.get("_id") or "")
-        if uid:
-            out[uid] = job
-    return out
+def _jobs_by_uuid(job_list: List[Job]) -> Dict[str, Job]:
+    return {job.uuid: job for job in job_list if job.uuid}
 
 
 def _fused_rows_to_match_v2_jobs(
-    fused_rows: List[Dict[str, Any]],
-    job_index: Dict[str, Dict[str, Any]],
+    fused_rows: List[HybridFusedRow],
+    job_index: Dict[str, Job],
 ) -> List[MatchV2JobRecommendation]:
     recs: List[MatchV2JobRecommendation] = []
     for row in fused_rows:
-        ju = str(row.get("job_uuid") or "")
-        jb = job_index.get(ju) or {}
-        url = jb.get("url") or jb.get("URL")
-        fs = row.get("fusion_score")
-        if fs is None:
-            fs = row.get("weighted_minmax_fusion") or 0.0
+        jb = job_index.get(row.job_uuid)
         recs.append(
             MatchV2JobRecommendation(
-                rank=int(row.get("rank") or 0),
-                job_uuid=ju,
-                opportunity_title=str(row.get("job_title") or ""),
-                employer=row.get("employer"),
-                location=row.get("location"),
-                URL=url,
-                fusion_score=float(fs),
-                bm25_norm_within_candidates=row.get("bm25_norm_within_candidates"),
-                cos_norm_within_candidates=row.get("cos_norm_within_candidates"),
-                mean_best_cosine_raw=row.get("mean_best_cosine_raw"),
-                bm25_score_raw=row.get("bm25_score_raw"),
-                matched_skills=[str(x) for x in (row.get("matched_skills") or [])],
-                matched_skills_cosine=[
-                    str(x) for x in (row.get("matched_skills_cosine") or [])
-                ],
+                rank=row.rank,
+                job_uuid=row.job_uuid,
+                opportunity_title=row.job_title,
+                employer=row.employer,
+                location=row.location,
+                URL=jb.url if jb else None,
+                fusion_score=row.fusion_score,
+                bm25_norm_within_candidates=row.bm25_norm_within_candidates,
+                cos_norm_within_candidates=row.cos_norm_within_candidates,
+                mean_best_cosine_raw=row.mean_best_cosine_raw,
+                bm25_score_raw=row.bm25_score_raw,
+                matched_skills=row.matched_skills,
+                matched_skills_cosine=row.matched_skills_cosine,
             )
         )
     return recs
 
 
 def _execute_hybrid_http(
-    users: List[Dict[str, Any]],
-    jobs: List[Dict[str, Any]],
+    users: List[UserProfile],
+    jobs: List[Job],
     *,
     fusion_top_k: int,
     alpha_on_cosine: float,
-) -> Dict[str, Any]:
+) -> HybridRunResult:
     from app.services.hybrid_scoring.run_bm25_cosine_hybrid import (
         hybrid_match_users_with_jobs,
     )
@@ -144,7 +143,7 @@ async def match_legacy(
         # One Mongo + one occupation load per request; run each user in a thread pool
         # (CPU-bound scoring) so concurrent requests are not stuck behind one GIL.
         t_req = time.perf_counter()
-        users = [u.model_dump() for u in payload]
+        users = [UserProfile.from_request(u) for u in payload]
         n_users = len(users)
         observability.set_request_users(users)
 
@@ -248,7 +247,7 @@ async def match_v2(
                 status_code=400, detail="Request body must be a non-empty JSON array."
             )
 
-        users = [u.model_dump() for u in payload]
+        users = [UserProfile.from_request(u) for u in payload]
         n_users = len(users)
         fk = fusion_top_k if fusion_top_k is not None else MATCH_V2_HYBRID_TOP_K
 
@@ -280,7 +279,7 @@ async def match_v2(
         fetch_wall_ms = _ms(t_fetch)
 
         t_score = time.perf_counter()
-        raw = await asyncio.to_thread(
+        out: List[MatchResponse] = await asyncio.to_thread(
             run_match_v2_full,
             users,
             jobs,
@@ -292,9 +291,6 @@ async def match_v2(
             else MATCH_TOP_K_SKILL_GAPS,
         )
         score_ms = _ms(t_score)
-
-        with observability.stage("formatting", step="response_model"):
-            out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
 
         log_match_step(
             "http /experiments/v2/match",
@@ -390,7 +386,7 @@ async def match_v3(
                 status_code=400, detail="Request body must be a non-empty JSON array."
             )
 
-        users = [u.model_dump() for u in payload]
+        users = [UserProfile.from_request(u) for u in payload]
         rt = (
             retrieve_top_k
             if retrieve_top_k is not None
@@ -415,7 +411,7 @@ async def match_v3(
         fetch_wall_ms = _ms(t_fetch)
 
         t_score = time.perf_counter()
-        raw = await asyncio.to_thread(
+        out: List[MatchResponse] = await asyncio.to_thread(
             run_match_v3_full,
             users,
             jobs,
@@ -428,9 +424,6 @@ async def match_v3(
             matching_service=matching_service,
         )
         score_ms = _ms(t_score)
-
-        with observability.stage("formatting", step="response_model"):
-            out: List[MatchResponse] = [MatchResponse(**row) for row in raw]
 
         log_match_step(
             "http /experiments/v3/match",
@@ -519,7 +512,7 @@ async def match_v5(
                 status_code=400, detail="Request body must be a non-empty JSON array."
             )
 
-        users = [u.model_dump() for u in payload]
+        users = [UserProfile.from_request(u) for u in payload]
         rt = retrieve_top_k if retrieve_top_k is not None else MATCH_V4_RETRIEVE_TOP_K
         ft = final_top_k if final_top_k is not None else MATCH_V4_FINAL_TOP_K
         combiner = (final_score_combiner or "").strip().lower() or None
@@ -552,7 +545,7 @@ async def match_v5(
         job_uuid_index = _jobs_by_uuid(jobs)
 
         t_score = time.perf_counter()
-        raw = await asyncio.to_thread(
+        responses: List[MatchResponse] = await asyncio.to_thread(
             matching_service.rank,
             users,
             jobs,
@@ -570,18 +563,31 @@ async def match_v5(
         with observability.stage(
             "formatting", step="zqf_annotation_and_response_model"
         ):
-            for row, user in zip(raw, users):
-                user_zqf = user.get("zqf_level")
-                for opp in row.get("opportunity_recommendations") or []:
-                    job = job_uuid_index.get(str(opp.get("uuid") or ""))
-                    job_zqf_min = job.get("zqf_min") if job else None
-                    eligible, gap = zqf_annotation(user_zqf, job_zqf_min)
-                    opp["zqf_eligible"] = eligible
-                    opp["zqf_gap"] = gap
-                    opp["zqf_min_label"] = job.get("zqf_min_label") if job else None
-                    opp["zqf_max_label"] = job.get("zqf_max_label") if job else None
-
-            out: List[MatchResponseV5] = [MatchResponseV5(**row) for row in raw]
+            out: List[MatchResponseV5] = []
+            for response, user in zip(responses, users):
+                opportunities: List[OpportunityRecommendationV5] = []
+                for opp in response.opportunity_recommendations:
+                    job = job_uuid_index.get(opp.uuid)
+                    eligible, gap = zqf_annotation(
+                        user.zqf_level, job.zqf_min if job else None
+                    )
+                    opportunities.append(
+                        OpportunityRecommendationV5(
+                            **dict(opp),
+                            zqf_eligible=eligible,
+                            zqf_gap=gap,
+                            zqf_min_label=job.zqf_min_label if job else None,
+                            zqf_max_label=job.zqf_max_label if job else None,
+                        )
+                    )
+                out.append(
+                    MatchResponseV5(
+                        user_id=response.user_id,
+                        occupation_recommendations=response.occupation_recommendations,
+                        opportunity_recommendations=opportunities,
+                        skill_gap_recommendations=response.skill_gap_recommendations,
+                    )
+                )
 
         log_match_step(
             "http /experiments/v5/match",

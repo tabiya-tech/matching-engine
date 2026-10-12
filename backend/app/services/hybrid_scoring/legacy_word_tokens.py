@@ -21,6 +21,11 @@ from __future__ import annotations
 import re
 from typing import Iterable, List, Tuple
 
+from app.domain.job import Job
+from app.domain.skills import SkillReference
+from app.domain.user import UserProfile
+from app.ranking.types import MatchItem
+
 # Conservative English stopword list (matches the original tokeniser).
 from app.config import stopwords as config_stopwords
 from app.languages import CANONICAL_LANGUAGE, default_language, normalise_language
@@ -120,36 +125,23 @@ def tokenize(
 # ---------------------------------------------------------------------------
 
 
-def _user_skill_labels(user: dict) -> List[str]:
-    """Pull skill labels from a raw or pre-resolved user record."""
-    out: List[str] = []
-    for s in user.get("resolved_skills") or []:
-        if isinstance(s, dict):
-            lab = s.get("label")
-            if lab:
-                out.append(str(lab))
-    if out:
-        return out
-    for s in (user.get("skills_vector") or {}).get("top_skills") or []:
-        if isinstance(s, dict):
-            lab = s.get("preferredLabel") or s.get("label")
-            if lab:
-                out.append(str(lab))
-    return out
+def _user_skill_labels(user: UserProfile) -> List[str]:
+    """The user's skill labels."""
+    return [s.preferredLabel for s in user.skills_vector.top_skills if s.preferredLabel]
 
 
-def user_query_string(user: dict, *, include_programme: bool = True) -> str:
-    """Concatenate textual fields used as the v1 BM25 query."""
-    parts: List[str] = list(_user_skill_labels(user))
-    if include_programme:
-        for k in ("programme_name", "institution_name", "school_year"):
-            v = user.get(k)
-            if v:
-                parts.append(str(v))
-    return " ".join(parts)
+def user_query_string(user: UserProfile, *, include_programme: bool = True) -> str:
+    """The user's skill labels joined as the v1 BM25 query.
+
+    ``include_programme`` has no effect: ``UserProfile`` has no programme fields.
+    """
+    return " ".join(_user_skill_labels(user))
 
 
-def user_query_tokens(user: dict, *, include_programme: bool = True) -> List[str]:
+def user_query_tokens(
+    user: UserProfile, *, include_programme: bool = True
+) -> List[str]:
+    """Word tokens of :func:`user_query_string`."""
     return tokenize(user_query_string(user, include_programme=include_programme))
 
 
@@ -158,40 +150,33 @@ def user_query_tokens(user: dict, *, include_programme: bool = True) -> List[str
 # ---------------------------------------------------------------------------
 
 
-def _skill_labels(items) -> List[str]:
-    out: List[str] = []
-    for s in items or []:
-        if isinstance(s, dict):
-            lab = s.get("label")
-            if lab:
-                out.append(str(lab))
-    return out
+def _skill_labels(items: Iterable[SkillReference]) -> List[str]:
+    return [s.label for s in items if s.label]
 
 
-def job_skills_text(job: dict) -> str:
+def job_skills_text(job: MatchItem) -> str:
     """Essential + optional labels joined as one string."""
     return " ".join(
-        _skill_labels(job.get("essential_skills"))
-        + _skill_labels(job.get("optional_skills"))
+        _skill_labels(job.essential_skills) + _skill_labels(job.optional_skills)
     )
 
 
-def job_full_text(job: dict, *, description_chars: int = 20000) -> str:
+def job_full_text(job: MatchItem, *, description_chars: int = 20000) -> str:
     """Title + employer + location + skill labels + description (combined doc)."""
     parts: List[str] = [
-        str(job.get("opportunity_title") or ""),
-        str(job.get("employer") or ""),
-        str(job.get("location") or ""),
+        job.title,
+        (job.employer if isinstance(job, Job) else None) or "",
+        job.location,
         job_skills_text(job),
     ]
-    desc = job.get("opportunity_description") or ""
+    desc = job.opportunity_description if isinstance(job, Job) else job.description
     if desc:
-        parts.append(str(desc)[:description_chars])
+        parts.append(desc[:description_chars])
     return " ".join(p for p in parts if p)
 
 
 def build_corpora(
-    jobs: Iterable[dict],
+    jobs: Iterable[MatchItem],
 ) -> Tuple[List[List[str]], List[List[str]]]:
     """Return ``(skills_only_tokens_per_job, full_tokens_per_job)`` (word mode)."""
     skills_corpus: List[List[str]] = []

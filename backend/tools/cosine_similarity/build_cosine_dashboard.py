@@ -16,85 +16,84 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
+
+from app.services.cosine_similarity.run_cosine_matching import (
+    CosineRecommendation,
+    CosineRunResult,
+    CosineUserResult,
+)
+
+# The page's embedded JSON (short keys read by the inline script); built from the typed run.
+CompactRow = dict[str, object]
 
 
-def _compact_rec(raw: Dict[str, Any], *, max_rows: int) -> Dict[str, Any]:
-    pj_in = raw.get("per_job_skill") or []
-    rows: List[Dict[str, str]] = []
-    for row in pj_in[:max_rows]:
-        if not isinstance(row, dict):
-            continue
-        rows.append(
-            {
-                "jl": str(row.get("job_skill_label") or "")[:180],
-                "ul": str(row.get("best_user_skill_label") or "")[:180],
-                "c": float(row.get("cosine_similarity") or 0.0),
-            }
-        )
-    full_n = len(pj_in)
+def _compact_rec(rec: CosineRecommendation, *, max_rows: int) -> CompactRow:
     return {
-        "r": raw.get("rank"),
-        "uuid": str(raw.get("job_uuid") or ""),
-        "t": str(raw.get("job_title") or "")[:280],
-        "e": str(raw.get("employer") or "")[:180],
-        "l": str(raw.get("location") or "")[:200],
-        "s": float(raw.get("mean_best_cosine") or 0.0),
-        "mn": float(raw.get("min_best_cosine") or 0.0),
-        "nu": int(raw.get("n_user_skills_embedded") or 0),
-        "nj": int(raw.get("n_job_skills_embedded") or 0),
-        "pj": rows,
-        "n_pj": full_n,
-        "pj_trunc": full_n > max_rows,
+        "r": rec.rank,
+        "uuid": rec.job_uuid,
+        "t": rec.job_title[:280],
+        "e": (rec.employer or "")[:180],
+        "l": rec.location[:200],
+        "s": rec.mean_best_cosine,
+        "mn": rec.min_best_cosine,
+        "nu": rec.n_user_skills_embedded,
+        "nj": rec.n_job_skills_embedded,
+        "pj": [
+            {
+                "jl": (row.job_skill_label or "")[:180],
+                "ul": (row.best_user_skill_label or "")[:180],
+                "c": row.cosine_similarity,
+            }
+            for row in rec.per_job_skill[:max_rows]
+        ],
+        "n_pj": len(rec.per_job_skill),
+        "pj_trunc": len(rec.per_job_skill) > max_rows,
     }
 
 
 def _compact_user(
-    row: Dict[str, Any], *, max_rows: int, max_labels: int
-) -> Dict[str, Any]:
-    labs = [str(x) for x in (row.get("resolved_user_skill_labels") or [])]
+    row: CosineUserResult, *, max_rows: int, max_labels: int
+) -> CompactRow:
+    labs = row.resolved_user_skill_labels
     return {
-        "uid": str(row.get("user_id") or ""),
-        "city": str(row.get("city") or ""),
-        "prov": str(row.get("province") or ""),
-        "ns": int(row.get("n_resolved_user_skills") or 0),
+        "uid": row.user_id or "",
+        "city": row.city,
+        "prov": row.province,
+        "ns": row.n_resolved_user_skills,
         "skills": labs[:max_labels],
         "skills_trunc": len(labs) > max_labels,
         "n_lab": len(labs),
-        "recs": [
-            _compact_rec(r, max_rows=max_rows)
-            for r in (row.get("recommendations") or [])
-        ],
+        "recs": [_compact_rec(r, max_rows=max_rows) for r in row.recommendations],
     }
 
 
 def build_html(
-    payload_raw: Dict[str, Any],
+    payload: CosineRunResult,
     *,
     max_per_job_skills: int = 80,
     max_user_skill_labels: int = 120,
 ) -> str:
-    cfg = payload_raw.get("config") or {}
-    idx = payload_raw.get("index_stats") or {}
-    meta = {
-        "n_users": payload_raw.get("n_users"),
-        "n_jobs": payload_raw.get("n_jobs"),
-        "jobs_source": cfg.get("jobs_source"),
-        "top_k_stored": cfg.get("top_k"),
-        "users_path": cfg.get("users_path"),
-        "mongo_filter_by_users": cfg.get("mongo_filter_by_users"),
-        "scorer": cfg.get("scorer"),
-        "embedding_model_path": cfg.get("embedding_model_path"),
-        "embedding_dim": idx.get("embedding_dim"),
-        "max_per_job_skills_in_output": cfg.get("max_per_job_skills_in_output"),
-    }
+    """The dashboard HTML for a cosine run."""
+    cfg = payload.config
     compact = {
-        "meta": meta,
+        "meta": {
+            "n_users": payload.n_users,
+            "n_jobs": payload.n_jobs,
+            "jobs_source": cfg.jobs_source,
+            "top_k_stored": cfg.top_k,
+            "users_path": cfg.users_path,
+            "mongo_filter_by_users": cfg.mongo_filter_by_users,
+            "scorer": cfg.scorer,
+            "embedding_model_path": cfg.embedding_model_path,
+            "embedding_dim": payload.index_stats.embedding_dim,
+            "max_per_job_skills_in_output": cfg.max_per_job_skills_in_output,
+        },
         "users": [
             _compact_user(
                 u, max_rows=max_per_job_skills, max_labels=max_user_skill_labels
             )
-            for u in payload_raw.get("results") or []
+            for u in payload.results
         ],
     }
     data_json = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
@@ -383,7 +382,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = p.parse_args(argv)
 
-    payload = json.loads(args.input.read_text(encoding="utf-8"))
+    payload = CosineRunResult.model_validate_json(args.input.read_bytes())
     html_doc = build_html(
         payload,
         max_per_job_skills=args.max_per_job_skills,

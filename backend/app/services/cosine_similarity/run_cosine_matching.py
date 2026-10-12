@@ -25,143 +25,100 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import asyncio
-import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
 
 from app.config import EMBEDDING_MODEL_PATH, SKILLS_CSV_PATH, SKILL_TO_ROW_PATH
+from app.jobs.repository import JobsLoadTiming
+from app.ranking.types import SkillMatchDetail
+from app.services.offline_io import JobsSource, load_jobs, load_users
 
 
-def _backend_root() -> Path:
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        if parent.name == "backend":
-            return parent
-    raise RuntimeError(f"Could not locate 'backend/' from {here}")
+class CosineRecommendation(BaseModel):
+    """One job ranked by pooled per-skill cosine (``CosineSkillMatcher.score_pair``)."""
+
+    rank: int = Field(description="1-based rank.")
+    job_uuid: str = Field(description="Job id.")
+    job_title: str = Field(description="Job title.")
+    employer: str | None = Field(default=None, description="Employer.")
+    location: str = Field(description="Location.")
+    mean_best_cosine: float = Field(description="Mean best cosine over job skills.")
+    min_best_cosine: float = Field(description="Minimum best cosine over job skills.")
+    n_user_skills_embedded: int = Field(description="User skills with a vector.")
+    n_job_skills_embedded: int = Field(description="Job skills with a vector.")
+    per_job_skill: list[SkillMatchDetail] = Field(description="Per-skill matches.")
+    per_job_skill_truncated: bool = Field(
+        default=False, description="True when ``per_job_skill`` was capped."
+    )
 
 
-def _ensure_backend_on_syspath() -> None:
-    root = str(_backend_root())
-    if root not in sys.path:
-        sys.path.insert(0, root)
+class CosineUserResult(BaseModel):
+    """Cosine recommendations for one user."""
+
+    user_id: str | None = Field(description="The user's id.")
+    city: str = Field(description="The user's city.")
+    province: str = Field(description="The user's province.")
+    n_resolved_user_skills: int = Field(description="User skills with a vector.")
+    resolved_user_skill_labels: list[str] = Field(description="Their labels.")
+    recommendations: list[CosineRecommendation] = Field(description="Top-k jobs.")
 
 
-def _load_backend_dotenv() -> None:
-    try:
-        from dotenv import load_dotenv  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        return
-    p = _backend_root() / ".env"
-    if p.is_file():
-        load_dotenv(p, override=False)
+class CosineRunConfig(BaseModel):
+    """Configuration of one cosine run."""
+
+    users_path: str = Field(description="Users file.")
+    jobs_source: JobsSource = Field(description="``file`` or ``mongo``.")
+    top_k: int = Field(description="Recommendations per user.")
+    scorer: str = Field(description="Scorer name.")
+    max_per_job_skills_in_output: int = Field(description="Per-skill row cap.")
+    embedding_model_path: str = Field(description="Embedding artifact.")
+    skill_to_row_path: str = Field(description="Skill -> row map.")
+    skills_csv_path: str = Field(description="Taxonomy skills CSV.")
+    jobs_path: str | None = Field(default=None, description="Jobs file (file source).")
+    mongo_filter_by_users: bool | None = Field(
+        default=None, description="Location prefilter (mongo source)."
+    )
 
 
-def _is_jsonl(path: Path) -> bool:
-    return path.suffix.lower() == ".jsonl"
+class CosineIndexStats(BaseModel):
+    """Size of the scored corpus and of the embedding matrix."""
+
+    n_jobs: int = Field(description="Jobs scored.")
+    embedding_dim: int = Field(description="Embedding dimension.")
+    n_embedding_rows: int = Field(description="Embedding rows.")
 
 
-def _load_users(path: Path) -> List[dict]:
-    if _is_jsonl(path):
-        users: List[dict] = []
-        with open(path, "r", encoding="utf-8") as f:
-            for ln, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError as e:
-                    raise ValueError(f"{path}:{ln}: invalid JSON ({e})") from e
-                if not isinstance(obj, dict):
-                    raise ValueError(
-                        f"{path}:{ln}: expected an object, got {type(obj).__name__}"
-                    )
-                users.append(obj)
-        return users
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, list):
-        raise ValueError(f"{path}: expected a JSON list, got {type(data).__name__}")
-    return data
+class CosineRunResult(BaseModel):
+    """The JSON payload of one cosine run."""
 
-
-def _load_jobs_file(path: Path) -> List[dict]:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, list):
-        raise ValueError(f"{path}: expected a JSON list, got {type(data).__name__}")
-    return data
-
-
-async def _async_fetch_jobs_mongo(
-    users_for_filter: Optional[List[dict]],
-) -> Tuple[List[dict], Dict[str, Any]]:
-    _load_backend_dotenv()
-    _ensure_backend_on_syspath()
-    # pylint: disable=import-outside-toplevel
-    from app.jobs.get_jobs_repository import standalone_jobs_repository
-    from app.services.job_retrieval import retrieve_jobs_with_timing
-
-    async with standalone_jobs_repository() as jobs_repository:
-        return await retrieve_jobs_with_timing(jobs_repository, users_for_filter)
-
-
-def fetch_jobs_from_mongo(
-    users_for_filter: Optional[List[dict]],
-) -> Tuple[List[dict], Dict[str, Any]]:
-    return asyncio.run(_async_fetch_jobs_mongo(users_for_filter))
-
-
-def load_jobs(
-    jobs_source: Literal["file", "mongo"],
-    jobs_path: Optional[Path],
-    users: List[dict],
-    mongo_filter_by_users: bool,
-) -> Tuple[List[dict], Optional[Dict[str, Any]]]:
-    """Return ``jobs`` and optional ``mongo_timing``. Shared by cosine runners."""
-
-    mongo_timing: Optional[Dict[str, Any]] = None
-
-    if jobs_source == "file":
-        if jobs_path is None:
-            raise ValueError("jobs_path is required when jobs_source is 'file'")
-        jobs = _load_jobs_file(jobs_path)
-    else:
-        users_arg = users if mongo_filter_by_users else None
-        jobs, mongo_timing = fetch_jobs_from_mongo(users_arg)
-        if not mongo_filter_by_users:
-            print(
-                "[cosine] mongo: loaded all active jobs (no per-user location filter)",
-                file=sys.stderr,
-            )
-    return jobs, mongo_timing
-
-
-def _trim_recommendations(
-    recs: List[Dict[str, Any]], *, max_per_job_skills: int
-) -> None:
-    for r in recs:
-        pj = r.get("per_job_skill") or []
-        if len(pj) > max_per_job_skills:
-            r["per_job_skill"] = pj[:max_per_job_skills]
-            r["per_job_skill_truncated"] = True
+    config: CosineRunConfig = Field(description="Run configuration.")
+    index_stats: CosineIndexStats = Field(description="Corpus / embedding size.")
+    n_users: int = Field(description="Users scored.")
+    n_jobs: int = Field(description="Jobs scored.")
+    results: list[CosineUserResult] = Field(description="One entry per user.")
+    mongo_timing: JobsLoadTiming | None = Field(
+        default=None, description="Job-load timing (mongo source)."
+    )
 
 
 def run(
     users_path: Path,
-    jobs_source: Literal["file", "mongo"],
+    jobs_source: JobsSource,
     jobs_path: Optional[Path],
     output_path: Optional[Path],
     *,
     top_k: int = 10,
     max_per_job_skills: int = 200,
     mongo_filter_by_users: bool = True,
-) -> Dict[str, Any]:
-    users = _load_users(users_path)
-
-    jobs, mongo_timing = load_jobs(jobs_source, jobs_path, users, mongo_filter_by_users)
+) -> CosineRunResult:
+    """Rank jobs for every user by pooled skill cosine and write the JSON payload."""
+    users = load_users(users_path)
+    jobs, mongo_timing = load_jobs(
+        jobs_source, jobs_path, users, mongo_filter_by_users, log_prefix="[cosine]"
+    )
 
     from app.server_dependencies.model_dependencies import build_skill_matcher
 
@@ -172,59 +129,75 @@ def run(
         file=sys.stderr,
     )
 
-    results: List[Dict[str, Any]] = []
+    results: List[CosineUserResult] = []
     for user in users:
         labels = matcher.resolved_user_skill_labels_ordered(user)
-        recs = matcher.rank_jobs(user, jobs, top_k=top_k)
-        _trim_recommendations(recs, max_per_job_skills=max_per_job_skills)
+        recs: List[CosineRecommendation] = []
+        for rank, (job, score) in enumerate(
+            matcher.rank_jobs(user, jobs, top_k=top_k), 1
+        ):
+            per = score.per_job_skill
+            recs.append(
+                CosineRecommendation(
+                    rank=rank,
+                    job_uuid=job.uuid,
+                    job_title=job.title,
+                    employer=getattr(job, "employer", None),
+                    location=job.location,
+                    mean_best_cosine=score.mean_best_cosine,
+                    min_best_cosine=score.min_best_cosine,
+                    n_user_skills_embedded=score.n_user_skills_embedded,
+                    n_job_skills_embedded=score.n_job_skills_embedded,
+                    per_job_skill=per[:max_per_job_skills],
+                    per_job_skill_truncated=len(per) > max_per_job_skills,
+                )
+            )
         results.append(
-            {
-                "user_id": user.get("user_id"),
-                "city": user.get("city"),
-                "province": user.get("province"),
-                "n_resolved_user_skills": len(labels),
-                "resolved_user_skill_labels": labels,
-                "recommendations": recs,
-            }
+            CosineUserResult(
+                user_id=user.user_id,
+                city=user.city,
+                province=user.province,
+                n_resolved_user_skills=len(labels),
+                resolved_user_skill_labels=labels,
+                recommendations=recs,
+            )
         )
 
-    config: Dict[str, Any] = {
-        "users_path": str(users_path),
-        "jobs_source": jobs_source,
-        "top_k": top_k,
-        "scorer": "cosine_embedding_skill_match",
-        "max_per_job_skills_in_output": max_per_job_skills,
-        "embedding_model_path": str(EMBEDDING_MODEL_PATH),
-        "skill_to_row_path": str(SKILL_TO_ROW_PATH),
-        "skills_csv_path": str(SKILLS_CSV_PATH),
-    }
-    if jobs_source == "file":
-        config["jobs_path"] = str(jobs_path) if jobs_path else None
-    else:
-        config["mongo_filter_by_users"] = mongo_filter_by_users
+    payload = CosineRunResult(
+        config=CosineRunConfig(
+            users_path=str(users_path),
+            jobs_source=jobs_source,
+            top_k=top_k,
+            scorer="cosine_embedding_skill_match",
+            max_per_job_skills_in_output=max_per_job_skills,
+            embedding_model_path=str(EMBEDDING_MODEL_PATH),
+            skill_to_row_path=str(SKILL_TO_ROW_PATH),
+            skills_csv_path=str(SKILLS_CSV_PATH),
+            jobs_path=(str(jobs_path) if jobs_path else None)
+            if jobs_source == "file"
+            else None,
+            mongo_filter_by_users=mongo_filter_by_users
+            if jobs_source == "mongo"
+            else None,
+        ),
+        index_stats=CosineIndexStats(
+            n_jobs=len(jobs),
+            embedding_dim=int(matcher.W.shape[1]),
+            n_embedding_rows=int(matcher.W.shape[0]),
+        ),
+        n_users=len(users),
+        n_jobs=len(jobs),
+        results=results,
+        mongo_timing=mongo_timing,
+    )
 
-    payload: Dict[str, Any] = {
-        "config": config,
-        "index_stats": {
-            "n_jobs": len(jobs),
-            "embedding_dim": int(matcher.W.shape[1]),
-            "n_embedding_rows": int(matcher.W.shape[0]),
-        },
-        "n_users": len(users),
-        "n_jobs": len(jobs),
-        "results": results,
-    }
-    if mongo_timing is not None:
-        payload["mongo_timing"] = mongo_timing
-
+    text = payload.model_dump_json(indent=2, exclude_none=True)
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
+        output_path.write_text(text, encoding="utf-8")
         print(f"[cosine] wrote {output_path}", file=sys.stderr)
     else:
-        json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
-        sys.stdout.write("\n")
+        sys.stdout.write(text + "\n")
 
     return payload
 
@@ -282,7 +255,7 @@ Examples:
     )
     args = p.parse_args(argv)
 
-    jobs_source: Literal["file", "mongo"] = "mongo" if args.from_mongo else "file"
+    jobs_source: JobsSource = "mongo" if args.from_mongo else "file"
     jobs_path = None if jobs_source == "mongo" else args.jobs
 
     if jobs_source == "file" and jobs_path is not None:

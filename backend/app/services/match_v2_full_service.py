@@ -2,7 +2,7 @@
 
 Keeps the v2 **matching formula** unchanged (BM25 × embedding-cosine pool min-max fusion,
 ``hybrid_match_users_with_jobs``) but assembles the same ``MatchResponse`` shape ``/match_v4``
-returns: one ``MatchResponse``-shaped dict per user with opportunity, occupation and skill-gap
+returns: one ``MatchResponse`` per user with opportunity, occupation and skill-gap
 recommendations.
 
 Differences from the v2 ``hybrid_recommendations`` envelope (by design):
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import Any, Dict, List
+from collections.abc import Sequence
 
 from app import observability
 from app.config import (
@@ -29,17 +29,31 @@ from app.config import (
     V4_FULL_MIN_ESS_SHARE,
     V4_FULL_SIM_THRESHOLD,
 )
+from app.domain.job import Job
+from app.domain.occupation import Occupation
+from app.domain.user import UserProfile
 from app.matching import formatting as fmt
+from app.ranking.retrieval import (
+    Place,
+    index_by_uuid,
+    job_matches_user_location,
+    user_matches_any_county,
+)
+from app.ranking.scoring import skill_detail
+from app.ranking.skill_gaps import skill_gaps_for
+from app.schemas import (
+    MatchResponse,
+    OccupationRecommendation,
+    OpportunityRecommendation,
+    SkillGapRecommendation,
+)
+from app.server_dependencies.model_dependencies import get_skill_scorer
 from app.services.hybrid_scoring.run_bm25_cosine_hybrid import (
+    HybridFusedRow,
+    HybridRunResult,
     get_cosine_matcher_singleton,
     hybrid_match_users_with_jobs,
 )
-from app.ranking.retrieval import (
-    job_matches_user_location as _job_matches_user_location,
-    user_matches_any_county as _user_matches_any_county,
-)
-from app.ranking.skill_gaps import skill_gaps_for
-from app.server_dependencies.model_dependencies import get_skill_scorer
 
 __all__ = ["run_match_v2_full"]
 
@@ -47,8 +61,8 @@ logger = logging.getLogger(__name__)
 
 
 def _skill_gaps_for(
-    user: Dict[str, Any], jobs: List[Dict[str, Any]], top_k: int
-) -> List[Dict[str, Any]]:
+    user: UserProfile, jobs: Sequence[Job], top_k: int
+) -> list[SkillGapRecommendation]:
     """The /match skill-gap analysis (engine-agnostic)."""
     return skill_gaps_for(
         user,
@@ -59,109 +73,51 @@ def _skill_gaps_for(
     )
 
 
-def _index_by_uuid(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    out: Dict[str, Dict[str, Any]] = {}
-    for it in items:
-        uid = str(it.get("uuid") or it.get("_id") or "")
-        if uid:
-            out[uid] = it
-    return out
-
-
-def _occ_to_hybrid_item(o: Dict[str, Any]) -> Dict[str, Any]:
-    """Shallow copy of an occupation with job-style text keys so BM25 sees real content.
-
-    The hybrid full-text corpus reads ``opportunity_title`` / ``opportunity_description`` (job
-    fields). Occupations store ``occupation_label`` / ``description``; aliasing them lets the SAME
-    BM25 + cosine engine rank occupations exactly like opportunities. Skills/location are already
-    present and used as-is. The original occupation dict is untouched (used later for formatting).
-    """
-    item = dict(o)
-    item.setdefault(
-        "opportunity_title", o.get("occupation_label") or o.get("preferredLabel") or ""
-    )
-    item.setdefault("opportunity_description", o.get("description") or "")
-    return item
-
-
-def _skill_detail(matcher, user: Dict[str, Any], item: Dict[str, Any]):
-    """(per_job_skill, matcher-resolved essential id set) — same contract as the v4 path.
-
-    Both sides go through ``CosineSkillMatcher._resolve_label`` so the essential id set is in the
-    same (label-resolved) id space as ``per_job_skill[].job_skill_id``.
-    """
-    try:
-        per = matcher.score_pair(user, item).get("per_job_skill", []) or []
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning("score_pair failed for %s: %s", item.get("uuid"), e)
-        per = []
-    ess_ids = set()
-    for s in item.get("essential_skills") or []:
-        lab = s.get("label")
-        rid = matcher._resolve_label(lab) if lab else None
-        if rid:
-            ess_ids.add(rid)
-    return per, ess_ids
-
-
-def _v2_rec(fused_row: Dict[str, Any]) -> Dict[str, Any]:
-    """Map one hybrid fused row to the generic ``rec`` the v4 formatters consume.
-
-    ``final_score`` is the hybrid fusion score; v4-only signals are left empty so the formatter
-    emits null ``u_hat``/``p_hat`` and no preferences (the v2 engine produces none).
-    """
-    fs = fused_row.get("fusion_score")
-    if fs is None:
-        fs = fused_row.get("weighted_minmax_fusion") or 0.0
-    return {
-        "final_score": float(fs),
-        "u_hat": None,
-        "p_hat": None,
-        "preference_details": [],
-        "score_breakdown": {},
-    }
-
-
-def _fused_rows(envelope: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+def _fused_rows(envelope: HybridRunResult) -> dict[str, list[HybridFusedRow]]:
     """Map user_id -> that user's ``column_fused_weighted_minmax`` rows."""
-    out: Dict[str, List[Dict[str, Any]]] = {}
-    for bundle in envelope.get("results") or []:
-        uid = str(bundle.get("user_id") or "")
-        out[uid] = bundle.get("column_fused_weighted_minmax") or []
-    return out
+    return {b.user_id or "": b.column_fused_weighted_minmax for b in envelope.results}
 
 
 def run_match_v2_full(
-    users: List[Dict[str, Any]],
-    jobs: List[Dict[str, Any]],
-    occupations: List[Dict[str, Any]],
+    users: Sequence[UserProfile],
+    jobs: Sequence[Job],
+    occupations: Sequence[Occupation],
     *,
     fusion_top_k: int,
     alpha_on_cosine: float,
     skill_gap_top_k: int = MATCH_TOP_K_SKILL_GAPS,
-) -> List[Dict[str, Any]]:
-    """Return one ``MatchResponse``-shaped dict per user using the v2 hybrid matching formula."""
+) -> list[MatchResponse]:
+    """One ``MatchResponse`` per user using the v2 hybrid matching formula.
+
+    ``final_score`` is the hybrid fusion score; ``u_hat``/``p_hat``/preferences are empty (the v2
+    engine computes none). ``matched_skills`` comes from the shared ``CosineSkillMatcher``.
+    """
     if not users:
         return []
 
     matcher = get_cosine_matcher_singleton()
-    job_index = _index_by_uuid(jobs)
-    occ_index = _index_by_uuid(occupations)
+    job_index = index_by_uuid(jobs)
+    occ_index = index_by_uuid(occupations)
 
     # Opportunities — v2 hybrid over the active job corpus (engine + education gate unchanged).
-    opp_by_uid: Dict[str, List[Dict[str, Any]]] = {}
+    opp_by_uid: dict[str, list[HybridFusedRow]] = {}
     if jobs:
         with observability.stage(
             "shortlist", corpus="jobs", engine="bm25_cosine_hybrid", n_users=len(users)
         ):
-            opp_env = hybrid_match_users_with_jobs(
-                users, jobs, col_display_k=fusion_top_k, alpha_on_cosine=alpha_on_cosine
+            opp_by_uid = _fused_rows(
+                hybrid_match_users_with_jobs(
+                    users,
+                    jobs,
+                    col_display_k=fusion_top_k,
+                    alpha_on_cosine=alpha_on_cosine,
+                )
             )
-            opp_by_uid = _fused_rows(opp_env)
 
-    # Occupations — SAME hybrid engine over the occupation corpus. Score wide, then apply the v4
-    # county filter / fallback / dedupe-by-code so ~top_k distinct occupation codes survive.
-    occ_by_uid: Dict[str, List[Dict[str, Any]]] = {}
+    # Occupations — SAME hybrid engine over the occupation corpus (its full-text documents use the
+    # occupation label and description). Score wide, then apply the v4 county filter / fallback /
+    # dedupe-by-code so ~top_k distinct occupation codes survive.
+    occ_by_uid: dict[str, list[HybridFusedRow]] = {}
     if occupations:
         occ_breadth = max(fusion_top_k, MATCH_V4_TOP_K_OCCUPATIONS * 8)
         with observability.stage(
@@ -170,39 +126,37 @@ def run_match_v2_full(
             engine="bm25_cosine_hybrid",
             n_users=len(users),
         ):
-            occ_items = [_occ_to_hybrid_item(o) for o in occupations]
-            occ_env = hybrid_match_users_with_jobs(
-                users,
-                occ_items,
-                col_display_k=occ_breadth,
-                alpha_on_cosine=alpha_on_cosine,
+            occ_by_uid = _fused_rows(
+                hybrid_match_users_with_jobs(
+                    users,
+                    occupations,
+                    col_display_k=occ_breadth,
+                    alpha_on_cosine=alpha_on_cosine,
+                )
             )
-            occ_by_uid = _fused_rows(occ_env)
 
-    occ_counties = sorted(
-        {str(o.get("province")) for o in occupations if o.get("province")}
-    )
+    occ_counties = sorted({o.province for o in occupations if o.province})
 
-    out: List[Dict[str, Any]] = []
+    out: list[MatchResponse] = []
     for user in users:
-        uid = str(user.get("user_id") or "")
+        uid = user.user_id or ""
+        where = Place.of_user(user)
 
-        opportunities: List[Dict[str, Any]] = []
+        opportunities: list[OpportunityRecommendation] = []
         with observability.stage("formatting", corpus="jobs"):
             for row in opp_by_uid.get(uid, []):
-                item = job_index.get(str(row.get("job_uuid") or ""))
-                if not item:
+                job = job_index.get(row.job_uuid)
+                if job is None:
                     continue
-                if not _job_matches_user_location(item, user):
+                if not job_matches_user_location(Place.of_item(job), where):
                     continue  # strict same-location: urban-pull pool broadening is v4-only
-                per, ess_ids = _skill_detail(matcher, user, item)
                 opportunities.append(
                     fmt.build_opportunity_row(
-                        _v2_rec(row),
-                        item,
-                        per,
-                        ess_ids,
+                        job,
+                        skill_detail(matcher, user, job, whitened_gate=False),
                         rank=len(opportunities) + 1,
+                        final_score=row.fusion_score,
+                        scored=None,
                         sim_threshold=V4_FULL_SIM_THRESHOLD,
                         min_ess_share=V4_FULL_MIN_ESS_SHARE,
                     )
@@ -211,43 +165,37 @@ def run_match_v2_full(
         # Occupation county scoping (mirrors /match_v4): keep the user's own county row per code;
         # if the user's province matches no occupation county, fall back to a random available one
         # (location only — the user still drives skill matching).
-        occupations_out: List[Dict[str, Any]] = []
+        occupations_out: list[OccupationRecommendation] = []
         with observability.stage("formatting", corpus="occupations"):
-            loc_user = None
-            if occ_counties and not _user_matches_any_county(user, occ_counties):
+            loc = where
+            if occ_counties and not user_matches_any_county(user, occ_counties):
                 fallback = random.choice(occ_counties)
-                loc_user = {
-                    "city": fallback,
-                    "province": fallback,
-                    "location": fallback,
-                }
+                loc = Place.region(fallback)
                 logger.warning(
                     "User %r matches no occupation county %s; using random fallback county %r.",
                     uid,
                     occ_counties,
                     fallback,
                 )
-            loc = loc_user or user
 
-            seen_codes: set = set()
+            seen_codes: set[str] = set()
             for row in occ_by_uid.get(uid, []):
-                item = occ_index.get(str(row.get("job_uuid") or ""))
-                if not item:
+                occ = occ_index.get(row.job_uuid)
+                if occ is None:
                     continue
-                if not _job_matches_user_location(item, loc):
+                if not job_matches_user_location(Place.of_item(occ), loc):
                     continue
-                code = str(item.get("originUuid") or item.get("uuid") or "")
+                code = occ.originUuid or occ.uuid
                 if not code or code in seen_codes:
                     continue
                 seen_codes.add(code)
-                per, ess_ids = _skill_detail(matcher, user, item)
                 occupations_out.append(
                     fmt.build_occupation_row(
-                        _v2_rec(row),
-                        item,
-                        per,
-                        ess_ids,
+                        occ,
+                        skill_detail(matcher, user, occ, whitened_gate=False),
                         rank=len(occupations_out) + 1,
+                        final_score=row.fusion_score,
+                        scored=None,
                         sim_threshold=V4_FULL_SIM_THRESHOLD,
                         min_ess_share=V4_FULL_MIN_ESS_SHARE,
                     )
@@ -259,12 +207,12 @@ def run_match_v2_full(
             skill_gaps = _skill_gaps_for(user, jobs, skill_gap_top_k)
 
         out.append(
-            {
-                "user_id": uid,
-                "occupation_recommendations": occupations_out,
-                "opportunity_recommendations": opportunities,
-                "skill_gap_recommendations": skill_gaps,
-            }
+            MatchResponse(
+                user_id=uid,
+                occupation_recommendations=occupations_out,
+                opportunity_recommendations=opportunities,
+                skill_gap_recommendations=skill_gaps,
+            )
         )
 
     return out
