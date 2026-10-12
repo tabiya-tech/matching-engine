@@ -23,9 +23,8 @@ Each recommendation includes:
 - ``matched_skills_detail``: the same overlaps with one ``user_label`` and one
   ``job_label`` per phrase (useful when wording differs before normalisation).
 
-By default programme / institution / school-year **word** tokens are **not**
-added to the BM25 query (they often leak generic words onto the dashboard).
-Pass ``include_programme=True`` or CLI ``--programme-context`` to restore them.
+The BM25 query is the user's skill phrases only (``UserProfile`` carries no programme /
+institution / school-year fields; ``--programme-context`` is accepted but has no effect).
 
 CLI::
 
@@ -40,20 +39,35 @@ CLI::
 from __future__ import annotations
 
 import argparse
-import asyncio
-import json
 import sys
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
+from typing import List, Literal, Optional, Protocol, Tuple
 
 import numpy as np
+from pydantic import BaseModel, Field
+
+from app.domain.user import UserProfile
+from app.jobs.repository import JobsLoadTiming
+from app.ranking.types import MatchItem
+from app.services.offline_io import JobsSource, load_jobs, load_users
 
 from .text_builders import (
+    SkillPhraseOverlap,
     build_corpora,
     matched_skill_overlap,
     matched_skill_phrases,
     user_query_tokens,
 )
+
+
+class BM25Index(Protocol):
+    """The part of ``rank_bm25.BM25Okapi`` this module uses."""
+
+    corpus_size: int
+
+    def get_scores(self, query: list[str]) -> np.ndarray: ...
+
 
 try:
     from rank_bm25 import BM25Okapi
@@ -115,7 +129,7 @@ def dedupe_query_tokens(tokens: List[str]) -> List[str]:
     return list(dict.fromkeys(tokens))
 
 
-def scores_all_okapi(okapi: Any, query_tokens: List[str]) -> np.ndarray:
+def scores_all_okapi(okapi: BM25Index, query_tokens: List[str]) -> np.ndarray:
     """BM25 vector for one query over all docs (shape ``(n_docs,)``)."""
     _require_rank_bm25()
     n_docs = int(getattr(okapi, "corpus_size", len(okapi.doc_len)))
@@ -128,10 +142,12 @@ def scores_all_okapi(okapi: Any, query_tokens: List[str]) -> np.ndarray:
 
 
 def corpus_vocab_size(docs: List[List[str]]) -> int:
+    """Distinct tokens across ``docs``."""
     return len({t for doc in docs for t in doc})
 
 
 def avg_doc_length(docs: List[List[str]]) -> float:
+    """Mean tokens per doc (0 for no docs)."""
     if not docs:
         return 0.0
     return float(sum(len(d) for d in docs)) / len(docs)
@@ -143,7 +159,7 @@ def build_okapi_indexes(
     *,
     k1: float = 1.5,
     b: float = 0.75,
-) -> Tuple[Any, Any]:
+) -> Tuple[BM25Index, BM25Index]:
     """Return ``(skills_bm25, full_bm25)`` ``BM25Okapi`` instances."""
     _require_rank_bm25()
     return (
@@ -153,89 +169,142 @@ def build_okapi_indexes(
 
 
 # ---------------------------------------------------------------------------
-# Paths / env / I/O helpers (self-contained; no cross-service imports)
+# Output models
 # ---------------------------------------------------------------------------
 
 
-def _backend_root() -> Path:
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        if parent.name == "backend":
-            return parent
-    raise RuntimeError(f"Could not locate 'backend/' from {here}")
+class Bm25Recommendation(BaseModel):
+    """One BM25-ranked job for a user."""
+
+    rank: int = Field(description="1-based rank by BM25 score.")
+    job_uuid: str = Field(description="Job id.")
+    job_title: str = Field(description="Job title (occupation label for occupations).")
+    employer: str | None = Field(default=None, description="Employer (jobs only).")
+    location: str = Field(description="Location.")
+    bm25_score: float = Field(description="Ranking score (blended for ``hybrid``).")
+    bm25_skills_score_raw: float | None = Field(
+        default=None, description="Raw skills-index score (``hybrid`` only)."
+    )
+    bm25_text_score_raw: float | None = Field(
+        default=None, description="Raw full-text score (``hybrid`` only)."
+    )
+    bm25_score_raw: float | None = Field(
+        default=None, description="Raw full-text score (``single`` only)."
+    )
+    matched_skills: list[str] = Field(description="Shared skill phrase tokens.")
+    matched_skills_detail: list[SkillPhraseOverlap] = Field(
+        description="Shared skills with each side's wording."
+    )
 
 
-def _ensure_backend_on_syspath() -> None:
-    root = str(_backend_root())
-    if root not in sys.path:
-        sys.path.insert(0, root)
+class Bm25UserResult(BaseModel):
+    """BM25 recommendations for one user."""
+
+    user_id: str | None = Field(description="The user's id.")
+    city: str = Field(description="The user's city.")
+    province: str = Field(description="The user's province.")
+    n_query_tokens: int = Field(description="Query tokens.")
+    query_tokens: list[str] = Field(description="The BM25 query.")
+    recommendations: list[Bm25Recommendation] = Field(description="Top-k jobs.")
 
 
-def _load_backend_dotenv() -> None:
-    try:
-        from dotenv import load_dotenv  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        return
-    p = _backend_root() / ".env"
-    if p.is_file():
-        load_dotenv(p, override=False)
+class Bm25IndexStats(BaseModel):
+    """Corpus statistics of the two BM25 indexes."""
+
+    n_jobs: int = Field(description="Indexed jobs.")
+    skills_vocab_size: int = Field(description="Distinct skill phrase tokens.")
+    full_vocab_size: int = Field(description="Distinct full-text tokens.")
+    skills_avg_doc_len: float = Field(description="Mean skills-doc length.")
+    full_avg_doc_len: float = Field(description="Mean full-text doc length.")
+    embedding_dim: int | None = Field(
+        default=None, description="Embedding dimension (hybrid runner only)."
+    )
 
 
-def _is_jsonl(path: Path) -> bool:
-    return path.suffix.lower() == ".jsonl"
+class Bm25RunConfig(BaseModel):
+    """Configuration of one BM25 run."""
+
+    users_path: str = Field(description="Users file.")
+    jobs_source: JobsSource = Field(description="``file`` or ``mongo``.")
+    variant: Literal["single", "hybrid"] = Field(description="Index variant.")
+    tokenization: str = Field(description="Tokenisation mode.")
+    top_k: int = Field(description="Recommendations per user.")
+    k1: float = Field(description="BM25 k1.")
+    b: float = Field(description="BM25 b.")
+    bm25_engine: str = Field(description="BM25 implementation.")
+    include_programme_context: bool = Field(description="CLI flag (no effect).")
+    skills_weight: float | None = Field(default=None, description="``hybrid`` only.")
+    text_weight: float | None = Field(default=None, description="``hybrid`` only.")
+    jobs_path: str | None = Field(default=None, description="Jobs file (file source).")
+    mongo_filter_by_users: bool | None = Field(
+        default=None, description="Location prefilter (mongo source)."
+    )
 
 
-def _load_users(path: Path) -> List[dict]:
-    if _is_jsonl(path):
-        users: List[dict] = []
-        with open(path, "r", encoding="utf-8") as f:
-            for ln, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError as e:
-                    raise ValueError(f"{path}:{ln}: invalid JSON ({e})") from e
-                if not isinstance(obj, dict):
-                    raise ValueError(
-                        f"{path}:{ln}: expected an object, got {type(obj).__name__}"
-                    )
-                users.append(obj)
-        return users
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, list):
-        raise ValueError(f"{path}: expected a JSON list, got {type(data).__name__}")
-    return data
+class Bm25RunResult(BaseModel):
+    """The JSON payload of one BM25 run."""
+
+    config: Bm25RunConfig = Field(description="Run configuration.")
+    index_stats: Bm25IndexStats = Field(description="Index statistics.")
+    n_users: int = Field(description="Users scored.")
+    n_jobs: int = Field(description="Jobs indexed.")
+    results: list[Bm25UserResult] = Field(description="One entry per user.")
+    mongo_timing: JobsLoadTiming | None = Field(
+        default=None, description="Job-load timing (mongo source)."
+    )
 
 
-def _load_jobs_file(path: Path) -> List[dict]:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, list):
-        raise ValueError(f"{path}: expected a JSON list, got {type(data).__name__}")
-    return data
+def index_stats(
+    jobs: Sequence[MatchItem],
+    skills_corpus: List[List[str]],
+    full_corpus: List[List[str]],
+    *,
+    embedding_dim: int | None = None,
+) -> Bm25IndexStats:
+    """Statistics of the indexes built over ``jobs``."""
+    return Bm25IndexStats(
+        n_jobs=len(jobs),
+        skills_vocab_size=corpus_vocab_size(skills_corpus),
+        full_vocab_size=corpus_vocab_size(full_corpus),
+        skills_avg_doc_len=round(avg_doc_length(skills_corpus), 2),
+        full_avg_doc_len=round(avg_doc_length(full_corpus), 2),
+        embedding_dim=embedding_dim,
+    )
 
 
-async def _async_fetch_jobs_mongo(
-    users_for_filter: Optional[List[dict]],
-) -> Tuple[List[dict], Dict[str, Any]]:
-    _load_backend_dotenv()
-    _ensure_backend_on_syspath()
-    # pylint: disable=import-outside-toplevel
-    from app.jobs.get_jobs_repository import standalone_jobs_repository
-    from app.services.job_retrieval import retrieve_jobs_with_timing
-
-    async with standalone_jobs_repository() as jobs_repository:
-        return await retrieve_jobs_with_timing(jobs_repository, users_for_filter)
-
-
-def fetch_jobs_from_mongo(
-    users_for_filter: Optional[List[dict]],
-) -> Tuple[List[dict], Dict[str, Any]]:
-    """Load active jobs via the same Motor pipeline as the REST API."""
-    return asyncio.run(_async_fetch_jobs_mongo(users_for_filter))
+def bm25_recommendation(
+    user: UserProfile,
+    job: MatchItem,
+    *,
+    rank: int,
+    score: float,
+    skills_score: float | None,
+    text_score: float,
+    variant: Literal["single", "hybrid"],
+    max_matched: int | None = None,
+) -> Bm25Recommendation:
+    """One recommendation row: scores plus the user/job skill overlap."""
+    hybrid = variant == "hybrid" and skills_score is not None
+    phrases = matched_skill_phrases(user, job)
+    overlap = matched_skill_overlap(user, job)
+    if max_matched is not None:
+        phrases = phrases[:max_matched]
+        overlap = overlap[:max_matched]
+    return Bm25Recommendation(
+        rank=rank,
+        job_uuid=job.uuid,
+        job_title=job.title,
+        employer=getattr(job, "employer", None),
+        location=job.location,
+        bm25_score=round(score, 4),
+        bm25_skills_score_raw=round(skills_score, 4)
+        if hybrid and skills_score is not None
+        else None,
+        bm25_text_score_raw=round(text_score, 4) if hybrid else None,
+        bm25_score_raw=None if hybrid else round(text_score, 4),
+        matched_skills=phrases,
+        matched_skills_detail=overlap,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -244,17 +313,17 @@ def fetch_jobs_from_mongo(
 
 
 def recommend_for_user(
-    user: dict,
-    jobs: List[dict],
-    skills_okapi: Any,
-    full_okapi: Any,
+    user: UserProfile,
+    jobs: Sequence[MatchItem],
+    skills_okapi: BM25Index,
+    full_okapi: BM25Index,
     *,
     variant: Literal["single", "hybrid"] = "hybrid",
     top_k: int = 10,
     skills_weight: float = 0.5,
     text_weight: float = 0.5,
     include_programme: bool = False,
-) -> Tuple[List[Dict[str, Any]], List[str]]:
+) -> Tuple[List[Bm25Recommendation], List[str]]:
     """Rank jobs for one user; rows include ``matched_skills`` overlap."""
     q_tokens = user_query_tokens(user, include_programme=include_programme)
 
@@ -269,27 +338,24 @@ def recommend_for_user(
 
     order = np.argsort(-combined - 1e-9 * (text_scores if text_scores.size else 0.0))
 
-    recs: List[Dict[str, Any]] = []
+    recs: List[Bm25Recommendation] = []
     for rank, idx in enumerate(order, 1):
         if rank > top_k:
             break
-        j = jobs[int(idx)]
-        rec: Dict[str, Any] = {
-            "rank": rank,
-            "job_uuid": j.get("uuid") or j.get("_id"),
-            "job_title": j.get("opportunity_title"),
-            "employer": j.get("employer"),
-            "location": j.get("location"),
-            "bm25_score": round(float(combined[int(idx)]), 4),
-        }
-        if variant == "hybrid" and skills_scores is not None:
-            rec["bm25_skills_score_raw"] = round(float(skills_scores[int(idx)]), 4)
-            rec["bm25_text_score_raw"] = round(float(text_scores[int(idx)]), 4)
-        else:
-            rec["bm25_score_raw"] = round(float(text_scores[int(idx)]), 4)
-        rec["matched_skills"] = matched_skill_phrases(user, j)
-        rec["matched_skills_detail"] = matched_skill_overlap(user, j)
-        recs.append(rec)
+        i = int(idx)
+        recs.append(
+            bm25_recommendation(
+                user,
+                jobs[i],
+                rank=rank,
+                score=float(combined[i]),
+                skills_score=float(skills_scores[i])
+                if skills_scores is not None
+                else None,
+                text_score=float(text_scores[i]),
+                variant=variant,
+            )
+        )
 
     return recs, q_tokens
 
@@ -301,7 +367,7 @@ def recommend_for_user(
 
 def run(
     users_path: Path,
-    jobs_source: Literal["file", "mongo"],
+    jobs_source: JobsSource,
     jobs_path: Optional[Path],
     output_path: Optional[Path],
     *,
@@ -313,24 +379,13 @@ def run(
     b: float = 0.75,
     include_programme: bool = False,
     mongo_filter_by_users: bool = True,
-) -> Dict[str, Any]:
+) -> Bm25RunResult:
     """Load users + jobs, score with rank_bm25, optionally write a JSON payload."""
     _require_rank_bm25()
-    users = _load_users(users_path)
-    mongo_timing: Optional[Dict[str, Any]] = None
-
-    if jobs_source == "file":
-        if jobs_path is None:
-            raise ValueError("jobs_path is required when jobs_source is 'file'")
-        jobs = _load_jobs_file(jobs_path)
-    else:
-        users_arg = users if mongo_filter_by_users else None
-        jobs, mongo_timing = fetch_jobs_from_mongo(users_arg)
-        if not mongo_filter_by_users:
-            print(
-                "[bm25] mongo: loaded all active jobs (no per-user location filter)",
-                file=sys.stderr,
-            )
+    users = load_users(users_path)
+    jobs, mongo_timing = load_jobs(
+        jobs_source, jobs_path, users, mongo_filter_by_users, log_prefix="[bm25]"
+    )
 
     print(
         f"[bm25] loaded {len(users)} users, {len(jobs)} jobs "
@@ -350,7 +405,7 @@ def run(
         file=sys.stderr,
     )
 
-    results: List[Dict[str, Any]] = []
+    results: List[Bm25UserResult] = []
     for user in users:
         recs, q_tokens = recommend_for_user(
             user,
@@ -364,59 +419,50 @@ def run(
             include_programme=include_programme,
         )
         results.append(
-            {
-                "user_id": user.get("user_id"),
-                "city": user.get("city"),
-                "province": user.get("province"),
-                "n_query_tokens": len(q_tokens),
-                "query_tokens": q_tokens,
-                "recommendations": recs,
-            }
+            Bm25UserResult(
+                user_id=user.user_id,
+                city=user.city,
+                province=user.province,
+                n_query_tokens=len(q_tokens),
+                query_tokens=q_tokens,
+                recommendations=recs,
+            )
         )
 
-    config: Dict[str, Any] = {
-        "users_path": str(users_path),
-        "jobs_source": jobs_source,
-        "variant": variant,
-        "tokenization": "phrase",
-        "top_k": top_k,
-        "k1": k1,
-        "b": b,
-        "bm25_engine": "rank_bm25.BM25Okapi",
-        "include_programme_context": include_programme,
-    }
-    if variant == "hybrid":
-        config["skills_weight"] = skills_weight
-        config["text_weight"] = text_weight
-    if jobs_source == "file":
-        config["jobs_path"] = str(jobs_path) if jobs_path else None
-    else:
-        config["mongo_filter_by_users"] = mongo_filter_by_users
+    payload = Bm25RunResult(
+        config=Bm25RunConfig(
+            users_path=str(users_path),
+            jobs_source=jobs_source,
+            variant=variant,
+            tokenization="phrase",
+            top_k=top_k,
+            k1=k1,
+            b=b,
+            bm25_engine="rank_bm25.BM25Okapi",
+            include_programme_context=include_programme,
+            skills_weight=skills_weight if variant == "hybrid" else None,
+            text_weight=text_weight if variant == "hybrid" else None,
+            jobs_path=(str(jobs_path) if jobs_path else None)
+            if jobs_source == "file"
+            else None,
+            mongo_filter_by_users=mongo_filter_by_users
+            if jobs_source == "mongo"
+            else None,
+        ),
+        index_stats=index_stats(jobs, skills_corpus, full_corpus),
+        n_users=len(users),
+        n_jobs=len(jobs),
+        results=results,
+        mongo_timing=mongo_timing,
+    )
 
-    payload: Dict[str, Any] = {
-        "config": config,
-        "index_stats": {
-            "n_jobs": len(jobs),
-            "skills_vocab_size": corpus_vocab_size(skills_corpus),
-            "full_vocab_size": corpus_vocab_size(full_corpus),
-            "skills_avg_doc_len": round(avg_doc_length(skills_corpus), 2),
-            "full_avg_doc_len": round(avg_doc_length(full_corpus), 2),
-        },
-        "n_users": len(users),
-        "n_jobs": len(jobs),
-        "results": results,
-    }
-    if mongo_timing is not None:
-        payload["mongo_timing"] = mongo_timing
-
+    text = payload.model_dump_json(indent=2, exclude_none=True)
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
+        output_path.write_text(text, encoding="utf-8")
         print(f"[bm25] wrote {output_path}", file=sys.stderr)
     else:
-        json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
-        sys.stdout.write("\n")
+        sys.stdout.write(text + "\n")
 
     return payload
 
@@ -435,7 +481,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument(
-        "--jobs", type=Path, help="Local jobs list JSON (same shape as API job dicts)."
+        "--jobs",
+        type=Path,
+        help="Local jobs JSON list (ranked-job documents or flat job objects).",
     )
     src.add_argument(
         "--from-mongo",
@@ -495,7 +543,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = p.parse_args(argv)
 
-    jobs_source: Literal["file", "mongo"] = "mongo" if args.from_mongo else "file"
+    jobs_source: JobsSource = "mongo" if args.from_mongo else "file"
     jobs_path = None if jobs_source == "mongo" else args.jobs
 
     run(
