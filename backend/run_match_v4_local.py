@@ -74,13 +74,13 @@ Usage (from backend/ directory):
     python run_match_v4_local.py --final-top-k 30 --retrieve-top-k 50 --final-score-combiner product
 """
 
+import argparse
+import asyncio
+import csv
+import datetime as _dt
+import json
 import os
 import sys
-import csv
-import json
-import asyncio
-import argparse
-import datetime as _dt
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -396,6 +396,19 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    from app.clients.gemini_embedding_client import EMBEDDING_DIM
+    from app.config import (
+        COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
+        FINAL_SCORE_COMBINER,
+        MATCH_TOP_K_OCCUPATIONS,
+        MATCH_TOP_K_OPPORTUNITIES,
+        MATCH_TOP_K_SKILL_GAPS,
+        MATCH_V4_FINAL_TOP_K,
+        MATCH_V4_OCC_DEMAND_GAMMA,
+        MATCH_V4_RETRIEVE_TOP_K,
+        MATCH_V4_TOP_K_OCCUPATIONS,
+        PREFERENCE_SCORER_MODE,
+    )
     from app.domain.job import Job
     from app.domain.occupation import Occupation
     from app.domain.user import UserProfile
@@ -412,31 +425,18 @@ def main() -> None:
         zqf_annotation,
     )
     from app.ranking.types import MatchItem
-    from app.services.job_retrieval import retrieve_jobs_with_timing
-    from app.services.offline_io import load_jobs_file
-    from app.config import (
-        FINAL_SCORE_COMBINER,
-        PREFERENCE_SCORER_MODE,
-        MATCH_TOP_K_SKILL_GAPS,
-        MATCH_TOP_K_OPPORTUNITIES,
-        MATCH_TOP_K_OCCUPATIONS,
-        MATCH_V4_TOP_K_OCCUPATIONS,
-        MATCH_V4_OCC_DEMAND_GAMMA,
-        MATCH_V4_RETRIEVE_TOP_K,
-        MATCH_V4_FINAL_TOP_K,
-        COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
-    )
-    from app.clients.gemini_embedding_client import EMBEDDING_DIM
-    from app.services.match_v3_full_service import run_match_v3_full
-    from app.services.matching_service import match_user_with_data
     from app.schemas import (
         JobsStats,
         MatchRequest,
-        MatchResponse,
         MatchRequestV5,
+        MatchResponse,
         MatchResponseV5,
         OpportunityRecommendationV5,
     )
+    from app.services.job_retrieval import retrieve_jobs_with_timing
+    from app.services.match_v3_full_service import run_match_v3_full
+    from app.services.matching_service import match_user_with_data
+    from app.services.offline_io import load_jobs_file
 
     class _LoadedJobsRepository(IJobsRepository):
         """The already-loaded job corpus behind the jobs-repository interface.
@@ -673,7 +673,7 @@ def main() -> None:
         if args.version == "v5":
             job_by_uuid_v5 = {j.uuid: j for j in jobs_list}
             responses = []
-            for response, user in zip(v4, users):
+            for response, user in zip(v4, users, strict=True):
                 opportunities: list[OpportunityRecommendationV5] = []
                 for opp in response.opportunity_recommendations:
                     job = job_by_uuid_v5.get(opp.uuid)

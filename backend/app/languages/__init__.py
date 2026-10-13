@@ -32,7 +32,9 @@ import importlib
 import logging
 import os
 from functools import lru_cache
-from typing import Any
+from typing import Any, TypeVar
+
+_T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +155,7 @@ def enabled_languages() -> tuple[str, ...]:
     return tuple(codes)
 
 
-def language_setting(language: str, key: str, default: Any = None) -> Any:
+def language_setting(language: str, key: str, default: _T = None) -> _T:
     """One value out of a language's ``LANGUAGE_CONFIG``."""
     return get_language_config(language).get(key, default)
 

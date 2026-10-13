@@ -10,8 +10,8 @@ from app.constants.errors import (
     INTERNAL_ERROR_RESPONSE_DOC,
     error_response_doc,
 )
-from app.jobs.pagination import InvalidCursor
 from app.jobs.get_jobs_service import get_jobs_service
+from app.jobs.pagination import InvalidCursor
 from app.jobs.service import IJobsService
 from app.jobs.types import JobsBrowseQuery
 from app.schemas import JobsPage, JobsStats
@@ -106,14 +106,14 @@ def add_jobs_routes(router: APIRouter) -> None:
             )
         except InvalidCursor as e:
             logger.warning("Invalid /jobs cursor: %s", e)
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
         except HTTPException:
             raise
         except Exception as e:
             logger.exception(e)
             raise HTTPException(
                 status_code=500, detail=f"Internal server error: {e.__class__.__name__}"
-            )
+            ) from e
 
     @router.get(
         "/jobs/stats",
@@ -132,4 +132,4 @@ def add_jobs_routes(router: APIRouter) -> None:
             logger.exception(e)
             raise HTTPException(
                 status_code=500, detail=f"Internal server error: {e.__class__.__name__}"
-            )
+            ) from e

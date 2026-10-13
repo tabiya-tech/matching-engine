@@ -376,7 +376,7 @@ class SuccessPropensityScorer:
             weights.append(0.4)
         if not terms:
             return 1.0  # no data → neutral, don't penalise
-        return sum(w * t for w, t in zip(weights, terms)) / sum(weights)
+        return sum(w * t for w, t in zip(weights, terms, strict=True)) / sum(weights)
 
     # ------------------------------------------------------------------
     # public API

@@ -28,10 +28,10 @@ Relatedness proxy for off-diagonal: ISCO major group = first digit of the occupa
 Run from backend/:  KMP_DUPLICATE_LIB_OK=TRUE python skill_match_prototype.py
 """
 
+import argparse
+import json
 import os
 import sys
-import json
-import argparse
 from pathlib import Path
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -53,7 +53,7 @@ except Exception:
 # NB (Windows/miniforge): torch MUST be imported before numpy, or torch's DLLs fail to load
 # (OSError WinError 127 / shm.dll). Importing it first also fixes the order for app modules
 # (which do `import numpy` then `import torch`) since torch is then already initialised.
-import torch  # noqa: E402  (import order is deliberate)
+import torch  # noqa: E402, I001  (import order is deliberate)
 import numpy as np  # noqa: E402
 
 import app.config as C  # noqa: E402
@@ -258,7 +258,7 @@ def analyze_real_users(matcher, raw_W, white_W, target, name, path, jobs, rng, a
     print(f"    {'config':<18}{'mean cov':>10}{'within-user std':>16}")
     for cname, space, mode in configs:
         allcov, within = [], []
-        for uid, rows in users:
+        for _uid, rows in users:
             cs = [score(rows, jr, space, mode) for _, _, jr in jobs]
             cs = [c for c in cs if not np.isnan(c)]
             if cs:
@@ -385,7 +385,7 @@ def analyze_count(matcher, raw_W, white_W, target, name, users_path, jobs, AB, a
     cnt = []
     covF, covD, sfF, sfD, prF, prD = [], [], [], [], [], []
     collapse = []
-    for uid, rows in users:
+    for _uid, rows in users:
         ia = [posmap[int(r)] for r in rows if int(r) in posmap]
         iad = dedup(ia)
         collapse.append((len(ia), len(iad)))
@@ -569,9 +569,9 @@ def validate_real_concat(matcher, white_W, target, name, users_path, jobs_path, 
         )
 
     cnt, fit_r, fit_w, cov, prod_r, prod_w = [], [], [], [], [], []
-    for ui, (u, urows, n_skills) in enumerate(users):
+    for ui, (_u, urows, n_skills) in enumerate(users):
         ia = [posmap[int(r)] for r in urows]
-        for ji, (emb, jrows) in enumerate(jobs):
+        for ji, (_emb, jrows) in enumerate(jobs):
             ib = [posmap[int(r)] for r in jrows]
             if not ia or not ib:
                 continue
@@ -800,7 +800,7 @@ def main():
 
     # split each occupation's essentials into disjoint halves A1 (user) / A2 (job)
     A1, A2 = {}, {}
-    for k, (code, major, rows) in enumerate(occs):
+    for k, (_code, _major, rows) in enumerate(occs):
         r = rows[:]
         rng.shuffle(r)
         h = len(r) // 2
