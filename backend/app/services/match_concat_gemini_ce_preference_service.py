@@ -7,6 +7,7 @@ Used by ``POST /match_v4`` — same response envelope as ``POST /match_v3`` with
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TypedDict
 
 import numpy as np
 
@@ -27,7 +28,15 @@ from app.server_dependencies.model_dependencies import get_preference_scorer
 __all__ = ["run_match_concat_gemini_ce_with_preferences"]
 
 
-def _job_fields(c: Candidate) -> dict[str, str | None]:
+class _JobFields(TypedDict):
+    job_uuid: str
+    opportunity_title: str
+    employer: str | None
+    location: str | None
+    URL: str | None
+
+
+def _job_fields(c: Candidate) -> _JobFields:
     item = c.item
     return {
         "job_uuid": item.uuid,

@@ -61,8 +61,11 @@ def test_unified_scorer_keys_and_bounds():
     ):
         assert getattr(res, k) is not None, f"missing {k}"
     assert res.work_activities is not None and res.work_activities.V_task is not None
+    assert res.u_hat is not None
     assert 0.0 <= res.u_hat <= 1.0
+    assert res.S_attrs is not None
     assert -1.0 <= res.S_attrs <= 1.0  # harmonised DCE utility
+    assert res.S_wa is not None
     assert -1.0 <= res.S_wa <= 1.0
     assert res.scoring_model == "unified_dce_bws_v1"
 
@@ -78,7 +81,8 @@ def test_unified_dce_rows_validate_as_matched_preference():
     wa = res.work_activities
     assert wa is not None
     WorkActivityBWS(
-        wa_score_sum=wa.wa_score_sum, details=[d.model_dump() for d in wa.wa_details]
+        wa_score_sum=wa.wa_score_sum,
+        details=[d.model_dump() for d in wa.wa_details],  # pyright: ignore[reportArgumentType] — dicts validate into MatchedWorkActivity at runtime; this checks exactly that
     )
 
 
@@ -88,6 +92,7 @@ def test_unified_include_work_activities_false_zeros_task():
     ).calculate_score(_user(), _job(), include_work_activities=False)
     assert res.work_activities is None
     assert res.S_wa == pytest.approx(0.0)
+    assert res.u_hat is not None
     assert 0.0 <= res.u_hat <= 1.0
 
 
@@ -95,7 +100,9 @@ def test_unified_good_job_outranks_bad_job():
     s = UnifiedPreferenceScorer(get_artifacts_repository().load_attribute_schema())
     good = s.calculate_score(_user(), _job("earn_70k", "growth_high", "phys_light"))
     bad = s.calculate_score(_user(), _job("earn_15k", "growth_low", "phys_heavy"))
+    assert good.u_hat is not None and bad.u_hat is not None
     assert good.u_hat > bad.u_hat
+    assert good.V_dce is not None
     assert good.V_dce > 0  # all preferred levels (high pay/growth, light work)
     assert bad.V_dce == pytest.approx(
         0.0

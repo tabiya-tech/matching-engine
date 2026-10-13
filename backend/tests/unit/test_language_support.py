@@ -319,13 +319,17 @@ class TestLanguageIsNotPerRequest:
 
         assert "language" not in MatchRequest.model_fields
         # A consumer that still sends one is not rejected — the field is simply ignored.
-        assert not hasattr(MatchRequest(language="es"), "language")
+        assert not hasattr(MatchRequest(language="es"), "language")  # pyright: ignore[reportCallIssue]
 
     def test_match_takes_no_language_query_param(self):
+        from starlette.routing import Route
+
         from app.main import app
 
         (match,) = [
-            r.endpoint for r in app.routes if getattr(r, "path", None) == "/match"
+            r.endpoint
+            for r in app.routes
+            if isinstance(r, Route) and r.path == "/match"
         ]
         assert "language" not in inspect.signature(match).parameters
 
