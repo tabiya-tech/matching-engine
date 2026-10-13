@@ -3,7 +3,7 @@
 These import schemas directly -- no app startup, no mocking.
 """
 
-from app.schemas import MatchRequest, MatchRequestV5
+from app.schemas import MatchRequest, MatchRequestV5, Skill, SkillsVector
 
 
 class TestCountySuffixStrip:
@@ -38,7 +38,7 @@ class TestMatchRequestV5Inheritance:
         v5 = MatchRequestV5(
             user_id="u1",
             city="Lusaka",
-            skills_vector={"top_skills": [{"originUUID": "abc"}]},
+            skills_vector=SkillsVector(top_skills=[Skill(originUUID="abc")]),
             zqf_level=5,
         )
         assert v5.user_id == "u1"

@@ -155,6 +155,7 @@ class TestGetJobsPage:
         assert collection.cursors[0].limit_n == 3
         assert collection.cursors[0].sort_spec == [("_id", -1)]
         assert [j.uuid for j in jobs] == ["0", "1"]
+        assert next_cursor is not None
         assert decode_jobs_cursor(next_cursor) == oids[1]
         assert timing.has_more is True
         assert total is None

@@ -56,7 +56,7 @@ def load_taxonomy(taxonomy_path: str):
     if os.path.exists(rel_path):
         relations = pd.read_csv(rel_path)
     else:
-        relations = pd.DataFrame(columns=["REQUIRINGID", "REQUIREDID"])
+        relations = pd.DataFrame(columns=["REQUIRINGID", "REQUIREDID"])  # pyright: ignore[reportArgumentType]
     return skills, hierarchy, relations
 
 

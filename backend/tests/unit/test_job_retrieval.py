@@ -72,6 +72,7 @@ class TestLocationQuery:
     def test_filter_is_active_and_any_location_clause(self):
         actual = build_mongo_filter_active_and_location([_NAIROBI_USER])
 
+        assert actual is not None
         assert actual["$and"][0] == RANKED_JOBS_ACTIVE_FILTER
         assert {
             "classifier_metadata.city": {"$regex": "nairobi", "$options": "i"}

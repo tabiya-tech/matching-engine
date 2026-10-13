@@ -254,6 +254,7 @@ def test_opportunity_row_carries_scores():
     assert model.score_breakdown.p_hat_components is None  # Node2Vec-only -> null
     assert len(model.matched_skills.essential_skill_matches) == 2
     assert model.matched_preferences[0].attribute == "earnings_per_month"
+    assert model.matched_work_activities is not None
     assert model.matched_work_activities.wa_score_sum == pytest.approx(0.5)
     assert model.is_eligible is True
 
@@ -288,6 +289,7 @@ def test_opportunity_row_passthrough_fields():
     assert model.related_occupation_id == "2511"
     assert model.score_breakdown.demand_score == 0.75  # High Expected Demand
     # Approximated skill components present and in range.
+    assert model.score_breakdown.skill_components is not None
     assert model.score_breakdown.skill_components.ess == pytest.approx(
         (0.82 + 0.40) / 2
     )
@@ -366,9 +368,11 @@ def test_skill_components_clamped_to_unit_interval():
     sc, total, penalty = fmt._skill_components_from_cosine(
         pjs, frozenset({"E1", "E2"}), sim_threshold=0.6
     )
+    assert sc.ess is not None and sc.opt is not None
     assert 0.0 <= sc.ess <= 1.0 and 0.0 <= sc.opt <= 1.0
     assert sc.ess == pytest.approx((1.0 + 0.0) / 2)  # clamped to [0,1] before averaging
     assert total == sc.ess
+    assert penalty is not None
     assert 0.0 <= penalty <= 1.0
     assert sc.loc is None and sc.grp is None
 

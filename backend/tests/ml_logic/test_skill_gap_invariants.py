@@ -97,6 +97,7 @@ class TestSkillGapInvariants:
         assert len(filtered) <= top_k
 
     def test_proximity_filter_drops_below_threshold(self):
+        assert MATCH_RESPONSE_SKILL_MIN_SCORE is not None
         gaps = [
             _gap("s1", MATCH_RESPONSE_SKILL_MIN_SCORE),
             _gap("s2", MATCH_RESPONSE_SKILL_MIN_SCORE - 0.01),

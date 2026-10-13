@@ -142,7 +142,7 @@ def _embed_chunk(
             try:
                 result = client.models.embed_content(
                     model=model,
-                    contents=payload,
+                    contents=payload,  # pyright: ignore[reportArgumentType]  — list[str] is accepted at runtime; the stub's list union is just invariant on str
                     config=genai_types.EmbedContentConfig(
                         task_type=task_type,
                         output_dimensionality=embedding_dim,

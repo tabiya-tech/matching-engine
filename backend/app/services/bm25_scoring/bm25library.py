@@ -65,6 +65,7 @@ class BM25Index(Protocol):
     """The part of ``rank_bm25.BM25Okapi`` this module uses."""
 
     corpus_size: int
+    doc_len: list[int]
 
     def get_scores(self, query: list[str]) -> np.ndarray: ...
 
@@ -162,6 +163,7 @@ def build_okapi_indexes(
 ) -> Tuple[BM25Index, BM25Index]:
     """Return ``(skills_bm25, full_bm25)`` ``BM25Okapi`` instances."""
     _require_rank_bm25()
+    assert BM25Okapi is not None  # guaranteed by _require_rank_bm25 above
     return (
         BM25Okapi(skills_corpus, k1=k1, b=b),
         BM25Okapi(full_corpus, k1=k1, b=b),

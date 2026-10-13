@@ -29,7 +29,7 @@ def _env_int(name: str, default: int) -> int:
 @dataclass(frozen=True)
 class MongoDbSettings:
     mongo_url: str
-    database_name: str | None
+    database_name: str
     server_selection_timeout_ms: int = 30000
     max_pool_size: int = 50
     min_pool_size: int = 0
@@ -41,9 +41,12 @@ class MongoDbSettings:
         mongo_url = os.getenv("MONGO_URL")
         if not mongo_url:
             raise ValueError("MONGO_URL environment variable is not set")
+        database_name = os.getenv("MONGO_DB_NAME")
+        if not database_name:
+            raise ValueError("MONGO_DB_NAME environment variable is not set")
         return cls(
             mongo_url=mongo_url,
-            database_name=os.getenv("MONGO_DB_NAME"),
+            database_name=database_name,
             server_selection_timeout_ms=_env_int(
                 "MONGO_SERVER_SELECTION_TIMEOUT_MS", 30000
             ),
