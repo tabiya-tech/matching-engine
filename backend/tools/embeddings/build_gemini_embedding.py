@@ -46,7 +46,6 @@ import numpy as np
 import torch
 from dotenv import load_dotenv
 
-
 try:
     from google import genai
     from google.genai import types as genai_types

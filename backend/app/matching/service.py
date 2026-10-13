@@ -14,6 +14,7 @@ import random
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
+
 import numpy as np
 
 from app import observability
@@ -47,7 +48,6 @@ from app.domain.user import UserProfile
 from app.jobs.repository import IJobsRepository, JobsLoadTiming
 from app.languages import default_language
 from app.match_timing_log import log_match_step
-from app.services.job_retrieval import retrieve_jobs_with_timing
 from app.matching import formatting as fmt
 from app.matching.errors import InvalidMatchRequestError
 from app.matching.types import MatchOptions
@@ -90,6 +90,7 @@ from app.schemas import (
     OccupationRecommendation,
     OpportunityRecommendation,
 )
+from app.services.job_retrieval import retrieve_jobs_with_timing
 
 logger = logging.getLogger(__name__)
 
@@ -401,7 +402,7 @@ class MatchingService(IMatchingService):
         with observability.stage(
             "rerank", corpus=corpus, n_users=len(users), model=reranker.model_name
         ):
-            for user, shortlist in zip(users, shortlists):
+            for user, shortlist in zip(users, shortlists, strict=True):
                 labels = user_skill_labels_for_concat(user)
                 pairs = self._rerank.build_pairs(labels, shortlist, final_top_k=fk)
                 scores = reranker.predict_scores(pairs) if pairs else []

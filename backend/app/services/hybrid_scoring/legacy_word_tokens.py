@@ -21,14 +21,13 @@ from __future__ import annotations
 import re
 from typing import Iterable, List, Tuple
 
+# Conservative English stopword list (matches the original tokeniser).
+from app.config import stopwords as config_stopwords
 from app.domain.job import Job
 from app.domain.skills import SkillReference
 from app.domain.user import UserProfile
-from app.ranking.types import MatchItem
-
-# Conservative English stopword list (matches the original tokeniser).
-from app.config import stopwords as config_stopwords
 from app.languages import CANONICAL_LANGUAGE, default_language, normalise_language
+from app.ranking.types import MatchItem
 
 _STOPWORDS = frozenset(
     {

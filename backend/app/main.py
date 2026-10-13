@@ -5,26 +5,27 @@ import os
 from contextlib import asynccontextmanager, suppress
 
 import yaml
+from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from dotenv import load_dotenv
+
 from app.config import DEBUG_MODE
 from app.constants.errors import (
     FORBIDDEN_RESPONSE_DOC,
     INTERNAL_ERROR_RESPONSE_DOC,
     HTTPErrorResponse,
 )
+from app.jobs.routes import add_jobs_routes
+from app.matching.routes import add_matching_routes
 from app.observability import (
     MatchTracingMiddleware,
     init_tracing,
     shutdown_tracing,
     tracing_config_from_env,
 )
-from app.jobs.routes import add_jobs_routes
-from app.matching.routes import add_matching_routes
 from app.server_dependencies.auth import api_key_auth
 from app.server_dependencies.db_dependencies import MatchingDBProvider
 from app.server_dependencies.model_dependencies import (

@@ -5,8 +5,9 @@ strict domain models in ``app.domain``; ``ScoreBreakdown`` and its parts are dom
 re-exported here because the response embeds them.
 """
 
+from typing import Dict, List, Optional
+
 from pydantic import BaseModel, Field, field_validator
-from typing import Any, Dict, List, Optional
 
 from app.domain.job import Job
 from app.domain.scores import PHatComponents, ScoreBreakdown, SkillComponents
@@ -175,7 +176,7 @@ class MatchRequest(BaseModel):
 
     @field_validator("city", "province", mode="before")
     @classmethod
-    def _normalize_location(cls, v: Any) -> Any:
+    def _normalize_location(cls, v: object) -> object:
         # Strip a trailing " County" so "Nairobi County" matches occupation/job "Nairobi".
         return _strip_county_suffix(v) if isinstance(v, str) else v
 

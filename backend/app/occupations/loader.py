@@ -68,7 +68,7 @@ def _load_occupation_embeddings() -> dict[str, np.ndarray]:
         with np.load(OCCUPATION_CONCAT_EMBEDDINGS_PATH, allow_pickle=True) as data:
             codes = [str(c) for c in data["codes"].tolist()]
             vectors = np.asarray(data["vectors"], dtype=np.float32)
-        for code, vec in zip(codes, vectors):
+        for code, vec in zip(codes, vectors, strict=True):
             out[code] = np.ascontiguousarray(vec, dtype=np.float32)
         logger.info(
             "Loaded %d occupation concat embeddings from %s",
@@ -102,7 +102,7 @@ def _load_occupation_embeddings() -> dict[str, np.ndarray]:
                 wmat = whitener.whiten_rows(
                     np.stack([out[c] for c in codes_list], axis=0)
                 ).astype(np.float32)
-                for c, wv in zip(codes_list, wmat):
+                for c, wv in zip(codes_list, wmat, strict=True):
                     out[c] = np.ascontiguousarray(wv, dtype=np.float32)
                 _occ_prewhitened = True
                 logger.info(
@@ -203,4 +203,4 @@ async def get_all_occupations_with_timing() -> tuple[
         )
     except Exception as e:
         logger.exception(e)
-        raise RuntimeError(f"Failed to load occupations: {e}")
+        raise RuntimeError(f"Failed to load occupations: {e}") from e
