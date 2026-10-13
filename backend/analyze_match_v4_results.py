@@ -52,7 +52,7 @@ from pathlib import Path
 
 # Windows consoles default to cp1252, which can't encode the arrows/symbols used below.
 try:
-    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")  # pyright: ignore[reportAttributeAccessIssue] — real stdout has it; the except below covers stand-ins that don't
 except Exception:
     pass
 
@@ -226,8 +226,8 @@ def analyse_balance(users, report):
         binding_u = binding_p = 0
         for u in users:
             recs = u.get(rec_key) or []
-            us = [_sb(r, "u_hat") for r in recs if _sb(r, "u_hat") is not None]
-            ps = [_sb(r, "p_hat") for r in recs if _sb(r, "p_hat") is not None]
+            us = [v for r in recs if (v := _sb(r, "u_hat")) is not None]
+            ps = [v for r in recs if (v := _sb(r, "p_hat")) is not None]
             u_all += us
             p_all += ps
             f_all += [

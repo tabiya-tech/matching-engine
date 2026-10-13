@@ -117,5 +117,6 @@ class TestServiceCorpusLoad:
         ):
             occ, timing = asyncio.run(_service()._load_occupations())
         assert [o.uuid for o in occ] == ["occ-1"]
+        assert timing is not None
         assert timing.occupation_cache_hit is True
         attach.assert_called_once()
