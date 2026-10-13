@@ -19,8 +19,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from tools.gemini_ce_preference_matching.build_dashboard import (
-    BRAND,
     _HTML_STYLE,
+    BRAND,
     DashboardMeta,
     _b64_utf8,
     dashboard_meta,

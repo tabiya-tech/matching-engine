@@ -11,8 +11,11 @@ import json
 import logging
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, fields, replace
-from typing import Any
+from typing import Any, TypeVar, cast
+
+_T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 
@@ -201,10 +204,10 @@ def _overrides_from_json(source: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _coerce(value: Any, typ: type) -> Any:
+def _coerce(value: object, typ: type[_T]) -> _T | None:
     if typ is bool:
         if isinstance(value, bool):
-            return value
+            return cast(_T, value)
         if isinstance(value, str) and value.strip().lower() in (
             *_TRUE,
             "0",
@@ -212,11 +215,11 @@ def _coerce(value: Any, typ: type) -> Any:
             "no",
             "off",
         ):
-            return value.strip().lower() in _TRUE
+            return cast(_T, value.strip().lower() in _TRUE)
         return None
     if isinstance(value, bool):
         return None
     try:
-        return typ(value)
+        return cast(Callable[[object], _T], typ)(value)
     except (TypeError, ValueError):
         return None

@@ -30,6 +30,8 @@ from pydantic import BaseModel, Field
 from app.artifacts.repository import get_artifacts_repository
 from app.clients.gemini_embedding_client import (
     EMBEDDING_DIM,
+)
+from app.clients.gemini_embedding_client import (
     MODEL_NAME as GEMINI_EMBEDDING_MODEL_NAME,
 )
 from app.config import (
@@ -388,7 +390,7 @@ def run_pipeline(
         ]
 
     results: List[UserPreferenceRun] = []
-    for user, slate in zip(users, slates):
+    for user, slate in zip(users, slates, strict=True):
         user_concat_skills = user_skill_labels_for_concat(user)
         ce_pool = slate.candidates
 

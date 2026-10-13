@@ -7,7 +7,7 @@ boundary, so the strict domain models never see them.
 """
 
 from datetime import date, datetime
-from typing import Annotated, Any
+from typing import Annotated
 
 import numpy as np
 from bson import ObjectId
@@ -16,7 +16,7 @@ from pydantic import BeforeValidator
 _SCALARS = (str, bool, int, float, date, datetime, ObjectId)
 
 
-def to_optional_text(value: Any) -> str | None:
+def to_optional_text(value: object) -> str | None:
     """Text form of a stored scalar, or None when absent.
 
     Numbers, dates and ObjectIds are converted with ``str()``; a list (some producers store a
@@ -38,7 +38,7 @@ def to_optional_text(value: Any) -> str | None:
     raise ValueError(f"expected a scalar, got {type(value).__name__}")
 
 
-def to_text_list(value: Any) -> list[str]:
+def to_text_list(value: object) -> list[str]:
     """List of strings from a stored list or single scalar; None and blank items are dropped.
 
     :param value: The stored value (list, scalar or None)
@@ -55,7 +55,7 @@ def to_text_list(value: Any) -> list[str]:
     return out
 
 
-def parse_flag(value: Any) -> bool | None:
+def parse_flag(value: object) -> bool | None:
     """Binary flag stored as a bool, a 0/1 number or a yes/no string.
 
     :param value: The stored value
@@ -78,7 +78,7 @@ def parse_flag(value: Any) -> bool | None:
     return None
 
 
-def parse_float(value: Any) -> float | None:
+def parse_float(value: object) -> float | None:
     """Number stored as a number or a numeric string.
 
     :param value: The stored value
@@ -96,7 +96,7 @@ def parse_float(value: Any) -> float | None:
     return None
 
 
-def parse_int(value: Any) -> int | None:
+def parse_int(value: object) -> int | None:
     """Whole number stored as an int, an integral float or a numeric string.
 
     :param value: The stored value
@@ -106,7 +106,7 @@ def parse_int(value: Any) -> int | None:
     return int(number) if number is not None else None
 
 
-def to_float32_vector(value: Any) -> np.ndarray | None:
+def to_float32_vector(value: object) -> np.ndarray | None:
     """1-D float32 array from a stored list of numbers; None when absent, empty or non-numeric.
 
     :param value: The stored value (normally a list of floats)

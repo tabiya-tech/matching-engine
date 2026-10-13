@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from app.artifacts.repository import get_artifacts_repository
+from app.artifacts.types import AttributeSchema
 from app.clients.cross_encoder_client import CrossEncoderClient, ICrossEncoderClient
 from app.clients.gemini_embedding_client import (
     EMBEDDING_DIM,
@@ -36,13 +37,10 @@ from app.config import (
     V4_FULL_WHITENED_GATE,
 )
 from app.languages import default_language
-from app.artifacts.types import AttributeSchema
 from app.ranking.preference import UnifiedPreferenceScorer
-from app.ranking.scoring import IPreferenceScorer
-from app.ranking.skills import SkillLabelPacks
-from app.ranking.skills import CosineSkillMatcher
-from app.ranking.skills import SkillScorer
 from app.ranking.retrieval import ConcatWhitener
+from app.ranking.scoring import IPreferenceScorer
+from app.ranking.skills import CosineSkillMatcher, SkillLabelPacks, SkillScorer
 
 logger = logging.getLogger(__name__)
 

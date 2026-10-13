@@ -34,12 +34,12 @@ from app.observability import (
     stage,
     tracing_config_from_env,
 )
-from app.schemas import MatchRequest
 from app.observability.testing import (
     TEST_TRACING_CONFIG,
     RecordedSpans,
     in_memory_tracing,
 )
+from app.schemas import MatchRequest
 
 TYPE = "langfuse.observation.type"
 LEVEL = "langfuse.observation.level"
@@ -373,8 +373,8 @@ def test_failed_embedding_fails_the_request_and_tags_it(monkeypatch):
         try:
             with stage("embedding"):
                 _embed(["a"], models=models, monkeypatch=monkeypatch)
-        except RuntimeError:
-            raise HTTPException(status_code=500, detail="Internal server error")
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail="Internal server error") from e
         return {}
 
     with in_memory_tracing() as spans:

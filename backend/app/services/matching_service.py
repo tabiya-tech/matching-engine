@@ -40,7 +40,11 @@ from app.ranking.retrieval import (
 from app.ranking.scoring import DemandScorer, SuccessPropensity, SuccessPropensityScorer
 from app.ranking.skill_gaps import (
     analyze_skill_gaps,
+)
+from app.ranking.skill_gaps import (
     filter_skill_gap_recommendations as _filter_skill_gap_recommendations,
+)
+from app.ranking.skill_gaps import (
     skill_gap_candidate_pool_k as _skill_gap_candidate_pool_k,
 )
 from app.ranking.skills import SkillUtility

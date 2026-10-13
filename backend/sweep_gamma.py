@@ -28,7 +28,7 @@ def pearson(pairs):
     xs = [a for a, _ in pairs]
     ys = [b for _, b in pairs]
     mx, my = sum(xs) / n, sum(ys) / n
-    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True))
     sx = sum((x - mx) ** 2 for x in xs) ** 0.5
     sy = sum((y - my) ** 2 for y in ys) ** 0.5
     return cov / (sx * sy) if sx and sy else None
@@ -46,7 +46,7 @@ def report(label, data, key):
     allc = []
     weak5 = []
     final5 = []
-    for u, rec in data.items():
+    for _u, rec in data.items():
         rows = sorted(rec.get(key) or [], key=lambda r: r.get("rank") or 999)
         if not rows:
             continue

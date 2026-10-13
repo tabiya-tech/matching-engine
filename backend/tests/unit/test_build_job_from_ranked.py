@@ -13,11 +13,11 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
+from app.clients.gemini_embedding_client import EMBEDDING_DIM
 from app.domain.attributes import JobAttributes
 from app.domain.skills import SkillReference
 from app.domain.work_activities import WorkActivity
 from app.jobs.job_document import build_job_from_ranked
-from app.clients.gemini_embedding_client import EMBEDDING_DIM
 
 
 def _base_doc() -> Dict[str, Any]:

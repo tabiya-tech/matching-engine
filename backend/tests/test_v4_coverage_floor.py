@@ -1,11 +1,11 @@
 import pytest
 
+from app.artifacts.repository import get_artifacts_repository
 from app.ranking import scoring
+from app.ranking.preference import UnifiedPreferenceScorer
 from app.ranking.scoring import (
     enrich_recommendations_with_preferences,
 )
-from app.ranking.preference import UnifiedPreferenceScorer
-from app.artifacts.repository import get_artifacts_repository
 from tests.domain_factories import (
     make_attributes,
     make_candidate,

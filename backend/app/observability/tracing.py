@@ -20,8 +20,9 @@ import hashlib
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal, Protocol, cast
 
+from langfuse import Langfuse
 from opentelemetry import trace as otel_trace_api
 
 from app.observability.config import TracingConfig
@@ -29,7 +30,22 @@ from app.observability.masking import build_mask_function
 
 logger = logging.getLogger(__name__)
 
-_client: Any = None
+# The subset of Langfuse's ``as_type`` literal this wrapper is exercised with; widen if a
+# caller needs another of Langfuse's observation types (see ``Langfuse.start_as_current_observation``).
+ObservationType = Literal["span", "embedding"]
+
+
+class _UpdatableObservation(Protocol):
+    """Structural type for whichever Langfuse observation class ``as_type`` produced.
+
+    Every one of Langfuse's observation classes (``LangfuseSpan``, ``LangfuseGeneration``, …)
+    exposes ``update(**fields)``; this wrapper never needs more than that.
+    """
+
+    def update(self, **fields: Any) -> object: ...
+
+
+_client: Langfuse | None = None
 _config: TracingConfig = TracingConfig()
 
 # Set while inside a ``suppress_tracing()`` block, i.e. a request sampling skipped.
@@ -70,8 +86,6 @@ def init_tracing(config: TracingConfig) -> None:
         return
 
     try:
-        from langfuse import Langfuse
-
         _client = Langfuse(
             public_key=config.public_key,
             secret_key=config.secret_key,
@@ -135,7 +149,7 @@ def get_tracing_config() -> TracingConfig:
     return _config
 
 
-def get_tracing_client() -> Any:
+def get_tracing_client() -> Langfuse | None:
     """The underlying Langfuse client, for the rare call site that needs the raw SDK."""
     return _client
 
@@ -174,8 +188,8 @@ def has_active_span() -> bool:
 def traced_observation(
     *,
     name: str,
-    as_type: str = "span",
-    input: Any = None,
+    as_type: ObservationType = "span",
+    input: object = None,
     metadata: dict | None = None,
     model: str | None = None,
     model_parameters: dict | None = None,
@@ -190,14 +204,19 @@ def traced_observation(
     :param input: The input payload; masked and truncated before export.
     :return: The Langfuse observation, or ``None`` when not tracing — handle ``None``.
     """
-    if not is_tracing_enabled() or not has_active_span():
+    client = _client
+    if client is None or not is_tracing_enabled() or not has_active_span():
         yield None
         return
 
     try:
-        manager = _client.start_as_current_observation(
+        # Langfuse's `start_as_current_observation` overloads one per literal `as_type`
+        # value, so a value only known to be one of this wrapper's own `ObservationType`
+        # members doesn't resolve to a single overload. The cast is safe: whichever
+        # member `as_type` holds, it's one Langfuse itself defines.
+        manager = client.start_as_current_observation(
             name=name,
-            as_type=as_type,
+            as_type=cast(Literal["embedding"], as_type),
             input=input,
             metadata=metadata or None,
             model=model,
@@ -237,7 +256,9 @@ def stage(name: str, **metadata: Any) -> Iterator[Any]:
         yield observation
 
 
-def update_observation(observation: Any, **fields: Any) -> None:
+def update_observation(
+    observation: _UpdatableObservation | None, **fields: Any
+) -> None:
     """Update an observation, tolerating both a ``None`` observation and a failing SDK call."""
     if observation is None:
         return

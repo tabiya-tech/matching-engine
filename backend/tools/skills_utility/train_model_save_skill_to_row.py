@@ -25,13 +25,14 @@ OUTPUTS:
   - skill_to_row.json: A mapping of Skill IDs/UUIDs to their specific matrix row.
 """
 
-import os
 import json
-import torch
-import pandas as pd
-import networkx as nx
+import os
 import random
 from pathlib import Path
+
+import networkx as nx
+import pandas as pd
+import torch
 from gensim.models import Word2Vec
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]  # .../backend

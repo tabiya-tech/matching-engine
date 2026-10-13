@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import base64
 from pathlib import Path
+
 from pydantic import BaseModel, Field
 
 from tools.gemini_ce_preference_matching.run_matching import (
