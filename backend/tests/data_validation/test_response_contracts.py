@@ -9,20 +9,19 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas import (
+    MatchedPreference,
+    MatchedSkill,
+    MatchedSkills,
     MatchResponse,
     MatchResponseV5,
+    OccupationRecommendation,
     OpportunityRecommendation,
     OpportunityRecommendationV5,
-    OccupationRecommendation,
-    SkillGapRecommendation,
-    ScoreBreakdown,
-    MatchedSkills,
-    MatchedSkill,
-    MatchedPreference,
-    SkillComponents,
     PHatComponents,
+    ScoreBreakdown,
+    SkillComponents,
+    SkillGapRecommendation,
 )
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 

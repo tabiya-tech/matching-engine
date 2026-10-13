@@ -15,9 +15,13 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from google.genai import Client
+    from google.genai.types import EmbedContentResponse
 
 from app.observability import (
     get_tracing_config,
@@ -45,7 +49,9 @@ _token_count_pool: ThreadPoolExecutor | None = None
 _token_count_pool_lock = threading.Lock()
 
 
-def _start_token_count(client: Any, model: str, texts: Sequence[str]) -> Future | None:
+def _start_token_count(
+    client: Client, model: str, texts: Sequence[str]
+) -> Future | None:
     """Count the input tokens alongside the embed call, for the trace's usage (and so its cost).
 
     The Gemini Developer API's ``embed_content`` reports no token counts (only Vertex fills
@@ -68,7 +74,7 @@ def _start_token_count(client: Any, model: str, texts: Sequence[str]) -> Future 
 
 
 def _embedding_usage(
-    result: Any, token_count: Future | None
+    result: EmbedContentResponse, token_count: Future | None
 ) -> tuple[dict[str, int] | None, str]:
     """Input tokens for one call and where they came from; never an invented count.
 
@@ -95,7 +101,7 @@ def _embedding_usage(
 
 
 def _embed_chunk(
-    client: Any,
+    client: Client,
     texts: Sequence[str],
     *,
     model: str,
@@ -142,6 +148,8 @@ def _embed_chunk(
                         output_dimensionality=embedding_dim,
                     ),
                 )
+                if not result.embeddings:
+                    raise RuntimeError("Gemini embed_content returned no embeddings")
                 rows = []
                 for emb in result.embeddings:
                     rows.append(np.asarray(emb.values, dtype=np.float32))

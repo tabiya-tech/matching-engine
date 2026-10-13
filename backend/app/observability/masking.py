@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
 
 from app.observability.config import TracingConfig
 
@@ -63,7 +62,9 @@ def truncate(text: str, max_chars: int) -> str:
     return text[:max_chars] + TRUNCATION_SUFFIX
 
 
-def mask_value(value: Any, *, redact_pii: bool, max_chars: int, _depth: int = 0) -> Any:
+def mask_value(
+    value: object, *, redact_pii: bool, max_chars: int, _depth: int = 0
+) -> object:
     """Recursively mask a trace payload: strings redacted and truncated, containers walked."""
     if _depth > _MAX_DEPTH:
         return truncate(str(value), max_chars)
@@ -93,7 +94,7 @@ def build_mask_function(config: TracingConfig):
     unmasked, and rather than break the traced call.
     """
 
-    def mask(*, data: Any, **_kwargs: Any) -> Any:
+    def mask(*, data: object, **_kwargs: object) -> object:
         try:
             return mask_value(
                 data, redact_pii=config.mask_pii, max_chars=config.max_payload_chars

@@ -11,11 +11,11 @@ From root of repo, to write output to file:
     python backend/run_local.py --output data/output_full.json
 """
 
+import argparse
+import asyncio
+import json
 import os
 import sys
-import json
-import asyncio
-import argparse
 from pathlib import Path
 
 from dotenv import load_dotenv

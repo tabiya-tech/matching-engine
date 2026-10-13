@@ -28,6 +28,9 @@ from typing import TYPE_CHECKING, Any, Iterator, Sequence
 from app.observability import tracing
 
 if TYPE_CHECKING:
+    from langfuse import Langfuse
+    from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
     from app.domain.user import UserProfile
 
 logger = logging.getLogger(__name__)
@@ -118,7 +121,7 @@ def _request_id_from_headers(headers: Sequence[Any]) -> str:
     return uuid.uuid4().hex
 
 
-def _trace_id_for(client: Any, request_id: str) -> str:
+def _trace_id_for(client: Langfuse, request_id: str) -> str:
     """A generated request id is the trace id; a client-supplied one maps to it deterministically."""
     if _TRACE_ID_RE.match(request_id):
         return request_id
@@ -128,7 +131,7 @@ def _trace_id_for(client: Any, request_id: str) -> str:
 @contextmanager
 def _request_trace(route: str, request_id: str) -> Iterator[_RequestState | None]:
     client = tracing.get_tracing_client()
-    if not tracing.is_tracing_enabled():
+    if client is None or not tracing.is_tracing_enabled():
         yield None
         return
     if not tracing.should_sample(request_id):
@@ -217,10 +220,10 @@ class MatchTracingMiddleware:
     the trace context. Adds ``X-Request-ID`` and ``X-Trace-ID`` to traced responses.
     """
 
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
-    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if (
             scope.get("type") != "http"
             or scope.get("method") != "POST"
@@ -238,7 +241,7 @@ class MatchTracingMiddleware:
                 return
             status: dict[str, int | None] = {"code": None}
 
-            async def send_with_ids(message: dict[str, Any]) -> None:
+            async def send_with_ids(message: Message) -> None:
                 if message.get("type") == "http.response.start":
                     status["code"] = message.get("status")
                     headers = list(message.get("headers") or [])

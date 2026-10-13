@@ -4,7 +4,6 @@ ZQF annotation logic, and the MatchResponse contract.
 
 from app.ranking.retrieval import zqf_annotation as _zqf_annotation
 
-
 MINIMAL_PAYLOAD = [
     {
         "user_id": "smoke-u1",

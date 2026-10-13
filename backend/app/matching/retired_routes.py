@@ -176,7 +176,7 @@ async def match_legacy(
         return results
     except ValueError as e:
         logger.exception(e)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except HTTPException as e:
         logger.exception(e)
         raise e
@@ -184,7 +184,7 @@ async def match_legacy(
         logger.exception(e)
         raise HTTPException(
             status_code=500, detail=f"Internal server error: {e.__class__.__name__}"
-        )
+        ) from e
 
 
 # Retired: not registered on any router; ``app.matching.routes`` serves POST /match.
@@ -314,12 +314,12 @@ async def match_v2(
         ) from e
     except ValueError as e:
         logger.exception(e)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception(e)
         raise HTTPException(
             status_code=500, detail=f"Internal server error: {e.__class__.__name__}"
-        )
+        ) from e
 
 
 # Retired: not registered on any router; ``app.matching.routes`` serves POST /match.
@@ -564,7 +564,7 @@ async def match_v5(
             "formatting", step="zqf_annotation_and_response_model"
         ):
             out: List[MatchResponseV5] = []
-            for response, user in zip(responses, users):
+            for response, user in zip(responses, users, strict=True):
                 opportunities: List[OpportunityRecommendationV5] = []
                 for opp in response.opportunity_recommendations:
                     job = job_uuid_index.get(opp.uuid)

@@ -31,7 +31,7 @@ def spearman(pairs):
     ys = [b for _, b in pairs]
     n = len(xs)
     mx, my = sum(xs) / n, sum(ys) / n
-    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True))
     sx = (sum((x - mx) ** 2 for x in xs)) ** 0.5
     sy = (sum((y - my) ** 2 for y in ys)) ** 0.5
     return cov / (sx * sy) if sx and sy else None
@@ -58,13 +58,13 @@ def main():
             b = by_uuid(base[u].get(key) or [])
             d = by_uuid(dem[u].get(key) or [])
             # invariant checks
-            for uuid, r in b.items():
+            for _uuid, r in b.items():
                 sb = r.get("score_breakdown") or {}
                 uh, ph, fs = sb.get("u_hat"), sb.get("p_hat"), r.get("final_score")
                 if uh is not None and ph is not None and not occ:
                     if abs(uh * ph - fs) > 0.01:
                         inv_base_bad += 1
-            for uuid, r in d.items():
+            for _uuid, r in d.items():
                 sb = r.get("score_breakdown") or {}
                 uh, ph = sb.get("u_hat"), sb.get("p_hat")
                 cov = sb.get("essential_coverage")
@@ -75,7 +75,7 @@ def main():
                     if abs(expected - fs) > 0.01:
                         inv_dem_bad += 1
                 cov_rank_dem.append((r.get("rank"), cov if cov is not None else 1.0))
-            for uuid, r in b.items():
+            for _uuid, r in b.items():
                 sb = r.get("score_breakdown") or {}
                 cov_rank_base.append(
                     (

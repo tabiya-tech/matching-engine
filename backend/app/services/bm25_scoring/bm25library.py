@@ -114,7 +114,7 @@ def combine(
     if len(weights) != len(arrays):
         raise ValueError("weights and scores_list must have the same length")
     out = np.zeros_like(arrays[0], dtype=np.float64)
-    for arr, w in zip(arrays, weights):
+    for arr, w in zip(arrays, weights, strict=True):
         out += float(w) * min_max_normalise(arr)
     return out
 

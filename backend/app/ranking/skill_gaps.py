@@ -125,7 +125,7 @@ def analyze_skill_gaps(
     job_unlock_counts: dict[str, int] = {}
     for cand_id in candidate_skills:
         unlock_count = 0
-        for ess_set, opt_set in zip(_ess_sets, _opt_sets):
+        for ess_set, opt_set in zip(_ess_sets, _opt_sets, strict=True):
             if cand_id in ess_set:
                 unlock_count += 2
             elif cand_id in opt_set:
