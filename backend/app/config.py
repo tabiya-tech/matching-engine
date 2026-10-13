@@ -65,7 +65,11 @@ class Settings(BaseSettings):
         config: a deployment that comments out a value but leaves the `KEY=` line should fall back
         to the field's default rather than fail validation on an empty string."""
         if isinstance(data, dict):
-            return {k: v for k, v in data.items() if not (isinstance(v, str) and v.strip() == "")}
+            return {
+                k: v
+                for k, v in data.items()
+                if not (isinstance(v, str) and v.strip() == "")
+            }
         return data
 
     # -----------------------------------------------------------------------
@@ -105,7 +109,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _additive_weights_sum_to_one(self) -> Settings:
-        total = self.additive_w1_skills + self.additive_w2_preference + self.additive_w3_market
+        total = (
+            self.additive_w1_skills
+            + self.additive_w2_preference
+            + self.additive_w3_market
+        )
         if abs(total - 1.0) > 1e-6:
             raise ValueError(
                 "additive_w1_skills + additive_w2_preference + additive_w3_market must sum to "
@@ -156,7 +164,9 @@ class Settings(BaseSettings):
     location_tier_w_regional: float = Field(default=0.70, ge=0.0, le=1.0)
     location_tier_w_national: float = Field(default=0.50, ge=0.0, le=1.0)
     # County -> hub-chain exceptions (small JSON; every other county defaults to [self, national_hub]).
-    location_hub_chains_path: str = str(_RESOURCES / "location" / "location_hub_chains.json")
+    location_hub_chains_path: str = str(
+        _RESOURCES / "location" / "location_hub_chains.json"
+    )
 
     # -----------------------------------------------------------------------
     # Success propensity  (p_hat = G * E^alpha * R^beta * M^gamma)
@@ -316,7 +326,9 @@ class Settings(BaseSettings):
     v4_full_unparsed_coverage: float = -1.0
     # Whitening transform for the COMBINED (concat) embedding used by the whitened p_hat skills-fit,
     # built by tools/embeddings/build_whitened_concat.py (mu, W=Sigma^-1/2, target). Refit on the live corpus for prod.
-    v4_full_concat_whitening_path: str = str(_DEFAULT_MODEL_DIR / "concat_whitening_gemini.npz")
+    v4_full_concat_whitening_path: str = str(
+        _DEFAULT_MODEL_DIR / "concat_whitening_gemini.npz"
+    )
     # /match_v4 shortlist sizing (v4-only; v3/zqf keep cosine_cross_encoder_retrieve_top_k/30). Stage-1 now
     # ranks in the WHITENED concat space (the RAW concat cosine was near-uninformative, sd ~0.02); the
     # whitened p_hat + coverage re-rank is then applied to the final_top_k CE survivors. Widen both so
@@ -333,7 +345,9 @@ class Settings(BaseSettings):
     match_v4_occ_demand_gamma: float = Field(default=0.3, ge=0.0)
     # Committed NPZ of occupation concat-Gemini embeddings (codes + float32 vectors), built offline
     # by tools.embeddings.embed_occupations. Missing => occupations skipped (logged).
-    occupation_concat_embeddings_path: str = str(_RESOURCES / "occupations" / "occupation_concat_embeddings.npz")
+    occupation_concat_embeddings_path: str = str(
+        _RESOURCES / "occupations" / "occupation_concat_embeddings.npz"
+    )
 
     # -----------------------------------------------------------------------
     # Data files (server-side)
@@ -341,11 +355,15 @@ class Settings(BaseSettings):
     # Canonical-language occupation database. Use `occupation_json_path(language)` when the
     # language matters (labels); this constant stays for the many language-neutral call sites.
     occupation_json_path: str = str(_DEFAULT_OCC)
-    embedding_model_path: str = str(_DEFAULT_MODEL_DIR / "skill_embedding_model_gemini.pt")
+    embedding_model_path: str = str(
+        _DEFAULT_MODEL_DIR / "skill_embedding_model_gemini.pt"
+    )
     # /match_v4 per-skill GATE uses the WHITENED skill artifact (de-anisotropised; carries its own
     # rescale target in metadata). Kept separate from the shared embedding_model_path so v2/v3 + the
     # Node2Vec/skill-gap/hybrid paths are untouched.
-    v4_full_embedding_model_path: str = str(_DEFAULT_MODEL_DIR / "skill_embedding_model_gemini_whitened.pt")
+    v4_full_embedding_model_path: str = str(
+        _DEFAULT_MODEL_DIR / "skill_embedding_model_gemini_whitened.pt"
+    )
     skill_to_row_path: str = str(_DEFAULT_MODEL_DIR / "skill_to_row.json")
 
     # SKILLS_CSV_PATH / SKILL_GROUPS_CSV_PATH / SKILL_HIERARCHY_CSV_PATH are intentionally NOT
@@ -493,7 +511,9 @@ PREFERENCE_SIGMOID_NUMERATOR = settings.preference_sigmoid_numerator
 PREFERENCE_SCORER_MODE = settings.preference_scorer_mode
 
 HYBRID_PREF_SIGMOID_FACTOR = settings.hybrid_pref_sigmoid_factor
-HYBRID_PREF_VIGNETTES_FOR_FULL_CONFIDENCE = settings.hybrid_pref_vignettes_for_full_confidence
+HYBRID_PREF_VIGNETTES_FOR_FULL_CONFIDENCE = (
+    settings.hybrid_pref_vignettes_for_full_confidence
+)
 HYBRID_PREF_SCHEMA_PATH = settings.hybrid_pref_schema_path
 
 BWS_ALPHA = settings.bws_alpha
