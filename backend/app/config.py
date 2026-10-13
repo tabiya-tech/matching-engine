@@ -472,7 +472,9 @@ LOCATION_TIER_W_NATIONAL = settings.location_tier_w_national
 LOCATION_HUB_CHAINS_PATH = settings.location_hub_chains_path
 
 GATE_SIMILARITY_THRESHOLD = settings.gate_similarity_threshold
-MATCH_RESPONSE_SKILL_MIN_SCORE = settings.match_response_skill_min_score
+# The `_default_match_response_skill_min_score` validator above guarantees this is set by now.
+assert settings.match_response_skill_min_score is not None
+MATCH_RESPONSE_SKILL_MIN_SCORE: float = settings.match_response_skill_min_score
 
 SUCCESS_PROPENSITY_CONFIG: dict[str, Any] = {
     "alpha_essential": settings.phat_alpha_essential,
