@@ -39,7 +39,7 @@ import os
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import List, Literal, Optional, Set, Tuple
+from typing import List, Literal, Optional, Set, Tuple, TypedDict
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -421,7 +421,14 @@ def _ranks_high_to_low(scores: np.ndarray) -> np.ndarray:
     return ranks
 
 
-def _job_ref(job: MatchItem) -> dict[str, str | None]:
+class _JobRefFields(TypedDict):
+    job_uuid: str
+    job_title: str
+    employer: str | None
+    location: str
+
+
+def _job_ref(job: MatchItem) -> _JobRefFields:
     return {
         "job_uuid": job.uuid,
         "job_title": job.title,

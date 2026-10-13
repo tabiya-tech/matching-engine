@@ -26,6 +26,7 @@ def test_v_task_is_importance_weighted_average():
     job = _job([("4.A.1", 3, 5), ("4.A.2", 1, 5)])
     v_task, detail = compute_task_utility(user, job)
     assert v_task == pytest.approx(1.0)
+    assert detail is not None
     weights = [d.weight for d in detail.wa_details]
     assert weights == pytest.approx([0.75, 0.25])
     assert detail.wa_aggregation == "importance_weighted"
@@ -40,6 +41,7 @@ def test_missing_activity_defaults_to_neutral_zero():
     job = _job([("4.A.1", 3, 5), ("4.A.2", 1, 5)])
     v_task, detail = compute_task_utility(user, job)
     assert v_task == pytest.approx(0.0)
+    assert detail is not None
     assert all(d.beta == 0.0 for d in detail.wa_details)
 
 

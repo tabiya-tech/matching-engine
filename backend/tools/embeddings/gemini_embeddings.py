@@ -22,12 +22,13 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 from dotenv import load_dotenv
@@ -42,6 +43,17 @@ from app.clients.gemini_embedding_client import (
     embed_text_list,
 )
 from app.ranking.retrieval import l2_normalize_rows
+
+if TYPE_CHECKING:
+    # app.services.two_stage_retrieval.gemini_vs_minilm.sync_gemini_embeddings_to_mongo has
+    # never existed in this repo; --mongo-jobs has been broken since it was added (see git
+    # history). Typed as Any rather than imported so the rest of the file still type-checks;
+    # the call site below raises a clear error instead of letting --mongo-jobs hit an
+    # unguarded ModuleNotFoundError mid-run.
+    from typing import Callable
+
+    bulk_write_concat_gemini_job_embeddings: Callable[..., Any]
+    _mongo_client_and_collection: Callable[..., Any]
 
 
 def _backend_root() -> Path:
@@ -161,10 +173,23 @@ def run(
     }
 
     if mongo_jobs:
-        from app.services.two_stage_retrieval.gemini_vs_minilm.sync_gemini_embeddings_to_mongo import (
-            _mongo_client_and_collection,
-            bulk_write_concat_gemini_job_embeddings,
+        _sync_module_name = (
+            "app.services.two_stage_retrieval.gemini_vs_minilm"
+            ".sync_gemini_embeddings_to_mongo"
         )
+        try:
+            _sync_module = importlib.import_module(_sync_module_name)
+        except ModuleNotFoundError as e:
+            raise RuntimeError(
+                f"--mongo-jobs requires {_sync_module_name}, which does not exist in this "
+                "codebase. Omit --mongo-jobs, or implement that module "
+                "(bulk_write_concat_gemini_job_embeddings, _mongo_client_and_collection) "
+                "before using this flag."
+            ) from e
+        bulk_write_concat_gemini_job_embeddings = (
+            _sync_module.bulk_write_concat_gemini_job_embeddings
+        )
+        _mongo_client_and_collection = _sync_module._mongo_client_and_collection
 
         nk = str(job_key).strip().lower()
         mfm = (mongo_match_field or "job_id").strip().lower().replace("-", "_")

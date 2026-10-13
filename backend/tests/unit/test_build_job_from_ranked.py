@@ -75,6 +75,7 @@ class TestZqfMapping:
             }
         )
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.province == "Copperbelt"
         assert job.zqf_min == 5
         assert job.zqf_max == 7
@@ -92,6 +93,7 @@ class TestZqfMapping:
             }
         )
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.zqf_min == 4
         assert job.zqf_max == 4
         assert job.zqf_min_label == "Craft Certificate / Grade 12"
@@ -104,6 +106,7 @@ class TestZqfMapping:
         doc["classifier_metadata"]["min_zqf_level"] = 5
         doc["classifier_metadata"]["max_zqf_level"] = 8
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.zqf_min == 5
         assert job.zqf_max == 8
 
@@ -112,6 +115,7 @@ class TestZqfMapping:
         doc["zqf_min"] = 4
         doc["zqf_max"] = 9
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.zqf_min == 4
         assert job.zqf_max == 9
         assert job.zqf_min_label is None
@@ -121,6 +125,7 @@ class TestZqfMapping:
         doc = _base_doc()
         doc["classifier_metadata"].pop("county", None)
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.zqf_min is None
         assert job.zqf_max is None
 
@@ -130,6 +135,7 @@ class TestLocationMapping:
         doc = _base_doc()
         doc["classifier_metadata"].pop("province", None)
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.province == "Lusaka"
 
     def test_empty_province_uses_county(self):
@@ -137,12 +143,14 @@ class TestLocationMapping:
         doc["classifier_metadata"]["province"] = ""
         doc["classifier_metadata"]["county"] = "Central"
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.province == "Central"
 
     def test_location_joins_city_and_province(self):
         doc = _base_doc()
         doc["classifier_metadata"]["province"] = "Copperbelt"
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.location == "Lusaka Copperbelt"
 
 
@@ -152,6 +160,7 @@ class TestIdentifierAndRelationMapping:
         doc["origin_uuid"] = "origin-a"
         doc["originUuid"] = "origin-b"
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.uuid == "test-job-001"
         assert job.originUuid == "origin-a"
         assert job.job_fingerprint == "fp-abc123"
@@ -159,6 +168,7 @@ class TestIdentifierAndRelationMapping:
     def test_related_occupation_id_falls_back_to_isco_group_id(self):
         doc = _base_doc()
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.related_occupation_id == "2512"
 
 
@@ -175,6 +185,7 @@ class TestDateAndDescriptionMapping:
         doc = _base_doc()
         doc["classifier_metadata"][meta_key] = meta_value
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.posted_date == meta_value
 
     def test_opportunity_description_falls_back_to_description(self):
@@ -182,18 +193,21 @@ class TestDateAndDescriptionMapping:
         doc["classifier_metadata"].pop("job_description", None)
         doc["classifier_metadata"]["description"] = "Alt description"
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.opportunity_description == "Alt description"
 
     def test_closing_date_none_becomes_empty_string(self):
         doc = _base_doc()
         doc["classifier_metadata"]["closing_date"] = None
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.closing_date == ""
 
 
 class TestEducationAndSkillsMapping:
     def test_requires_post_secondary_from_llm_attributes(self):
         job = build_job_from_ranked(_base_doc())
+        assert job is not None
         assert job.requires_post_secondary is True
 
     def test_essential_skills_skip_rows_without_tabiya_skill_id(self):
@@ -203,6 +217,7 @@ class TestEducationAndSkillsMapping:
             {"label": "no-id"},
         ]
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert len(job.essential_skills) == 1
         assert job.essential_skills[0] == SkillReference(id="s1", label="Python")
 
@@ -210,12 +225,14 @@ class TestEducationAndSkillsMapping:
         doc = _base_doc()
         doc["skill_groups_origin_uuids"] = "grp-solo"
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.skill_groups_origin_uuids == ["grp-solo"]
 
     def test_skill_groups_none_becomes_empty_list(self):
         doc = _base_doc()
         doc["skill_groups_origin_uuids"] = None
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.skill_groups_origin_uuids == []
 
 
@@ -224,6 +241,8 @@ class TestEmbeddingPassthrough:
         doc = _base_doc()
         doc["job_embedding"] = [0.1] * EMBEDDING_DIM
         job = build_job_from_ranked(doc)
+        assert job is not None
+        assert job.embedding is not None
         assert job.embedding.dtype == np.float32
         assert job.embedding.shape == (EMBEDDING_DIM,)
 
@@ -231,6 +250,7 @@ class TestEmbeddingPassthrough:
         doc = _base_doc()
         doc["job_embedding"] = [0.1, 0.2, 0.3]
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.embedding is None
 
     def test_concat_gemini_vector_bin_preferred_over_job_embedding(self):
@@ -239,6 +259,7 @@ class TestEmbeddingPassthrough:
         doc["concat_skill_embedding_gemini"] = {"vector_bin": synced.tobytes()}
         doc["job_embedding"] = [0.1] * EMBEDDING_DIM
         job = build_job_from_ranked(doc)
+        assert job is not None
         np.testing.assert_array_equal(job.embedding, synced)
 
     def test_concat_gemini_vector_bin_wrong_size_falls_back_to_job_embedding(self):
@@ -246,6 +267,8 @@ class TestEmbeddingPassthrough:
         doc["concat_skill_embedding_gemini"] = {"vector_bin": b"\x00\x00\x00\x00"}
         doc["job_embedding"] = [0.1] * EMBEDDING_DIM
         job = build_job_from_ranked(doc)
+        assert job is not None
+        assert job.embedding is not None
         assert job.embedding[0] == pytest.approx(0.1)
 
     def test_job_embedding_whitened_flag_true(self):
@@ -253,14 +276,20 @@ class TestEmbeddingPassthrough:
         # matcher consumes it directly instead of re-whitening in-process.
         doc = _base_doc()
         doc["llm_reranker_meta"] = {"embedding": {"whitening": {"enabled": True}}}
-        assert build_job_from_ranked(doc).embedding_whitened is True
+        job = build_job_from_ranked(doc)
+        assert job is not None
+        assert job.embedding_whitened is True
 
     def test_job_embedding_whitened_flag_defaults_false(self):
         # No metadata (offline corpus / not-yet-whitened jobs) -> raw -> whitened in-process.
-        assert build_job_from_ranked(_base_doc()).embedding_whitened is False
+        job = build_job_from_ranked(_base_doc())
+        assert job is not None
+        assert job.embedding_whitened is False
         doc = _base_doc()
         doc["llm_reranker_meta"] = {"embedding": {"whitening": {"enabled": False}}}
-        assert build_job_from_ranked(doc).embedding_whitened is False
+        job = build_job_from_ranked(doc)
+        assert job is not None
+        assert job.embedding_whitened is False
 
 
 class TestCompassConsumerContractFields:
@@ -270,22 +299,26 @@ class TestCompassConsumerContractFields:
         doc = _base_doc()
         doc["classifier_metadata"]["category"] = "Healthcare"
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.category == "Healthcare"
 
     def test_category_falls_back_to_sector_then_isco_group(self):
         doc = _base_doc()
         doc["classifier_metadata"]["sector"] = "Tech sector"
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.category == "Tech sector"
 
         doc = _base_doc()  # no category, no sector → ISCO group label
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.category == "Software developers"
 
     def test_source_platform_candidate_fields(self):
         doc = _base_doc()
         doc["classifier_metadata"]["source"] = "BrighterMonday"
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.source_platform == "BrighterMonday"
 
     def test_skills_flattens_essential_then_optional_deduped(self):
@@ -301,6 +334,7 @@ class TestCompassConsumerContractFields:
             ],
         }
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.skills == ["Python", "SQL", "Docker"]
 
 
@@ -309,6 +343,7 @@ class TestClassifierMetadataHappyPath:
 
     def test_core_listing_fields_from_classifier_metadata(self):
         job = build_job_from_ranked(_base_doc())
+        assert job is not None
         assert job.opportunity_title == "Software Engineer"
         assert job.employer == "TechCorp"
         assert job.city == "Lusaka"
@@ -330,12 +365,14 @@ class TestClassifierMetadataHappyPath:
         doc = _base_doc()
         doc["classifier_metadata"].pop("title", None)
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.opportunity_title == "Unknown"
 
     def test_default_employment_type_when_missing(self):
         doc = _base_doc()
         doc["classifier_metadata"].pop("employment_type", None)
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.contract_type == "full_time"
 
 
@@ -347,6 +384,7 @@ class TestBoundaryNormalisation:
         doc["classifier_metadata"]["isco_occupation_group_id"] = 2512
         doc["job_id"] = 42
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.opportunity_isco_occupation_group_id == "2512"
         assert job.uuid == "42"
 
@@ -354,7 +392,9 @@ class TestBoundaryNormalisation:
         for raw, expected in ((1, True), (0, False), ("false", False), (None, None)):
             doc = _base_doc()
             doc["llm_job_attributes"]["attributes"]["requires_post_secondary"] = raw
-            assert build_job_from_ranked(doc).requires_post_secondary is expected
+            job = build_job_from_ranked(doc)
+            assert job is not None
+            assert job.requires_post_secondary is expected
 
     def test_attribute_levels_keep_known_attributes_only(self):
         doc = _base_doc()
@@ -362,6 +402,7 @@ class TestBoundaryNormalisation:
             {"earnings_per_month": "earn_50_80k", "not_a_schema_attribute": "x"}
         )
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.attributes == JobAttributes(earnings_per_month="earn_50_80k")
 
     def test_unrated_work_activities_are_dropped(self):
@@ -376,6 +417,7 @@ class TestBoundaryNormalisation:
             },
         ]
         job = build_job_from_ranked(doc)
+        assert job is not None
         assert job.onet_work_activities == [
             WorkActivity(code="4.A.1", label="", importance=3.5, level=4.0)
         ]
@@ -383,7 +425,9 @@ class TestBoundaryNormalisation:
     def test_zqf_levels_are_parsed_from_numeric_strings(self):
         doc = _base_doc()
         doc["classifier_metadata"]["zqf_min"] = "4"
-        assert build_job_from_ranked(doc).zqf_min == 4
+        job = build_job_from_ranked(doc)
+        assert job is not None
+        assert job.zqf_min == 4
 
     def test_malformed_document_is_rejected(self):
         doc = _base_doc()

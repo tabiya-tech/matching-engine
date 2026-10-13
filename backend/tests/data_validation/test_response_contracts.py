@@ -5,6 +5,8 @@ Guards the full MatchResponseV5 contract shown in Swagger so any
 field rename, removal, or type change is caught immediately.
 """
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -26,8 +28,8 @@ from app.schemas import (
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
-def _minimal_opportunity(**overrides):
-    defaults = dict(
+def _minimal_opportunity(**overrides: Any) -> dict[str, Any]:
+    defaults: dict[str, Any] = dict(
         uuid="j1",
         rank=1,
         opportunity_title="Test Job",
@@ -41,8 +43,8 @@ def _minimal_opportunity(**overrides):
     return defaults
 
 
-def _minimal_occupation(**overrides):
-    defaults = dict(
+def _minimal_occupation(**overrides: Any) -> dict[str, Any]:
+    defaults: dict[str, Any] = dict(
         uuid="occ1",
         rank=1,
         occupation_label="Baker",
@@ -56,8 +58,8 @@ def _minimal_occupation(**overrides):
     return defaults
 
 
-def _minimal_skill_gap(**overrides):
-    defaults = dict(
+def _minimal_skill_gap(**overrides: Any) -> dict[str, Any]:
+    defaults: dict[str, Any] = dict(
         skill_id="s1",
         skill_label="Python",
         proximity_score=0.9,
@@ -77,7 +79,7 @@ class TestMatchResponseContract:
 
     def test_user_id_required(self):
         with pytest.raises(ValidationError):
-            MatchResponse()
+            MatchResponse()  # pyright: ignore[reportCallIssue] — missing user_id is the point
 
     def test_minimal_valid(self):
         resp = MatchResponse(user_id="u1")
@@ -277,7 +279,9 @@ class TestScoreBreakdownContract:
         )
         assert sb.u_hat == 0.72
         assert sb.p_hat == 0.65
+        assert sb.p_hat_components is not None
         assert sb.p_hat_components.gate == 0.8
+        assert sb.skill_components is not None
         assert sb.skill_components.ess == 0.5
 
 
@@ -308,7 +312,7 @@ class TestMatchedSkillsContract:
 
     def test_essential_skill_required_fields(self):
         with pytest.raises(ValidationError):
-            MatchedSkill()
+            MatchedSkill()  # pyright: ignore[reportCallIssue] — missing required fields is the point
 
 
 # ── MatchedPreference ────────────────────────────────────────────────────────
@@ -341,7 +345,7 @@ class TestMatchedPreferenceContract:
             "contribution",
             "matched",
         ):
-            kwargs = dict(
+            kwargs: dict[str, Any] = dict(
                 attribute="earnings",
                 user_weight=0.5,
                 beta=0.3,
@@ -369,7 +373,7 @@ class TestMatchResponseV5Contract:
 
     def test_v5_user_id_required(self):
         with pytest.raises(ValidationError):
-            MatchResponseV5()
+            MatchResponseV5()  # pyright: ignore[reportCallIssue] — missing user_id is the point
 
     def test_v5_opportunity_has_zqf_fields(self):
         opp = OpportunityRecommendationV5(

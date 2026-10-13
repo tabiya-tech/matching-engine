@@ -18,7 +18,9 @@ def test_empty_request_validates_with_neutral_defaults():
 
 
 def test_partial_preference_vector_fills_rest_neutral():
-    req = MatchRequest(preference_vector={"earnings_per_month": 0.9})
+    req = MatchRequest(
+        preference_vector={"earnings_per_month": 0.9}  # pyright: ignore[reportArgumentType] — dict coerces into PreferenceVector at runtime; this checks exactly that
+    )
     assert req.preference_vector.earnings_per_month == 0.9
     # everything else defaults neutral
     assert req.preference_vector.career_growth == 0.5
@@ -36,10 +38,10 @@ def test_full_payload_still_validates_unchanged():
         user_id="u1",
         city="Nairobi",
         province="Nairobi",
-        skills_vector={
+        skills_vector={  # pyright: ignore[reportArgumentType] — dict coerces into SkillsVector at runtime; this checks exactly that
             "top_skills": [{"originUUID": "x", "preferredLabel": "welding"}]
         },
-        preference_vector={
+        preference_vector={  # pyright: ignore[reportArgumentType] — dict coerces into PreferenceVector at runtime; this checks exactly that
             "earnings_per_month": 0.8,
             "physical_demand": 0.2,
             "social_interaction": 0.6,

@@ -46,7 +46,7 @@ load_dotenv(BACKEND / ".env")
 sys.path.insert(0, str(BACKEND))
 
 try:  # Windows consoles default to cp1252 and can't encode the arrows/symbols below
-    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")  # pyright: ignore[reportAttributeAccessIssue] — real stdout has it; the except below covers stand-ins that don't
 except Exception:
     pass
 
@@ -455,7 +455,7 @@ def validate_real_concat(matcher, white_W, target, name, users_path, jobs_path, 
     proxy): user concat embedded live via Gemini; job concat = stored job_embedding. Reports the
     count-correlation of the real skills_fit, the per-skill coverage, and their product."""
     try:
-        import truststore
+        import truststore  # pyright: ignore[reportMissingImports] — optional; the except below covers its absence
 
         truststore.inject_into_ssl()
     except Exception:

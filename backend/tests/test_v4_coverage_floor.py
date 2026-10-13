@@ -98,9 +98,11 @@ class TestCoverageStillRanks:
         assert out[0].uuid == "LO"
 
     def test_factor_is_monotone_in_coverage(self):
-        def factor(cov):
+        def factor(cov) -> float:
             out = _enrich({"HI": cov, "LO": cov})
-            return next(r for r in out if r.uuid == "HI").breakdown.coverage_factor
+            value = next(r for r in out if r.uuid == "HI").breakdown.coverage_factor
+            assert value is not None
+            return value
 
         factors = [factor(c) for c in (0.0, 0.25, 0.5, 0.75, 1.0)]
         assert factors == sorted(factors)

@@ -81,6 +81,7 @@ import datetime as _dt
 import json
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -302,7 +303,7 @@ def main() -> None:
     # but not in certifi's bundle. This trusts the OS store (secure) — it does NOT disable verification.
     if not args.no_system_trust:
         try:
-            import truststore
+            import truststore  # pyright: ignore[reportMissingImports] — optional; the except below covers its absence
 
             truststore.inject_into_ssl()
             print(
@@ -643,7 +644,7 @@ def main() -> None:
     matching_service = create_matching_service(
         _LoadedJobsRepository(jobs_list, mongo_timing)
     )
-    responses: list[MatchResponse] | list[MatchResponseV5]
+    responses: Sequence[MatchResponse | MatchResponseV5]
     if args.version == "v3":
         # /match_v3: Gemini concat-cosine -> cross-encoder rerank. final_score is the concat
         # cosine; NO preference layer (u_hat/p_hat empty). No combiner / mongo_timing args.
@@ -672,7 +673,7 @@ def main() -> None:
         )
         if args.version == "v5":
             job_by_uuid_v5 = {j.uuid: j for j in jobs_list}
-            responses = []
+            v5_responses: list[MatchResponseV5] = []
             for response, user in zip(v4, users, strict=True):
                 opportunities: list[OpportunityRecommendationV5] = []
                 for opp in response.opportunity_recommendations:
@@ -689,7 +690,7 @@ def main() -> None:
                             zqf_max_label=job.zqf_max_label if job else None,
                         )
                     )
-                responses.append(
+                v5_responses.append(
                     MatchResponseV5(
                         user_id=response.user_id,
                         occupation_recommendations=response.occupation_recommendations,
@@ -697,6 +698,7 @@ def main() -> None:
                         skill_gap_recommendations=response.skill_gap_recommendations,
                     )
                 )
+            responses = v5_responses
         else:
             responses = v4
     else:

@@ -183,7 +183,7 @@ def test_helpers_and_middleware_are_no_ops_when_tracing_is_off(monkeypatch):
 
     # The embedding path runs untraced (and never calls count_tokens) outside a request.
     models = _FakeEmbedModels(dim=4)
-    models.count_tokens = None
+    models.count_tokens = None  # pyright: ignore[reportAttributeAccessIssue]
     assert _embed(["a"], models=models, monkeypatch=monkeypatch).shape == (1, 4)
 
 
@@ -355,7 +355,9 @@ def test_retried_embedding_is_counted_and_tags_the_request(monkeypatch):
     assert _metadata(emb, "attempts") == 3
     assert _metadata(emb, "retries") == 2
     assert _metadata(emb, "errors") == ["RuntimeError", "RuntimeError"]
-    assert len(_metadata(emb, "attempt_ms")) == 3
+    attempt_ms = _metadata(emb, "attempt_ms")
+    assert isinstance(attempt_ms, list)
+    assert len(attempt_ms) == 3
     assert emb.attributes[LEVEL] == "WARNING"
     assert "embedding_retried" in root.attributes[TAGS]
     assert _metadata(root, "embedding_retries") == 2
