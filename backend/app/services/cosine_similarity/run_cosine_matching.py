@@ -31,7 +31,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from app.config import EMBEDDING_MODEL_PATH, SKILLS_CSV_PATH, SKILL_TO_ROW_PATH
+from app.config import EMBEDDING_MODEL_PATH, SKILL_TO_ROW_PATH, SKILLS_CSV_PATH
 from app.jobs.repository import JobsLoadTiming
 from app.ranking.types import SkillMatchDetail
 from app.services.offline_io import JobsSource, load_jobs, load_users

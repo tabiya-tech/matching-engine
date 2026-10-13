@@ -13,6 +13,7 @@ import inspect
 import pytest
 
 from app import config
+from app.artifacts.repository import get_artifacts_repository
 from app.languages import (
     CANONICAL_LANGUAGE,
     LANGUAGE_REGISTRY,
@@ -21,7 +22,6 @@ from app.languages import (
     get_language_config,
     normalise_language,
 )
-from app.artifacts.repository import get_artifacts_repository
 from app.ranking.skills import SkillLabelPacks, oldest_uuid
 
 

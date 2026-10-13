@@ -109,7 +109,9 @@ class CrossEncoderClient(ICrossEncoderClient):
         if self._model is not None:
             return
         try:
-            from sentence_transformers import CrossEncoder  # noqa: PLC0415 — heavy import
+            from sentence_transformers import (
+                CrossEncoder,  # noqa: PLC0415 — heavy import
+            )
         except ImportError as e:
             raise ImportError(
                 "Cross-encoder reranking requires sentence-transformers. "

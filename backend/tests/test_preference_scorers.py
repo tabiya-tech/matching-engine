@@ -4,10 +4,9 @@ import math
 
 import pytest
 
-from app.schemas import MatchedPreference, WorkActivityBWS
-from app.ranking.preference import PreferenceScorer
-from app.ranking.preference import UnifiedPreferenceScorer
 from app.artifacts.repository import get_artifacts_repository
+from app.ranking.preference import PreferenceScorer, UnifiedPreferenceScorer
+from app.schemas import MatchedPreference, WorkActivityBWS
 from tests.domain_factories import (
     make_attributes,
     make_job,

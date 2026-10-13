@@ -45,10 +45,10 @@ import csv
 import itertools
 import json
 import math
-import sys
 import statistics as stats
-from pathlib import Path
+import sys
 from collections import Counter, defaultdict
+from pathlib import Path
 
 # Windows consoles default to cp1252, which can't encode the arrows/symbols used below.
 try:

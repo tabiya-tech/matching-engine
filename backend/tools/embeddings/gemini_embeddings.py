@@ -162,8 +162,8 @@ def run(
 
     if mongo_jobs:
         from app.services.two_stage_retrieval.gemini_vs_minilm.sync_gemini_embeddings_to_mongo import (
-            bulk_write_concat_gemini_job_embeddings,
             _mongo_client_and_collection,
+            bulk_write_concat_gemini_job_embeddings,
         )
 
         nk = str(job_key).strip().lower()

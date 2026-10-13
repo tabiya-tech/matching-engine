@@ -19,7 +19,7 @@ from app.jobs.job_document import (
 )
 
 
-def _norm_loc_value(v: Any) -> str:
+def _norm_loc_value(v: object) -> str:
     """Casefold + strip, aligned with matching_service._norm for city/province."""
     if v is None:
         return ""

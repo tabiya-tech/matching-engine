@@ -60,7 +60,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="before")
     @classmethod
-    def _blank_env_values_are_unset(cls, data: Any) -> Any:
+    def _blank_env_values_are_unset(cls, data: object) -> object:
         """A blank env var (`FOO=`) means "unset", same as `_s`/`_f`/`_i`/`_b` in the pre-settings
         config: a deployment that comments out a value but leaves the `KEY=` line should fall back
         to the field's default rather than fail validation on an empty string."""
@@ -378,7 +378,7 @@ class Settings(BaseSettings):
 
     @field_validator("preference_scorer_mode", mode="before")
     @classmethod
-    def _preference_scorer_mode_alias(cls, v: Any) -> Any:
+    def _preference_scorer_mode_alias(cls, v: object) -> object:
         """`hybrid_v1` is the former name for the v1 scorer that `unified` replaces."""
         if isinstance(v, str) and v.strip().lower() == "hybrid_v1":
             return "unified"
@@ -392,7 +392,7 @@ class Settings(BaseSettings):
         mode="before",
     )
     @classmethod
-    def _lowercase_and_strip(cls, v: Any) -> Any:
+    def _lowercase_and_strip(cls, v: object) -> object:
         return v.strip().lower() if isinstance(v, str) else v
 
     @field_validator(
@@ -408,7 +408,7 @@ class Settings(BaseSettings):
 
     @field_validator("dce_attr_scale", mode="before")
     @classmethod
-    def _parse_dce_attr_scale(cls, v: Any) -> Any:
+    def _parse_dce_attr_scale(cls, v: object) -> object:
         if not isinstance(v, str):
             return v
         if not v.strip():
