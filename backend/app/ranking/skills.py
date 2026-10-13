@@ -9,6 +9,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
 import numpy as np
 from pydantic import Field
 

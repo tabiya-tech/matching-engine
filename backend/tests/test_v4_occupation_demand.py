@@ -5,8 +5,9 @@ Demand must re-rank OCCUPATIONS (include_demand=True) but never OPPORTUNITIES (d
 
 import pytest
 
-from app.ranking.preference import UnifiedPreferenceScorer
 from app.artifacts.repository import get_artifacts_repository
+from app.ranking.preference import UnifiedPreferenceScorer
+from app.ranking.scoring import enrich_recommendations_with_preferences
 from tests.domain_factories import (
     make_attributes,
     make_candidate,
@@ -14,7 +15,6 @@ from tests.domain_factories import (
     make_skills,
     make_user,
 )
-from app.ranking.scoring import enrich_recommendations_with_preferences
 
 
 def _recs():

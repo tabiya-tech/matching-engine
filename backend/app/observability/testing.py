@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Iterator
 
+from langfuse import Langfuse
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 import app.observability.tracing as tracing_module
@@ -27,14 +28,14 @@ TEST_TRACING_CONFIG = TracingConfig(
     host="http://localhost:1",
 )
 
-_client = None
+_client: Langfuse | None = None
 _exporter: InMemorySpanExporter | None = None
 
 
 class RecordedSpans:
     """A thin accessor over the in-memory exporter, so assertions read as span lookups."""
 
-    def __init__(self, client, exporter: InMemorySpanExporter):
+    def __init__(self, client: Langfuse, exporter: InMemorySpanExporter):
         self._client = client
         self._exporter = exporter
 
@@ -54,7 +55,7 @@ class RecordedSpans:
         return None
 
     @staticmethod
-    def json_attribute(span, key: str) -> Any:
+    def json_attribute(span, key: str) -> object:
         """A span attribute Langfuse stores as JSON (usage, input, output), decoded.
 
         Plain-string payloads are stored as-is, not JSON-encoded, and come back unchanged.
@@ -68,11 +69,9 @@ class RecordedSpans:
             return raw
 
 
-def _get_or_create_client():
+def _get_or_create_client() -> tuple[Langfuse, InMemorySpanExporter]:
     global _client, _exporter
     if _client is None:
-        from langfuse import Langfuse
-
         _exporter = InMemorySpanExporter()
         _client = Langfuse(
             public_key=TEST_TRACING_CONFIG.public_key,
@@ -83,6 +82,7 @@ def _get_or_create_client():
             # The production mask, so tests see exactly what would be exported.
             mask=build_mask_function(TEST_TRACING_CONFIG),
         )
+    assert _exporter is not None  # always set alongside _client, just above
     return _client, _exporter
 
 

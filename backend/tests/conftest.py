@@ -25,7 +25,6 @@ os.environ.setdefault("MONGO_DB_NAME", "test")
 
 from app.matching.service import MatchingService  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Fixtures for smoke tests (mocked FastAPI app)
 # ---------------------------------------------------------------------------
@@ -52,7 +51,6 @@ class _StubMatchingService(MatchingService):
 def mocked_jobs_repository():
     """Stand-in for the jobs repository injected into routes; set side effects per test."""
     from app.jobs.repository import IJobsRepository
-
     from tests.domain_factories import jobs_load_timing
 
     repository = AsyncMock(spec=IJobsRepository)
