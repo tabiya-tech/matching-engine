@@ -23,7 +23,7 @@ import asyncio
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -136,7 +136,20 @@ class PreferenceRow(CeRow):
         )
 
 
-def _ce_fields(c: Candidate) -> dict[str, object]:
+class _CeFields(TypedDict):
+    rank: int
+    job_uuid: str
+    job_title: str
+    employer: str | None
+    location: str
+    concat_cosine_similarity: float
+    cross_encoder_logit: float | None
+    cross_encoder_score: float | None
+    rank_cosine: int | None
+    job_concat_skills: list[str]
+
+
+def _ce_fields(c: Candidate) -> _CeFields:
     item = c.item
     return {
         "rank": c.rank,
