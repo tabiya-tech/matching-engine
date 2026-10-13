@@ -116,7 +116,6 @@ def _openapi_servers() -> list[dict[str, str]]:
 app = FastAPI(title="Matching Service", lifespan=lifespan, servers=_openapi_servers())
 
 
-
 def _error_response(status_code: int, detail: str) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
@@ -125,7 +124,9 @@ def _error_response(status_code: int, detail: str) -> JSONResponse:
 
 
 @app.exception_handler(RequestValidationError)
-async def _validation_error_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+async def _validation_error_handler(
+    _request: Request, exc: RequestValidationError
+) -> JSONResponse:
     """422 as ``HTTPErrorResponse``: FastAPI's error list flattened to one ``detail`` string.
 
     Only ``loc`` and ``msg`` are kept — never the rejected ``input``, which can be profile data.
@@ -137,7 +138,10 @@ async def _validation_error_handler(_request: Request, exc: RequestValidationErr
     )
     logger.warning(
         "Request validation failed {errors=%s}",
-        [(".".join(str(p) for p in err.get("loc", ())), err.get("type")) for err in errors],
+        [
+            (".".join(str(p) for p in err.get("loc", ())), err.get("type"))
+            for err in errors
+        ],
     )
     return _error_response(422, detail or "Request validation failed.")
 
@@ -149,6 +153,7 @@ async def _unhandled_error_handler(_request: Request, exc: Exception) -> JSONRes
     Not logged here: Starlette re-raises after this response is sent and uvicorn logs the traceback.
     """
     return _error_response(500, f"Internal server error: {exc.__class__.__name__}")
+
 
 # CORS for browser clients (Swagger /docs, local frontends).
 # Dev: allow any localhost / 127.0.0.1 / 0.0.0.0 origin on any port (regex). Otherwise no Origin = no preflight (curl etc.).
