@@ -45,6 +45,18 @@ class TestJobsIndexModels:
             ("_id", -1),
         ]
 
+    def test_location_keys_index_serves_the_match_filter_newest_first(self):
+        # /match filters is_active + location_keys $in and sorts by _id desc (build_location_filter).
+        keys = {
+            m.document["name"]: list(m.document["key"].items())
+            for m in JOBS_INDEX_MODELS
+        }
+        assert keys["is_active_location_keys_-_id"] == [
+            ("is_active", 1),
+            ("location_keys", 1),
+            ("_id", -1),
+        ]
+
 
 class TestInitializeJobsMongoDb:
     def test_calls_create_indexes_with_the_models_and_returns_names(self):

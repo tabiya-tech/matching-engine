@@ -23,10 +23,6 @@ from app.clients.cross_encoder_client import ICrossEncoderClient
 from app.clients.gemini_embedding_client import IGeminiEmbeddingClient
 from app.config import (
     FINAL_SCORE_COMBINER,
-    LOCATION_HUB_CHAINS_PATH,
-    LOCATION_TIER_ENABLED,
-    LOCATION_TIER_W_NATIONAL,
-    LOCATION_TIER_W_REGIONAL,
     MATCH_TOP_K_SKILL_GAPS,
     MATCH_V2_MAX_USERS_PER_REQUEST,
     MATCH_V4_DISABLE_OCCUPATIONS,
@@ -47,6 +43,7 @@ from app.domain.occupation import Occupation
 from app.domain.user import UserProfile
 from app.jobs.repository import IJobsRepository, JobsLoadTiming
 from app.languages import default_language
+from app.location.keys import UserLocationKeys, canonical_location, user_home_keys
 from app.match_timing_log import log_match_step
 from app.matching import formatting as fmt
 from app.matching.errors import InvalidMatchRequestError
@@ -60,12 +57,10 @@ from app.ranking.rerank import ICrossEncoderRerank
 from app.ranking.retrieval import (
     ConcatWhitener,
     IStage1Retriever,
-    Place,
     is_prewhitened,
     l2_normalize_rows,
     stage1_vector,
     user_concat_embedding_text,
-    user_matches_any_county,
     user_skill_labels_for_concat,
 )
 from app.ranking.scoring import (
@@ -91,6 +86,7 @@ from app.schemas import (
     OpportunityRecommendation,
 )
 from app.services.job_retrieval import retrieve_jobs_with_timing
+from app.services.location_query import location_hub_chains, resolve_location_keys
 
 logger = logging.getLogger(__name__)
 
@@ -151,12 +147,13 @@ class IMatchingService(ABC):
         final_score_combiner: str | None = None,
         skill_gap_top_k: int = MATCH_TOP_K_SKILL_GAPS,
         mongo_timing: JobsLoadTiming | None = None,
+        location_keys: Sequence[UserLocationKeys] | None = None,
     ) -> list[MatchResponse]:
         """
         Ranks already-loaded jobs and occupations for each user (CPU-bound; call off the event loop).
 
         :param users: The users to match, in response order
-        :param jobs: The job pool (already location-prefiltered)
+        :param jobs: The job pool (already location-filtered for the batch by the database)
         :param occupations: The occupation corpus with embeddings attached; ignored when
             ``MATCH_V4_DISABLE_OCCUPATIONS`` is set
         :param retrieve_top_k: Stage-1 shortlist size per user
@@ -164,6 +161,8 @@ class IMatchingService(ABC):
         :param final_score_combiner: ``product`` or ``geometric_mean``; None = ``FINAL_SCORE_COMBINER``
         :param skill_gap_top_k: Skill-gap recommendations per user
         :param mongo_timing: Timing of the job load, echoed into the retrieval summary
+        :param location_keys: The users' eligible location keys (aligned with ``users``), as used for
+            the job load; resolved here if omitted
         :return: One MatchResponse per user, in input order
         :raises ValueError: If ``final_score_combiner`` is invalid or the engine rejects an input
         """
@@ -191,7 +190,7 @@ class IMatchingService(ABC):
         final_top_k: int,
         mongo_timing: JobsLoadTiming | None = None,
         user_unit_vectors: np.ndarray | None = None,
-        apply_location_tier: bool = False,
+        location_keys: Sequence[UserLocationKeys] | None = None,
         corpus: Corpus = "jobs",
     ) -> list[UserShortlist]:
         """
@@ -203,7 +202,8 @@ class IMatchingService(ABC):
         :param final_top_k: Stage-2 slate size per user
         :param mongo_timing: Job-load timing echoed into ``config_summary``
         :param user_unit_vectors: Precomputed ``embed_users`` output; embedded here if omitted
-        :param apply_location_tier: Weight stage-1 by the user's location tier (urban-pull)
+        :param location_keys: Per-user location keys and tiers (aligned with ``users``) to weight
+            stage-1 by and drop location-ineligible items with (urban-pull); None = no location step
         :param corpus: Labels the ``shortlist`` / ``rerank`` trace spans
         :return: One reranked slate per user, in input order
         :raises RuntimeError: If ``user_unit_vectors`` has the wrong shape
@@ -289,7 +289,7 @@ class MatchingService(IMatchingService):
         final_top_k: int,
         mongo_timing: JobsLoadTiming | None = None,
         user_unit_vectors: np.ndarray | None = None,
-        apply_location_tier: bool = False,
+        location_keys: Sequence[UserLocationKeys] | None = None,
         corpus: Corpus = "jobs",
     ) -> list[UserShortlist]:
         if not users:
@@ -311,22 +311,6 @@ class MatchingService(IMatchingService):
             stage1 = self._retriever.prepare(items)
             n_with_emb = len(stage1.rows)
             n_active = stage1.n_loaded
-
-            # Tiered urban-pull (v4 opportunities only): weight each job's stage-1 cosine by the user's
-            # location tier (local=1.0 > regional hub > national hub; off-chain=0) BEFORE the retrieve_top_k
-            # cutoff, so relevant local jobs survive the funnel instead of being drowned by the (much larger)
-            # national-hub supply. Off-chain jobs (tier 0) are skipped at retrieval entirely. Soft: an
-            # irrelevant local job still loses to a much-better hub job.
-            _hub_chains = None
-            _loc_w_reg = _loc_w_nat = 1.0
-            if apply_location_tier:
-                _hub_chains = self._artifacts_repository.load_hub_chains(
-                    LOCATION_HUB_CHAINS_PATH
-                )
-                _loc_w_reg, _loc_w_nat = (
-                    LOCATION_TIER_W_REGIONAL,
-                    LOCATION_TIER_W_NATIONAL,
-                )
 
             if not stage1.rows:
                 empty_summary = RetrievalSummary(
@@ -373,9 +357,12 @@ class MatchingService(IMatchingService):
                 matcher=matcher,
                 whitener=self._whitener_provider(),
                 retrieve_top_k=rt,
-                hub_chains=_hub_chains,
-                w_regional=_loc_w_reg,
-                w_national=_loc_w_nat,
+                # Tiered urban-pull (v4 opportunities only): weight each job's stage-1 cosine by the
+                # user's location tier (local=1.0 > regional hub > national hub; off-chain=0) BEFORE the
+                # retrieve_top_k cutoff, so relevant local jobs survive the funnel instead of being
+                # drowned by the (much larger) national-hub supply. Soft: an irrelevant local job still
+                # loses to a much-better hub job.
+                location_keys=location_keys,
             )
             observability.update_observation(
                 sl,
@@ -459,10 +446,14 @@ class MatchingService(IMatchingService):
             skill_gap_top_k=skill_gap_top_k,
         )
 
+        location_keys = resolve_location_keys(
+            users, location_hub_chains(self._artifacts_repository)
+        )
+
         t_fetch = time.perf_counter()
         with observability.stage("retrieval") as span:
             (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
-                retrieve_jobs_with_timing(self._jobs_repository, users),
+                retrieve_jobs_with_timing(self._jobs_repository, location_keys),
                 self._load_occupations(),
             )
             observability.update_observation(
@@ -484,6 +475,7 @@ class MatchingService(IMatchingService):
             if skill_gap_top_k is not None
             else MATCH_TOP_K_SKILL_GAPS,
             mongo_timing=mongo_timing,
+            location_keys=location_keys,
         )
         score_ms = _ms(t_score)
 
@@ -499,30 +491,22 @@ class MatchingService(IMatchingService):
         )
         return out
 
+    @staticmethod
     def _location_tier_overrides(
-        self, user: UserProfile, shortlist: UserShortlist | None
+        user_keys: UserLocationKeys | None, shortlist: UserShortlist | None
     ) -> dict[str, float]:
         """Per-uuid location-tier multiplier for a user's job shortlist (urban-pull Part B).
 
         local=1.0, regional hub=W_REGIONAL, national hub=W_NATIONAL, remote=1.0, off-chain=0.0. Returns ``{}``
-        (a no-op) when the feature is disabled or the hub-chain data is unavailable. Runs independent of the
-        Phase-2 coverage demotion (no whitening artifact needed)."""
-        if not LOCATION_TIER_ENABLED or shortlist is None:
+        (a no-op) when location tiers are off (``user_keys`` None). Runs independent of the Phase-2
+        coverage demotion (no whitening artifact needed)."""
+        if user_keys is None or shortlist is None:
             return {}
-        hc = self._artifacts_repository.load_hub_chains(LOCATION_HUB_CHAINS_PATH)
-        if hc is None:
-            return {}
-        county = user.province or user.city or ""
         tiers: dict[str, float] = {}
         for c in shortlist.candidates:
             if not c.uuid or c.uuid in tiers:
                 continue
-            tiers[c.uuid] = hc.tier_factor_for_job(
-                Place.of_item(c.item),
-                county,
-                w_regional=LOCATION_TIER_W_REGIONAL,
-                w_national=LOCATION_TIER_W_NATIONAL,
-            )
+            tiers[c.uuid] = user_keys.tier_for(c.item.location_keys)
         return tiers
 
     def rank(
@@ -536,6 +520,7 @@ class MatchingService(IMatchingService):
         final_score_combiner: str | None = None,
         skill_gap_top_k: int = MATCH_TOP_K_SKILL_GAPS,
         mongo_timing: JobsLoadTiming | None = None,
+        location_keys: Sequence[UserLocationKeys] | None = None,
     ) -> list[MatchResponse]:
         combiner = (final_score_combiner or FINAL_SCORE_COMBINER).strip().lower()
         if combiner not in ("product", "geometric_mean"):
@@ -544,6 +529,13 @@ class MatchingService(IMatchingService):
             )
         if not users:
             return []
+
+        # Location tiers apply only with hub chains (LOCATION_TIER_ENABLED and the file loaded); without
+        # them the database filter on the users' own city/province keys is the whole location step.
+        hub_chains = location_hub_chains(self._artifacts_repository)
+        if location_keys is None:
+            location_keys = resolve_location_keys(users, hub_chains)
+        tier_keys = location_keys if hub_chains is not None else None
 
         # Per-deployment kill-switch: with MATCH_V4_DISABLE_OCCUPATIONS every user gets an empty
         # occupation_recommendations list and NO occupation work runs at all (no stage-1 retrieval, no CE
@@ -613,7 +605,7 @@ class MatchingService(IMatchingService):
             user_unit_vectors=u_norm,
             # Urban-pull: weight the stage-1 cosine by location tier so relevant local jobs survive the
             # retrieve_top_k cutoff (occupations keep their own county scoping, so not applied there).
-            apply_location_tier=LOCATION_TIER_ENABLED,
+            location_keys=tier_keys,
         )
         # Occupations are flattened into 4 identical-embedding county-rows per code (the fixed sample
         # counties Kilifi/Kitui/Mombasa/Nairobi). The per-user location filter (below) keeps only the
@@ -638,19 +630,20 @@ class MatchingService(IMatchingService):
 
         # Available occupation counties (Kilifi/Kitui/Mombasa/Nairobi). Safety net: if a user's province
         # matches none of them, fall back to a random available county so occupations still return.
-        occ_counties = sorted({o.province for o in occupations if o.province})
+        occ_counties = sorted({o.county for o in occupations if o.county})
+        occ_keys = {k for o in occupations for k in o.location_keys}
 
         out: list[MatchResponse] = []
         cov_gamma = V4_FULL_COVERAGE_GAMMA if demote_active else 0.0
-        for user in users:
+        for i_user, user in enumerate(users):
             uid = user.user_id or ""
 
-            # Opportunities. Jobs keep the existing location scoping (Mongo prefilter via
-            # retrieve_jobs_with_timing(users)). Instead of a hard python location filter, urban-pull
-            # applies a per-user SOFT location tier (local=1.0 > regional hub > national hub; off-chain=0)
-            # as a final_score multiplier — local jobs preferred, hub jobs surface when better/needed, and
-            # off-chain jobs (e.g. another batch user's locations) are dropped. Always-on (independent of
-            # the Phase-2 coverage demotion); {} no-op when LOCATION_TIER_ENABLED is off.
+            # Opportunities. The database already restricted the pool to the batch's location keys
+            # (retrieve_jobs_with_timing). Urban-pull applies a per-user SOFT location tier (local=1.0 >
+            # regional hub > national hub; off-chain=0) as a final_score multiplier — local jobs
+            # preferred, hub jobs surface when better/needed, and jobs outside this user's keys (e.g.
+            # another batch user's locations) are dropped. Always-on (independent of the Phase-2
+            # coverage demotion); {} no-op when location tiers are off.
             job_slate = job_slate_by_uid.get(uid)
             with observability.stage("preference_scoring", corpus="jobs"):
                 # Phase-2 ranking overrides (whitened+rescaled p_hat + coverage demotion); empty when
@@ -664,12 +657,11 @@ class MatchingService(IMatchingService):
                     job_slate.candidates if job_slate else [],
                     pref_scorer,
                     combiner,
-                    location_filter=False,
                     p_hat_by_uuid=job_over.p_hat,
                     coverage_by_uuid=job_over.coverage,
                     coverage_gamma=cov_gamma,
                     location_tier_by_uuid=self._location_tier_overrides(
-                        user, job_slate
+                        tier_keys[i_user] if tier_keys is not None else None, job_slate
                     ),
                 )
             opportunities: list[OpportunityRecommendation] = []
@@ -708,10 +700,10 @@ class MatchingService(IMatchingService):
                         occ_concat,
                         u_white_by_uid.get(uid),
                     )
-                    loc_user: Place | None = None
-                    if occ_counties and not user_matches_any_county(user, occ_counties):
+                    loc_keys = frozenset(user_home_keys(user))
+                    if occ_counties and not loc_keys & occ_keys:
                         fallback = random.choice(occ_counties)
-                        loc_user = Place.region(fallback)
+                        loc_keys = frozenset({canonical_location(fallback)})
                         logger.warning(
                             "User %r matches no occupation county %s; using random fallback county %r.",
                             uid,
@@ -723,7 +715,7 @@ class MatchingService(IMatchingService):
                         occ_slate.candidates if occ_slate else [],
                         pref_scorer,
                         combiner,
-                        location_user=loc_user,
+                        location_keys=loc_keys,
                         include_demand=True,
                         demand_gamma=MATCH_V4_OCC_DEMAND_GAMMA,
                         p_hat_by_uuid=occ_over.p_hat,

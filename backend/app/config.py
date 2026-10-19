@@ -78,9 +78,9 @@ class Settings(BaseSettings):
     # Default: RankedJobsEnriched (see scripts/enrich_ranked_jobs_to_new_collection.py). Set to RankedJobs for legacy.
     mongo_jobs_collection: str = "RankedJobsEnriched"
 
-    # HTTP /match: when set, load at most N jobs with is_active + (remote OR per-user location),
-    # as a superset of matching_service._job_matches_user_location. Set to 0 to disable
-    # the extra filter and load all active jobs (scripts, back-compat).
+    # HTTP /match: when set, load at most N newest jobs with is_active and a location key the requesting
+    # users are eligible for (app.location.keys; indexed). Set to 0 to disable the filter and load all
+    # active jobs (scripts, back-compat).
     jobs_retrieval_filter: bool = True
     jobs_retrieval_limit: int = 10_000
     # Mongo find() inclusion projection (fields read by app.jobs.job_document.RankedJobDocument). Set 0 to load full documents.
@@ -138,7 +138,7 @@ class Settings(BaseSettings):
     match_v2_hybrid_top_k: int = 20
     match_v2_max_users_per_request: int = 32
 
-    # When false, skip _job_matches_user_location in _match_items (opportunities and occupations).
+    # When false, skip the location-key check in _match_items (opportunities and occupations).
     # Mongo prefilter is separate: jobs_retrieval_filter. Default true keeps current behaviour.
     match_apply_location_filter: bool = True
 
@@ -149,10 +149,10 @@ class Settings(BaseSettings):
     # behaviour.
     match_v4_disable_occupations: bool = False
 
-    # --- /match_v4 tiered urban-pull location matching (see services/location_tiers.py) ---
+    # --- /match tiered urban-pull location matching (see app.location.keys) ---
     # Kenyan job supply is heavily Nairobi-concentrated, so strict same-county filtering leaves non-hub
-    # users (e.g. Kitui ~2 jobs, Kilifi ~10) with near-empty lists. When enabled, a user's pool is widened
-    # to their hub chain (local -> regional hub -> national hub) AND v4 opportunities are softly re-ranked
+    # users (e.g. Kitui ~2 jobs, Kilifi ~10) with near-empty lists. When enabled, a user's eligible location
+    # keys are widened to their hub chain (local -> regional hub -> national hub) AND v4 opportunities are softly re-ranked
     # by a per-job location tier: local=1.0, regional=W_REGIONAL, national=W_NATIONAL, off-chain=0.0. So
     # local jobs are preferred but a clearly-better hub job can still surface and scarce-local lists fill
     # from the hub. Hub counties (national/regional) do not pull outward. Set false to fully restore the
@@ -164,6 +164,7 @@ class Settings(BaseSettings):
     location_tier_w_regional: float = Field(default=0.70, ge=0.0, le=1.0)
     location_tier_w_national: float = Field(default=0.50, ge=0.0, le=1.0)
     # County -> hub-chain exceptions (small JSON; every other county defaults to [self, national_hub]).
+    # Per deployment: point it at the deployment's own file.
     location_hub_chains_path: str = str(
         _RESOURCES / "location" / "location_hub_chains.json"
     )

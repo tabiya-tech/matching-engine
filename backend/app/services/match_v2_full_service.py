@@ -32,13 +32,9 @@ from app.config import (
 from app.domain.job import Job
 from app.domain.occupation import Occupation
 from app.domain.user import UserProfile
+from app.location.keys import canonical_location, user_home_keys, user_location_keys
 from app.matching import formatting as fmt
-from app.ranking.retrieval import (
-    Place,
-    index_by_uuid,
-    job_matches_user_location,
-    user_matches_any_county,
-)
+from app.ranking.retrieval import index_by_uuid
 from app.ranking.scoring import skill_detail
 from app.ranking.skill_gaps import skill_gaps_for
 from app.schemas import (
@@ -135,12 +131,13 @@ def run_match_v2_full(
                 )
             )
 
-    occ_counties = sorted({o.province for o in occupations if o.province})
+    occ_counties = sorted({o.county for o in occupations if o.county})
+    occ_keys = {k for o in occupations for k in o.location_keys}
 
     out: list[MatchResponse] = []
     for user in users:
         uid = user.user_id or ""
-        where = Place.of_user(user)
+        user_keys = user_location_keys(user)
 
         opportunities: list[OpportunityRecommendation] = []
         with observability.stage("formatting", corpus="jobs"):
@@ -148,7 +145,7 @@ def run_match_v2_full(
                 job = job_index.get(row.job_uuid)
                 if job is None:
                     continue
-                if not job_matches_user_location(Place.of_item(job), where):
+                if user_keys.tier_for(job.location_keys) <= 0.0:
                     continue  # strict same-location: urban-pull pool broadening is v4-only
                 opportunities.append(
                     fmt.build_opportunity_row(
@@ -167,10 +164,10 @@ def run_match_v2_full(
         # (location only — the user still drives skill matching).
         occupations_out: list[OccupationRecommendation] = []
         with observability.stage("formatting", corpus="occupations"):
-            loc = where
-            if occ_counties and not user_matches_any_county(user, occ_counties):
+            loc_keys = frozenset(user_home_keys(user))
+            if occ_counties and not loc_keys & occ_keys:
                 fallback = random.choice(occ_counties)
-                loc = Place.region(fallback)
+                loc_keys = frozenset({canonical_location(fallback)})
                 logger.warning(
                     "User %r matches no occupation county %s; using random fallback county %r.",
                     uid,
@@ -183,7 +180,7 @@ def run_match_v2_full(
                 occ = occ_index.get(row.job_uuid)
                 if occ is None:
                     continue
-                if not job_matches_user_location(Place.of_item(occ), loc):
+                if loc_keys.isdisjoint(occ.location_keys):
                     continue
                 code = occ.originUuid or occ.uuid
                 if not code or code in seen_codes:

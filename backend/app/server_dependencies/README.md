@@ -18,8 +18,8 @@ app/
 │   ├── browse_filter.py         GET /jobs filter builder
 │   └── pagination.py            GET /jobs keyset cursor codec
 ├── services/
-│   ├── location_query.py        /match location prefilter (pure query building)
-│   └── job_retrieval.py         retrieve_jobs_with_timing: prefilter policy + repository read
+│   ├── location_query.py        /match location filter: users' location keys + the indexed $in query
+│   └── job_retrieval.py         retrieve_jobs_with_timing: location filter policy + repository read
 ├── occupations/                 occupation corpus (local JSON/NPZ files, not Mongo)
 ├── warmup.py                    startup work: ping, indexes, caches, models
 └── main.py                      lifespan: creates and closes the client
@@ -79,11 +79,16 @@ it is installed.
 CLI scripts have no lifespan. They open a short-lived client bound to their own event loop:
 
 ```python
+from app.artifacts.repository import get_artifacts_repository
 from app.jobs.get_jobs_repository import standalone_jobs_repository
 from app.services.job_retrieval import retrieve_jobs_with_timing
+from app.services.location_query import location_hub_chains, resolve_location_keys
 
+location_keys = resolve_location_keys(
+    users, location_hub_chains(get_artifacts_repository())
+)
 async with standalone_jobs_repository() as jobs_repository:
-    jobs, timing = await retrieve_jobs_with_timing(jobs_repository, users)
+    jobs, timing = await retrieve_jobs_with_timing(jobs_repository, location_keys)
 ```
 
 The client is closed when the block exits. Never use this inside the app.

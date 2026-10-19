@@ -7,11 +7,13 @@ as they were when retired.
 import asyncio
 import logging
 import time
+from collections.abc import Sequence
 from typing import Annotated, Dict, List, Optional
 
 from fastapi import Body, Depends, HTTPException, Query
 
 from app import observability
+from app.artifacts.repository import get_artifacts_repository
 from app.config import (
     COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
     MATCH_TOP_K_SKILL_GAPS,
@@ -26,6 +28,7 @@ from app.domain.occupation import Occupation
 from app.domain.user import UserProfile
 from app.jobs.get_jobs_repository import get_jobs_repository
 from app.jobs.repository import IJobsRepository
+from app.location.keys import UserLocationKeys
 from app.match_timing_log import log_match_step
 from app.matching.examples import (
     MATCH_BODY_DESCRIPTION,
@@ -53,6 +56,7 @@ from app.services.hybrid_scoring.run_bm25_cosine_hybrid import (
     HybridRunResult,
 )
 from app.services.job_retrieval import retrieve_jobs_with_timing
+from app.services.location_query import location_hub_chains, resolve_location_keys
 from app.services.match_v2_full_service import run_match_v2_full
 from app.services.match_v3_full_service import run_match_v3_full
 from app.services.matching_service import match_user_with_data
@@ -62,6 +66,11 @@ logger = logging.getLogger(__name__)
 
 def _ms(t0: float) -> float:
     return (time.perf_counter() - t0) * 1000.0
+
+
+def _location_keys(users: Sequence[UserProfile]) -> list[UserLocationKeys]:
+    """The users' eligible location keys for the job load, resolved as ``POST /match`` does."""
+    return resolve_location_keys(users, location_hub_chains(get_artifacts_repository()))
 
 
 async def _load_v4_occupations() -> tuple[
@@ -151,7 +160,7 @@ async def match_legacy(
         t_fetch = time.perf_counter()
         with observability.stage("retrieval") as span:
             (jobs, jobs_timing), (occ, occ_timing) = await asyncio.gather(
-                retrieve_jobs_with_timing(jobs_repository, users),
+                retrieve_jobs_with_timing(jobs_repository, _location_keys(users)),
                 get_all_occupations_with_timing(),
             )
             observability.update_observation(
@@ -400,7 +409,7 @@ async def match_v3(
         t_fetch = time.perf_counter()
         with observability.stage("retrieval") as span:
             (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
-                retrieve_jobs_with_timing(jobs_repository, users),
+                retrieve_jobs_with_timing(jobs_repository, _location_keys(users)),
                 get_all_occupations_with_timing(),
             )
             occ = attach_occupation_embeddings(occ)
@@ -533,7 +542,7 @@ async def match_v5(
         t_fetch = time.perf_counter()
         with observability.stage("retrieval") as span:
             (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
-                retrieve_jobs_with_timing(jobs_repository, users),
+                retrieve_jobs_with_timing(jobs_repository, _location_keys(users)),
                 _load_v4_occupations(),
             )
             observability.update_observation(

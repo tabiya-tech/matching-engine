@@ -9,6 +9,7 @@ from app.domain.skills import SkillReference
 from app.domain.user import UserProfile
 from app.domain.work_activities import WorkActivity
 from app.jobs.repository import JobsLoadTiming, JobsPageTiming
+from app.location.keys import location_keys_for
 from app.occupations.loader import OccupationsLoadTiming
 from app.ranking.types import Candidate, MatchItem
 from app.schemas import MatchRequest
@@ -45,7 +46,10 @@ def make_attributes(**levels: str) -> JobAttributes:
 
 
 def make_job(**overrides: Any) -> Job:
-    """A minimal active job; any field can be overridden."""
+    """A minimal active job; any field can be overridden.
+
+    ``location_keys`` defaults to the keys of ``city`` and ``province``, as the stored document has.
+    """
     fields: dict[str, Any] = {
         "uuid": "job-1",
         "originUuid": "job-1",
@@ -64,11 +68,17 @@ def make_job(**overrides: Any) -> Job:
         "onet_work_activities": [],
     }
     fields.update(overrides)
+    fields.setdefault(
+        "location_keys", location_keys_for(fields["city"], fields["province"])
+    )
     return Job(**fields)
 
 
 def make_occupation(**overrides: Any) -> Occupation:
-    """A minimal occupation row; any field can be overridden."""
+    """A minimal occupation row; any field can be overridden.
+
+    ``location_keys`` defaults to the keys of ``county``, as ``flatten_occupations`` sets them.
+    """
     fields: dict[str, Any] = {
         "uuid": "occ-1",
         "originUuid": "occ-1",
@@ -82,6 +92,7 @@ def make_occupation(**overrides: Any) -> Occupation:
         "included_tasks": "",
     }
     fields.update(overrides)
+    fields.setdefault("location_keys", location_keys_for(fields["county"]))
     return Occupation(**fields)
 
 

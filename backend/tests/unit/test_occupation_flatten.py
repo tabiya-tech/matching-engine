@@ -68,6 +68,7 @@ def test_one_row_per_county():
     assert [r.uuid for r in actual] == ["2221_Nairobi", "2221_Mombasa"]
     assert all(r.originUuid == "2221" for r in actual)
     assert [r.county for r in actual] == ["Nairobi", "Mombasa"]
+    assert [r.location_keys for r in actual] == [("nairobi",), ("mombasa",)]
 
 
 def test_entry_without_counties_yields_one_county_less_row():

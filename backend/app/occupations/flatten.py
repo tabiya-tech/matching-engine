@@ -10,6 +10,7 @@ from app.domain.attributes import JobAttributes
 from app.domain.occupation import Occupation
 from app.domain.skills import SkillReference
 from app.domain.work_activities import work_activities_from_records
+from app.location.keys import location_keys_for
 from app.occupations.occupation_file import CountyData, OccupationFileEntry, SkillList
 
 
@@ -80,6 +81,7 @@ def flatten_occupations(entries: Sequence[OccupationFileEntry]) -> list[Occupati
                     occupation_label=label,
                     description=occ.description or "",
                     county=county,
+                    location_keys=location_keys_for(county),
                     essential_skills=essential_skills,
                     optional_skills=optional_skills,
                     attributes=_county_attributes(county_data),

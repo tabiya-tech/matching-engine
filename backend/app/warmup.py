@@ -11,8 +11,11 @@ import time
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.config import JOBS_RETRIEVAL_FILTER
+from app.jobs.job_document import LOCATION_KEYS_FIELD, RANKED_JOBS_ACTIVE_FILTER
 from app.occupations.loader import get_all_occupations_with_timing
 from app.occupations.work_activities import load_wa_lookup
+from app.server_dependencies.database_collections import Collections
 from app.server_dependencies.db_dependencies import (
     MatchingDBProvider,
     check_mongo_health,
@@ -32,6 +35,28 @@ def _env_warmup_flag(name: str, default: bool = True) -> bool:
     return v in ("1", "true", "yes", "on")
 
 
+async def _warn_jobs_without_location_keys(jobs_db: AsyncIOMotorDatabase) -> None:
+    """Log active jobs that /match cannot load because ``location_keys`` was never written.
+
+    The location filter has no fallback for them; run ``tools.location.backfill_location_keys``.
+    """
+    if not JOBS_RETRIEVAL_FILTER:
+        return
+    try:
+        n_missing = await jobs_db.get_collection(Collections.JOBS).count_documents(
+            {**RANKED_JOBS_ACTIVE_FILTER, LOCATION_KEYS_FIELD: {"$exists": False}}
+        )
+    except Exception:
+        logger.exception("Counting active jobs without location_keys failed")
+        return
+    if n_missing:
+        logger.warning(
+            "%d active jobs have no location_keys and are never matched; run "
+            "python -m tools.location.backfill_location_keys",
+            n_missing,
+        )
+
+
 async def warmup_on_startup(jobs_db: AsyncIOMotorDatabase) -> None:
     """Ping Mongo, ensure indexes, and preload heavy one-time caches.
 
@@ -43,6 +68,7 @@ async def warmup_on_startup(jobs_db: AsyncIOMotorDatabase) -> None:
         t0 = time.perf_counter()
         if await check_mongo_health(jobs_db.client):
             logger.info("Mongo warmup: ping ok (%.2f ms)", _ms(t0))
+            await _warn_jobs_without_location_keys(jobs_db)
         else:
             logger.error("Mongo warmup: ping failed (%.2f ms)", _ms(t0))
     else:
