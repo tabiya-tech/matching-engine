@@ -1,61 +1,39 @@
-"""Mongo location prefilter (``build_mongo_filter_active_and_location``) when user location is partial.
+"""Mongo location filter (``build_location_filter``) when user location is partial or missing.
 
-Regression: a user with an empty city (Compass never sends one) used to get a remote-only filter,
-so almost no jobs were retrieved.
+Regression (CORE-847): a user with an empty city (Compass never sends one) used to get a
+remote-only filter, so almost no jobs were retrieved.
 """
 
 from __future__ import annotations
 
-import pytest
-
-from app import database
-from app.database import (
-    RANKED_JOBS_ACTIVE_FILTER,
-    _location_or_clauses_for_one_user,
-    build_mongo_filter_active_and_location,
-)
+from app.jobs.job_document import LOCATION_KEYS_FIELD, RANKED_JOBS_ACTIVE_FILTER
+from app.location.keys import user_location_keys
+from app.services.location_query import build_location_filter
+from tests.domain_factories import make_user
 
 
-@pytest.fixture(autouse=True)
-def _no_location_tiers(monkeypatch):
-    # Keep needles to the user's own {city, province}; hub-chain widening is tested elsewhere.
-    monkeypatch.setattr(database, "LOCATION_TIER_ENABLED", False)
-
-
-def _regex_needles(clauses):
-    return {
-        cond["$regex"]
-        for c in clauses
-        for cond in c.values()
-        if isinstance(cond, dict) and "$regex" in cond
-    }
-
-
-@pytest.mark.parametrize("user", [{"city": "", "province": ""}, {"city": None, "province": None}, {}])
-def test_no_location_yields_no_clauses(user):
-    assert _location_or_clauses_for_one_user(user) == []
+def _filter(*users):
+    # Without hub chains: users are matched to their own city/province keys only.
+    return build_location_filter([user_location_keys(u) for u in users])
 
 
 def test_no_location_user_gets_active_only_filter():
-    assert build_mongo_filter_active_and_location([{"city": "", "province": ""}]) == RANKED_JOBS_ACTIVE_FILTER
+    assert _filter(make_user(user_id="u", city="", province="")) == RANKED_JOBS_ACTIVE_FILTER
 
 
 def test_province_only_user_is_filtered_on_province():
-    clauses = _location_or_clauses_for_one_user({"city": "", "province": "Lusaka"})
-    assert _regex_needles(clauses) == {"remote", "lusaka"}
+    filt = _filter(make_user(user_id="u", city="", province="Lusaka"))
+    assert filt[LOCATION_KEYS_FIELD] == {"$in": ["lusaka", "remote"]}
 
 
 def test_city_only_user_is_filtered_on_city():
-    clauses = _location_or_clauses_for_one_user({"city": "Ndola", "province": None})
-    assert _regex_needles(clauses) == {"remote", "ndola"}
-
-
-def test_province_only_user_filter_is_not_remote_only():
-    filt = build_mongo_filter_active_and_location([{"city": "", "province": "Lusaka"}])
-    assert filt != RANKED_JOBS_ACTIVE_FILTER
-    assert _regex_needles(filt["$and"][1]["$or"]) == {"remote", "lusaka"}
+    filt = _filter(make_user(user_id="u", city="Ndola", province=""))
+    assert filt[LOCATION_KEYS_FIELD] == {"$in": ["ndola", "remote"]}
 
 
 def test_batch_with_a_no_location_user_is_not_narrowed():
-    users = [{"city": "Lusaka", "province": "Lusaka"}, {"city": "", "province": ""}]
-    assert build_mongo_filter_active_and_location(users) == RANKED_JOBS_ACTIVE_FILTER
+    users = (
+        make_user(user_id="a", city="Lusaka", province="Lusaka"),
+        make_user(user_id="b", city="", province=""),
+    )
+    assert _filter(*users) == RANKED_JOBS_ACTIVE_FILTER

@@ -30,13 +30,10 @@ from app.domain.job import Job
 from app.domain.occupation import Occupation
 from app.domain.scores import PHatComponents, ScoreBreakdown, SkillComponents
 from app.domain.user import UserProfile
+from app.location.keys import user_location_keys
 from app.match_timing_log import log_match_step
 from app.matching.formatting import matched_preferences, matched_work_activities
-from app.ranking.retrieval import (
-    Place,
-    filter_jobs_by_education,
-    job_matches_user_location,
-)
+from app.ranking.retrieval import filter_jobs_by_education
 from app.ranking.scoring import DemandScorer, SuccessPropensity, SuccessPropensityScorer
 from app.ranking.skill_gaps import (
     analyze_skill_gaps,
@@ -357,11 +354,9 @@ def _score_items(
     with observability.stage("shortlist", corpus=corpus, n_candidates=n_in) as sl:
         kept: list[MatchItem] = list(items)
         if MATCH_APPLY_LOCATION_FILTER:
-            where = Place.of_user(user)
+            user_keys = user_location_keys(user)
             kept = [
-                item
-                for item in kept
-                if job_matches_user_location(Place.of_item(item), where)
+                item for item in kept if user_keys.tier_for(item.location_keys) > 0.0
             ]
         # Post-secondary education gate (no-op for occupations, which lack the field).
         kept = filter_jobs_by_education(user, kept)

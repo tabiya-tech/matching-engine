@@ -21,7 +21,7 @@ from app.domain.base import DomainModel
 from app.domain.scores import PHatComponents
 from app.domain.user import UserProfile
 from app.ranking.preference import combine_final_score
-from app.ranking.retrieval import ConcatWhitener, Place, job_matches_user_location
+from app.ranking.retrieval import ConcatWhitener
 from app.ranking.skills import CosineSkillMatcher, Feasibility
 from app.ranking.types import (
     AttributePreference,
@@ -653,8 +653,7 @@ def enriched_recommendations(
     pref_scorer: IPreferenceScorer,
     combiner: str | None,
     *,
-    location_filter: bool = True,
-    location_user: Place | None = None,
+    location_keys: frozenset[str] | None = None,
     include_demand: bool = False,
     demand_gamma: float = 0.0,
     p_hat_by_uuid: Mapping[str, float] | None = None,
@@ -664,21 +663,17 @@ def enriched_recommendations(
 ) -> list[ScoredCandidate]:
     """CE slate for one user -> preference-enriched, final-score-sorted candidates.
 
-    With ``location_filter`` (default), candidates are first restricted to items matching a location
-    via the same lenient rule ``/match`` uses (``job_matches_user_location``). ``location_user``
-    overrides which location to filter by WITHOUT changing the ``user`` whose preferences drive
-    ``u_hat`` — used for the random-county fallback. For occupations this keeps one row/code (a
-    single county) with that county's attributes.
+    With ``location_keys``, candidates are first restricted to items having one of those location
+    keys (``app.location.keys``). The keys may differ from the ``user``'s own WITHOUT changing whose
+    preferences drive ``u_hat`` — used for the random-county fallback. For occupations this keeps
+    one row/code (a single county) with that county's attributes. None = no location step.
 
     Note: the post-secondary education gate is already applied upstream in stage-1 retrieval
     (it skips ineligible items before the top-k cutoff), so no education filtering is needed here.
     """
     slate = list(candidates)
-    if location_filter and slate:
-        where = location_user or Place.of_user(user)
-        slate = [
-            c for c in slate if job_matches_user_location(Place.of_item(c.item), where)
-        ]
+    if location_keys is not None and slate:
+        slate = [c for c in slate if not location_keys.isdisjoint(c.item.location_keys)]
     if not slate:
         return []
     return enrich_recommendations_with_preferences(

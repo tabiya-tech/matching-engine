@@ -158,7 +158,7 @@ def _rank(whitening: ConcatWhitening | None) -> list[MatchResponse]:
     )
     with (
         patch.object(svc, "MATCH_V4_DISABLE_OCCUPATIONS", False),
-        patch.object(svc, "LOCATION_TIER_ENABLED", False),
+        patch.object(svc, "location_hub_chains", return_value=None),
         patch.object(svc, "skill_gaps_for", return_value=[]),
         patch.object(
             service, "embed_users", return_value=_vec(0)[None, :].astype(np.float64)
