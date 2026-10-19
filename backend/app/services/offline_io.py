@@ -277,19 +277,26 @@ async def _async_fetch_jobs_mongo(
 ) -> tuple[list[Job], JobsLoadTiming]:
     load_backend_dotenv()
     # pylint: disable=import-outside-toplevel
+    from app.artifacts.repository import get_artifacts_repository
     from app.jobs.get_jobs_repository import standalone_jobs_repository
     from app.services.job_retrieval import retrieve_jobs_with_timing
+    from app.services.location_query import location_hub_chains, resolve_location_keys
 
-    async with standalone_jobs_repository() as jobs_repository:
-        return await retrieve_jobs_with_timing(
-            jobs_repository, list(users_for_filter) if users_for_filter else None
+    location_keys = (
+        resolve_location_keys(
+            users_for_filter, location_hub_chains(get_artifacts_repository())
         )
+        if users_for_filter
+        else None
+    )
+    async with standalone_jobs_repository() as jobs_repository:
+        return await retrieve_jobs_with_timing(jobs_repository, location_keys)
 
 
 def fetch_jobs_from_mongo(
     users_for_filter: Sequence[UserProfile] | None,
 ) -> tuple[list[Job], JobsLoadTiming]:
-    """Active jobs via the same repository and location prefilter as ``POST /match``."""
+    """Active jobs via the same repository and location filter as ``POST /match``."""
     return asyncio.run(_async_fetch_jobs_mongo(users_for_filter))
 
 

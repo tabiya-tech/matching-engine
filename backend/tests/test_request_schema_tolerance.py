@@ -62,7 +62,7 @@ def test_preference_vector_alone_partial():
 
 
 def test_county_suffix_stripped_from_location():
-    # "Nairobi County" -> "Nairobi" so the Mongo substring prefilter matches "Nairobi" jobs.
+    # "Nairobi County" -> "Nairobi" so the user's location key matches "Nairobi" jobs.
     req = MatchRequest(city="Nairobi County", province="Nairobi County")
     assert req.city == "Nairobi"
     assert req.province == "Nairobi"

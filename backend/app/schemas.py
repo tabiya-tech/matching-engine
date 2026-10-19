@@ -20,10 +20,9 @@ def _strip_county_suffix(s: str) -> str:
     """Normalize Kenyan county names so user locations match occupation/job locations.
 
     Occupations/jobs store bare county names ("Nairobi"); consumers often send the official
-    "Nairobi County". The Mongo job prefilter matches the user string AS A SUBSTRING of the job
-    field, so "nairobi county" would not match a job stored as "Nairobi". Trimming a trailing
-    " County" (case-insensitive) to "Nairobi" matches both bare and suffixed job values, and is
-    harmless for the (bidirectional) occupation location check.
+    "Nairobi County". Locations are matched as exact location keys (``app.location.keys``), so
+    "nairobi county" would not match a job stored as "Nairobi". Trimming a trailing " County"
+    (case-insensitive) gives the bare county name the jobs and occupations carry.
     """
     s = (s or "").strip()
     if s.lower().endswith(" county"):
