@@ -397,6 +397,7 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    from app.artifacts.repository import get_artifacts_repository
     from app.clients.gemini_embedding_client import EMBEDDING_DIM
     from app.config import (
         COSINE_CROSS_ENCODER_RETRIEVE_TOP_K,
@@ -435,6 +436,7 @@ def main() -> None:
         OpportunityRecommendationV5,
     )
     from app.services.job_retrieval import retrieve_jobs_with_timing
+    from app.services.location_query import location_hub_chains, resolve_location_keys
     from app.services.match_v3_full_service import run_match_v3_full
     from app.services.matching_service import match_user_with_data
     from app.services.offline_io import load_jobs_file
@@ -496,7 +498,12 @@ def main() -> None:
             users: list[UserProfile],
         ) -> tuple[list[Job], JobsLoadTiming]:
             async with standalone_jobs_repository() as jobs_repository:
-                return await retrieve_jobs_with_timing(jobs_repository, users)
+                return await retrieve_jobs_with_timing(
+                    jobs_repository,
+                    resolve_location_keys(
+                        users, location_hub_chains(get_artifacts_repository())
+                    ),
+                )
 
     # ── 5. Load + filter users ────────────────────────────────────────────────
     all_users = _load_users_jsonl(args.users)

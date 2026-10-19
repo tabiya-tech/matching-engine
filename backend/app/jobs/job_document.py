@@ -26,6 +26,7 @@ from app.domain.coercion import (
 from app.domain.job import Job
 from app.domain.skills import SkillReference
 from app.domain.work_activities import WorkActivityRecord, work_activities_from_records
+from app.location.keys import location_keys_for
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,8 @@ RANKED_JOBS_ACTIVE_FILTER: dict[str, Any] = {"is_active": True}
 CITY_FIELD = "classifier_metadata.city"
 COUNTY_FIELD = "classifier_metadata.county"
 PROVINCE_FIELD = "classifier_metadata.province"
+# Standardised location keys (app.location.keys), written by the llm-reranker; the /match location filter.
+LOCATION_KEYS_FIELD = "location_keys"
 
 
 # Inclusion projection for job find (must stay aligned with RankedJobDocument / build_job_from_ranked).
@@ -44,6 +47,7 @@ RANKED_JOB_FIND_PROJECTION: dict[str, int] = {
     "job_id": 1,
     "job_fingerprint": 1,
     "is_active": 1,
+    "location_keys": 1,
     "classifier_metadata.city": 1,
     "classifier_metadata.county": 1,
     "classifier_metadata.title": 1,
@@ -271,6 +275,10 @@ class RankedJobDocument(SourceRecord):
     classifier_metadata: ClassifierMetadata | None = Field(
         default=None, description="Listing fields."
     )
+    location_keys: TextList | None = Field(
+        default=None,
+        description="Standardised location keys (``app.location.keys``); None on documents not yet backfilled.",
+    )
     llm_classified_skills: LlmClassifiedSkills | None = Field(
         default=None, description="Ranked skills."
     )
@@ -379,6 +387,13 @@ def job_from_document(doc: RankedJobDocument) -> Job | None:
     city = _strip(meta.city)
     province = _strip(meta.province) or _strip(meta.county)
     location = " ".join(p for p in (city, province) if p)
+    # Stored keys are what the /match filter matched on; derive them only for documents written
+    # before the field existed (loaded when the location filter is off).
+    location_keys = (
+        tuple(doc.location_keys)
+        if doc.location_keys is not None
+        else location_keys_for(meta.city, meta.county, meta.province)
+    )
 
     job_fingerprint = _strip(doc.job_fingerprint)
     isco_group = meta.isco_occupation_group
@@ -400,6 +415,7 @@ def job_from_document(doc: RankedJobDocument) -> Job | None:
         location=location,
         city=city,
         province=province,
+        location_keys=location_keys,
         employer=meta.employer,
         employment_type=meta.employment_type,
         contract_type=meta.employment_type or "full_time",

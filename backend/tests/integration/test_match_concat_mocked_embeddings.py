@@ -8,6 +8,7 @@ import numpy as np
 
 from app.artifacts.repository import get_artifacts_repository
 from app.clients.gemini_embedding_client import EMBEDDING_DIM, MODEL_NAME
+from app.location.keys import HubChains, user_location_keys
 from app.matching.service import MatchingService
 from app.ranking.retrieval import Stage1Retriever
 from app.ranking.types import SkillPairScore
@@ -111,6 +112,37 @@ class TestMatchConcatMockedEmbeddings:
         uuids = [c.uuid for c in out[0].candidates]
         assert "job-ps" not in uuids
         assert "job-ok" in uuids
+
+    def test_location_tiers_weight_and_drop_per_user_in_stage1(self):
+        # One pool for a batch: each user keeps only jobs under their own location keys (Kitui: local
+        # Kitui and the national hub Nairobi; Mombasa is off-chain).
+        service = _service(_matcher())
+        jobs = [
+            _job("nairobi-best", 0, city="Nairobi", province="Nairobi"),
+            _job("kitui-ok", 1, city="Kitui", province="Kitui"),
+            _job("mombasa", 2, city="Mombasa", province="Mombasa"),
+        ]
+        hub = HubChains("nairobi", None, ["nairobi"])
+        kitui = make_user(user_id="kitui", city="Kitui", province="Kitui")
+        nowhere = make_user(user_id="nowhere")
+        u = 0.9 * _unit_vector(0) + 0.4 * _unit_vector(1)
+        u_vecs = np.stack([u, u], axis=0).astype(np.float64)
+        u_vecs /= np.linalg.norm(u_vecs, axis=1, keepdims=True)
+
+        out = service.shortlist_and_rerank(
+            [kitui, nowhere],
+            jobs,
+            retrieve_top_k=5,
+            final_top_k=5,
+            user_unit_vectors=u_vecs,
+            location_keys=[
+                user_location_keys(user, hub, w_regional=0.7, w_national=0.5)
+                for user in (kitui, nowhere)
+            ],
+        )
+
+        assert {c.uuid for c in out[0].candidates} == {"kitui-ok", "nairobi-best"}
+        assert out[1].candidates == []  # no location: remote jobs only
 
     def test_no_embeddings_returns_empty_recommendations(self):
         user = make_user(user_id="u1")
