@@ -31,6 +31,10 @@ class Occupation(DomainModel):
     county: str = Field(
         description="County this row's attributes and demand apply to; empty when none."
     )
+    location_keys: tuple[str, ...] = Field(
+        default=(),
+        description="Location keys of ``county`` (``app.location.keys``); decides location eligibility.",
+    )
     essential_skills: list[SkillReference] = Field(
         description="Essential skills of the occupation."
     )

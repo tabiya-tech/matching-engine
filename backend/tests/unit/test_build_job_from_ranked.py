@@ -153,6 +153,21 @@ class TestLocationMapping:
         assert job is not None
         assert job.location == "Lusaka Copperbelt"
 
+    def test_stored_location_keys_are_used_as_is(self):
+        doc = _base_doc()
+        doc["location_keys"] = ["lusaka", "remote"]
+        job = build_job_from_ranked(doc)
+        assert job is not None
+        assert job.location_keys == ("lusaka", "remote")
+
+    def test_location_keys_derived_when_not_stored(self):
+        doc = _base_doc()
+        doc["classifier_metadata"]["city"] = "Ndola, Lusaka"
+        doc["classifier_metadata"]["province"] = "National/Remote"
+        job = build_job_from_ranked(doc)
+        assert job is not None
+        assert job.location_keys == ("lusaka", "national", "ndola", "remote")
+
 
 class TestIdentifierAndRelationMapping:
     def test_origin_uuid_precedence(self):
