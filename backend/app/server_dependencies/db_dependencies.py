@@ -153,16 +153,24 @@ async def check_mongo_health(client: AsyncIOMotorClient) -> bool:
 #     by _id desc, and seeks with a keyset (_id < cursor); this one index serves the equality, the
 #     sort, AND the cursor range together (also covers count_documents(is_active...) and the
 #     active-jobs load behind /match). Without it every such call is a full scan + in-memory sort.
+#   * {is_active: 1, location_keys: 1, _id: -1}  — the /match location filter (location_keys $in the
+#     users' keys, newest first; see app.services.location_query.build_location_filter). Multikey; the
+#     planner merges the per-key _id-ordered ranges (SORT_MERGE), so the newest-first limit needs no
+#     in-memory sort.
 #   * {is_active: 1, employment_type: 1, _id: -1}  — the only exact-match browse filter. The trailing
 #     _id key lets an employment_type-filtered browse use the index for the equality AND the sort.
 #   * {is_active: 1, <category|isco_group|source_platform>: 1}  — back the distinct() calls in
 #     /jobs/stats (used by those, not by the sorted browse query).
 #
-# Substring/regex filters (title, category, location, skills) cannot use a B-tree index in any
+# Substring/regex filters (title, category, browse location, skills) cannot use a B-tree index in any
 # combination — they are always applied as residual filters. Speeding those up further would need
 # an Atlas Search / ``$text`` index plus a query change.
 JOBS_INDEX_MODELS = [
     IndexModel([("is_active", ASCENDING), ("_id", DESCENDING)], name="is_active_-_id"),
+    IndexModel(
+        [("is_active", ASCENDING), ("location_keys", ASCENDING), ("_id", DESCENDING)],
+        name="is_active_location_keys_-_id",
+    ),
     IndexModel(
         [
             ("is_active", ASCENDING),

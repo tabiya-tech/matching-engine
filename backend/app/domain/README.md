@@ -54,7 +54,8 @@ the document root.
 | `opportunity_title` | `str` | `classifier_metadata.title` | `"Unknown"` when absent. |
 | `city` | `str` | `classifier_metadata.city` | Stripped; `""` when absent. |
 | `province` | `str` | `classifier_metadata.province`, `classifier_metadata.county` | `county` is the older name (the llm-reranker now writes `province`). |
-| `location` | `str` | `city` + `" "` + `province` | Used by the location filter and location tiers. |
+| `location` | `str` | `city` + `" "` + `province` | Display only. |
+| `location_keys` | `tuple[str, ...]` | `location_keys` | Standardised location keys (`app.location.keys`), written by the llm-reranker; derived from `classifier_metadata` city / county / province when the document predates the field. Decides location eligibility (the `/match` filter and location tiers). |
 | `employer` | `str \| None` | `classifier_metadata.employer` | |
 | `employment_type` | `str \| None` | `classifier_metadata.employment_type` | As stated in the ad. |
 | `contract_type` | `str` | `classifier_metadata.employment_type` | `"full_time"` when absent. |
@@ -96,6 +97,7 @@ row **per county** in `counties_data` (one county-less row when the list is empt
 | `occupation_label` | `str` | `occupation.preferred_label` | `"Unknown"` when absent. |
 | `description` | `str` | `occupation.description` | |
 | `county` | `str` | `counties_data[].county` | Also exposed as `city`, `province` and `location` properties. |
+| `location_keys` | `tuple[str, ...]` | `counties_data[].county` | Location keys of the county (`app.location.keys`); decide location eligibility. |
 | `essential_skills` | `list[SkillReference]` | `skills.essential.uuids[i]` + `skills.essential.labels[i]` | Label `""` when the label list is shorter. |
 | `optional_skills` | `list[SkillReference]` | `skills.optional.uuids[i]` + `skills.optional.labels[i]` | As above. |
 | `attributes` | `JobAttributes` | `counties_data[].job_attributes.attributes` (list of `{attribute_name, selected_level_id}` or a mapping), plus `counties_data[].labor_demand.expected_demand` | Names outside the schema are ignored. Some entries use display labels such as `"Monthly Earnings"`, which never matched the scorer. |
@@ -164,7 +166,7 @@ Committed files are validated into models when the artifacts repository loads th
 | Model | File | Notes |
 |---|---|---|
 | `AttributeSchema` | `resources/preference/job_attributes_schema.json` | Attributes with their levels, ordered reference (ladder 0) to target (1). |
-| `HubChainsFile` | `resources/location/location_hub_chains.json` | National hub, regional hubs and self-only hubs; parsed into `HubChains`. |
+| `HubChainsFile` | `resources/location/location_hub_chains.json` | National hub, regional hubs and self-only hubs; parsed into `app.location.keys.HubChains`. |
 | `ConcatWhitening` | `V4_FULL_CONCAT_WHITENING_PATH` (`.npz`: `mu`, `W`, `target`) | None when absent or the dimension does not match. |
 
 ## Ranking intermediates

@@ -142,9 +142,11 @@ async def step_01_fetch_jobs_and_occupations(
     occ_sample_cap: int = 100,
     jobs_jsonl: Path | None = None,
 ) -> None:
+    from app.artifacts.repository import get_artifacts_repository
     from app.jobs.get_jobs_repository import standalone_jobs_repository
     from app.occupations.loader import get_all_occupations_with_timing
     from app.services.job_retrieval import retrieve_jobs_with_timing
+    from app.services.location_query import location_hub_chains, resolve_location_keys
     from app.services.offline_io import load_jobs_file
 
     t0 = time.perf_counter()
@@ -159,11 +161,19 @@ async def step_01_fetch_jobs_and_occupations(
         occ, occupations_timing = await get_all_occupations_with_timing()
     else:
         async with standalone_jobs_repository() as jobs_repository:
-            (jobs, jobs_load_timing), (
-                occ,
-                occupations_timing,
+            (
+                (jobs, jobs_load_timing),
+                (
+                    occ,
+                    occupations_timing,
+                ),
             ) = await asyncio.gather(
-                retrieve_jobs_with_timing(jobs_repository, users),
+                retrieve_jobs_with_timing(
+                    jobs_repository,
+                    resolve_location_keys(
+                        users, location_hub_chains(get_artifacts_repository())
+                    ),
+                ),
                 get_all_occupations_with_timing(),
             )
         jobs_timing = jobs_load_timing.model_dump()
@@ -172,7 +182,9 @@ async def step_01_fetch_jobs_and_occupations(
     step_dir = out_dir / STEP_01_DIRNAME
     meta = {
         "description": "Mirrors the POST /match parallel fetch before matching",
-        "jobs_source": "jsonl_file" if jobs_jsonl else "mongodb_retrieve_jobs_with_timing",
+        "jobs_source": "jsonl_file"
+        if jobs_jsonl
+        else "mongodb_retrieve_jobs_with_timing",
         "n_users_supplied": len(users),
         "user_ids": [u.user_id for u in users],
         "fetch_parallel_wall_ms": round(wall_ms, 2),
@@ -181,7 +193,9 @@ async def step_01_fetch_jobs_and_occupations(
         "jobs_timing": jobs_timing,
         "occupations_timing": occupations_timing.model_dump(),
         "full_occupations_written": bool(full_occupations),
-        "occupations_sample_rows": 0 if full_occupations else min(occ_sample_cap, len(occ)),
+        "occupations_sample_rows": 0
+        if full_occupations
+        else min(occ_sample_cap, len(occ)),
     }
 
     _write_json(step_dir / "meta.json", meta)
@@ -201,7 +215,9 @@ async def step_01_fetch_jobs_and_occupations(
         _write_json(step_dir / "occupations_sample_meta.json", meta_note)
 
     print(f"Step 1 wrote to {step_dir}")
-    print(f"  users={len(users)}  jobs={len(jobs)}  occupations={len(occ)}  wall_ms={wall_ms:.1f}")
+    print(
+        f"  users={len(users)}  jobs={len(jobs)}  occupations={len(occ)}  wall_ms={wall_ms:.1f}"
+    )
 
 
 def step_02_location_filter_jobs(
@@ -210,16 +226,16 @@ def step_02_location_filter_jobs(
     step1_subdir: Path | None = None,
     write_full_jobs: bool = False,
 ) -> None:
-    """Same gate as the legacy engine applies before scoring: ``job_matches_user_location``.
+    """Same gate as the legacy engine applies before scoring: the user's location keys.
 
     Input: ``users.json`` + ``jobs.json`` from Step 1 (dependency).
     Occupations unchanged — not referenced here.
 
     Mirrors:
-      MATCH_APPLY_LOCATION_FILTER + ``job_matches_user_location(Place.of_item(job), Place.of_user(user))``
+      MATCH_APPLY_LOCATION_FILTER + ``user_location_keys(user).tier_for(job.location_keys) > 0``
     """
     from app.config import MATCH_APPLY_LOCATION_FILTER
-    from app.ranking.retrieval import Place, job_matches_user_location
+    from app.location.keys import user_location_keys
 
     base = step1_subdir if step1_subdir is not None else (out_dir / STEP_01_DIRNAME)
     users_path = base / "users.json"
@@ -244,8 +260,8 @@ def step_02_location_filter_jobs(
         n_in = len(jobs)
         t_u = time.perf_counter()
         if MATCH_APPLY_LOCATION_FILTER:
-            where = Place.of_user(user)
-            kept = [j for j in jobs if job_matches_user_location(Place.of_item(j), where)]
+            user_keys = user_location_keys(user)
+            kept = [j for j in jobs if user_keys.tier_for(j.location_keys) > 0.0]
         else:
             kept = list(jobs)
         filter_ms = (time.perf_counter() - t_u) * 1000.0
@@ -286,9 +302,13 @@ def step_02_location_filter_jobs(
             _write_jobs(dest / "filtered_jobs_by_user_id" / f"{uid}.json", kept)
 
     print(f"Step 2 wrote to {dest}")
-    print(f"  MATCH_APPLY_LOCATION_FILTER={MATCH_APPLY_LOCATION_FILTER}  users={len(users)}  jobs_in={len(jobs)}")
+    print(
+        f"  MATCH_APPLY_LOCATION_FILTER={MATCH_APPLY_LOCATION_FILTER}  users={len(users)}  jobs_in={len(jobs)}"
+    )
     for s in summaries:
-        print(f"    user {s['user_id']}: {s['n_jobs_before']} → {s['n_jobs_after']} jobs")
+        print(
+            f"    user {s['user_id']}: {s['n_jobs_before']} → {s['n_jobs_after']} jobs"
+        )
 
 
 def step_03_score_matching(
@@ -377,8 +397,13 @@ def step_03_score_matching(
         per_user.append(
             {
                 "user_id": uid,
-                "opportunity_recommendations": [r.model_dump(mode="json") for r in opp_rows],
-                "opportunity_timing": {**opp_timing.model_dump(), "wall_ms": wall_opp_ms},
+                "opportunity_recommendations": [
+                    r.model_dump(mode="json") for r in opp_rows
+                ],
+                "opportunity_timing": {
+                    **opp_timing.model_dump(),
+                    "wall_ms": wall_opp_ms,
+                },
                 "occupation_recommendations": occ_rows,
                 "occupation_timing": occ_timing,
                 "occupation_wall_ms": wall_occ_ms,
@@ -408,7 +433,9 @@ def step_03_score_matching(
     _write_json(dest / "meta.json", meta)
     _write_json(dest / "per_user_scores.json", per_user)
     print(f"Step 3 wrote to {dest}")
-    print(f"  SCORING_MODE={SCORING_MODE}  opportunity_top_k={opp_k}  users={len(users)}")
+    print(
+        f"  SCORING_MODE={SCORING_MODE}  opportunity_top_k={opp_k}  users={len(users)}"
+    )
 
 
 def step_04_skill_gap_analysis(
@@ -427,7 +454,10 @@ def step_04_skill_gap_analysis(
         MATCH_TOP_K_SKILL_GAPS,
         SKILL_RESCALE_TARGET,
     )
-    from app.ranking.skill_gaps import analyze_skill_gaps, filter_skill_gap_recommendations
+    from app.ranking.skill_gaps import (
+        analyze_skill_gaps,
+        filter_skill_gap_recommendations,
+    )
     from app.services.matching_service import scorer_skill
 
     base = step1_subdir if step1_subdir is not None else (out_dir / STEP_01_DIRNAME)
@@ -464,7 +494,8 @@ def step_04_skill_gap_analysis(
             rescale_target=SKILL_RESCALE_TARGET,
         )
         filtered = [
-            g.model_dump(mode="json") for g in filter_skill_gap_recommendations(skill_gaps)
+            g.model_dump(mode="json")
+            for g in filter_skill_gap_recommendations(skill_gaps)
         ]
         wall_ms = round((time.perf_counter() - t0) * 1000.0, 2)
         per_user.append(
@@ -484,7 +515,11 @@ def step_04_skill_gap_analysis(
             "ranking.skill_gaps.analyze_skill_gaps then filter_skill_gap_recommendations "
             "(same as match_user_with_data)"
         ),
-        "depends_on": {"step": 1, "users_json": str(users_path), "jobs_json": str(jobs_path)},
+        "depends_on": {
+            "step": 1,
+            "users_json": str(users_path),
+            "jobs_json": str(jobs_path),
+        },
         "note": (
             "Candidate jobs = full Step 1 list (Mongo/jsonl corpus), "
             "not Step 2 location-filtered set — mirrors production API."
@@ -499,9 +534,13 @@ def step_04_skill_gap_analysis(
     _write_json(dest / "meta.json", meta)
     _write_json(dest / "per_user_skill_gaps.json", per_user)
     print(f"Step 4 wrote to {dest}")
-    print(f"  top_k_request={gap_k}  MATCH_RESPONSE_SKILL_MIN_SCORE={MATCH_RESPONSE_SKILL_MIN_SCORE}  users={len(users)}")
+    print(
+        f"  top_k_request={gap_k}  MATCH_RESPONSE_SKILL_MIN_SCORE={MATCH_RESPONSE_SKILL_MIN_SCORE}  users={len(users)}"
+    )
     for row in per_user:
-        print(f"    user {row['user_id']}: {row['n_after_response_threshold']} gap rows (filtered)")
+        print(
+            f"    user {row['user_id']}: {row['n_after_response_threshold']} gap rows (filtered)"
+        )
 
 
 def step_05_full_match_user_with_data(
@@ -605,7 +644,9 @@ def step_05_full_match_user_with_data(
 
 
 async def _amain() -> None:
-    parser = argparse.ArgumentParser(description="Debug matching_service steps → output_results/")
+    parser = argparse.ArgumentParser(
+        description="Debug matching_service steps → output_results/"
+    )
     parser.add_argument(
         "--step",
         choices=["1", "2", "3", "4", "5", "all"],
@@ -618,7 +659,12 @@ async def _amain() -> None:
         default=REPO_ROOT / "data" / "njila_match_input.jsonl",
         help="JSONL of user profiles (MatchRequest-shaped dicts)",
     )
-    parser.add_argument("--n-users", type=int, default=1, help="How many users to take from the top of the file")
+    parser.add_argument(
+        "--n-users",
+        type=int,
+        default=1,
+        help="How many users to take from the top of the file",
+    )
     parser.add_argument(
         "--out",
         type=Path,
@@ -630,7 +676,12 @@ async def _amain() -> None:
         action="store_true",
         help="Write full occupations.json (can be very large)",
     )
-    parser.add_argument("--occ-sample-cap", type=int, default=100, help="Rows in occupations_sample.json when not full")
+    parser.add_argument(
+        "--occ-sample-cap",
+        type=int,
+        default=100,
+        help="Rows in occupations_sample.json when not full",
+    )
     parser.add_argument(
         "--jobs-jsonl",
         type=Path,
@@ -684,7 +735,10 @@ async def _amain() -> None:
 
         missing_id = [i for i, u in enumerate(users) if not u.user_id]
         if missing_id:
-            print(f"WARNING: rows without user_id at indices {missing_id}", file=sys.stderr)
+            print(
+                f"WARNING: rows without user_id at indices {missing_id}",
+                file=sys.stderr,
+            )
 
         jobs_jsonl = args.jobs_jsonl.resolve() if args.jobs_jsonl else None
         if jobs_jsonl is not None and not jobs_jsonl.is_file():

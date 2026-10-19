@@ -1,4 +1,4 @@
-"""Stage-1 candidate retrieval: concat-embedding text and vectors, whitening, the post-secondary education gate, location tiers, and the whitened-cosine shortlist."""
+"""Stage-1 candidate retrieval: concat-embedding text and vectors, whitening, the post-secondary education gate, location-tier weighting, and the whitened-cosine shortlist."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
 from app.artifacts.types import ConcatWhitening
-from app.domain.base import DomainModel
 from app.domain.user import UserProfile
+from app.location.keys import UserLocationKeys
 from app.ranking.skills import CosineSkillMatcher
 from app.ranking.types import Candidate, MatchItem
 
@@ -221,182 +221,6 @@ def zqf_annotation(
 
 
 # --------------------------------------------------------------------------------------------------
-# location
-#
-# Tiered urban-pull location matching.
-#
-# Maps a user's county to an ordered fallback **hub chain** (local -> regional hub -> national hub) and
-# scores each job by which tier it falls in, so non-hub users (whose own county has few jobs) still get a
-# full list while local jobs stay preferred. Hub counties do not pull outward.
-#
-# Two consumers:
-#   * the Mongo prefilter (app.services.location_query.location_or_clauses_for_one_user) uses ``chain_for`` to widen a
-#     user's candidate pool to include their hub regions;
-#   * the v4 opportunity ranker uses ``tier_factor_for_job`` as a per-uuid [0,1] multiplier on final_score
-#     (local=1.0, regional=W_REGIONAL, national=W_NATIONAL, off-chain=0.0).
-#
-# Region matching uses ``job_matches_user_location`` — the same lenient casefold-substring + always-remote
-# rule every matching path uses.
-#
-# The hub data is a small JSON of exceptions (see resources/location/location_hub_chains.json, loaded by
-# ``ArtifactsRepository.load_hub_chains``); every county not named there defaults to
-# ``[self, national_hub]``. If the file is missing/malformed the loader returns None and callers fall back to
-# today's strict behaviour (the feature becomes a no-op).
-# --------------------------------------------------------------------------------------------------
-
-
-def _cf(s: str | None) -> str:
-    """Casefold + strip, aligned with _norm / app.services.location_query._norm_loc_value."""
-    if s is None:
-        return ""
-    t = s.strip()
-    return t.casefold() if t else ""
-
-
-def _norm(v: str | None) -> str:
-    return str(v).strip().casefold() if v is not None else ""
-
-
-class Place(DomainModel):
-    """A location as the matching rules see it: city, province and a free-text location."""
-
-    city: str = Field(default="", description="City/town; empty when unknown.")
-    province: str = Field(
-        default="", description="Province/county; empty when unknown."
-    )
-    location: str = Field(
-        default="",
-        description="Free-text location (jobs: ``city province``); empty when unknown.",
-    )
-
-    @classmethod
-    def of_item(cls, item: MatchItem) -> Place:
-        """Where a job is, or the county an occupation row applies to."""
-        return cls(city=item.city, province=item.province, location=item.location)
-
-    @classmethod
-    def of_user(cls, user: UserProfile) -> Place:
-        """Where the user is (no free-text location)."""
-        return cls(city=user.city, province=user.province)
-
-    @classmethod
-    def region(cls, name: str) -> Place:
-        """A single region name used for every field (counties, hubs)."""
-        return cls(city=name, province=name, location=name)
-
-
-def job_matches_user_location(job: Place, user: Place) -> bool:
-    """Lenient location match.
-    - Always matches 'Remote' jobs
-    - Matches if city or province match (case-insensitive, substring)
-    """
-    user_city = _norm(user.city)
-    user_province = _norm(user.province)
-
-    job_city = _norm(job.city)
-    job_province = _norm(job.province)
-    job_loc = _norm(job.location)
-
-    #  Always include Remote jobs
-    if "remote" in job_city or "remote" in job_province or "remote" in job_loc:
-        return True
-
-    if not user_city or not user_province:
-        return False
-
-    # Check City Match (Lenient)
-    if job_city and (user_city in job_city or job_city in user_city):
-        return True
-
-    # Check Province Match (Lenient)
-    if job_province and (
-        user_province in job_province or job_province in user_province
-    ):
-        return True
-
-    # Fallback to location string match
-    if job_loc:
-        return user_city in job_loc or user_province in job_loc
-
-    return False
-
-
-def user_matches_any_county(user: UserProfile, counties: Sequence[str]) -> bool:
-    """True if the user's location matches at least one of the given occupation counties."""
-    where = Place.of_user(user)
-    return any(job_matches_user_location(Place.region(c), where) for c in counties)
-
-
-class HubChains:
-    """Parsed county -> hub-chain map. Built from the exceptions JSON; chains derived lazily."""
-
-    def __init__(
-        self,
-        national_hub: str,
-        regional_hubs: dict[str, list[str]] | None,
-        hub_self_only: list[str] | None,
-    ) -> None:
-        self.national: str = _cf(national_hub)
-        self.regional_of: dict[str, str] = {}  # county_cf -> regional hub_cf
-        for hub, counties in (regional_hubs or {}).items():
-            h = _cf(hub)
-            if not h:
-                continue
-            for c in counties or []:
-                cc = _cf(c)
-                if cc:
-                    self.regional_of[cc] = h
-        self.self_only: set = {_cf(h) for h in (hub_self_only or []) if _cf(h)}
-
-    def chain_for(self, county_cf: str) -> list[str]:
-        """Ordered fallback regions for a user county: [local, regional hub?, national hub?].
-
-        Hubs in ``hub_self_only`` -> ``[self]`` (no outward pull). Unknown/empty counties -> the
-        national hub only (safe default). Order encodes tier: index 0 = local.
-        """
-        c = _cf(county_cf)
-        if not c:
-            return [self.national] if self.national else []
-        if c in self.self_only:
-            return [c]
-        chain = [c]
-        reg = self.regional_of.get(c)
-        if reg and reg not in chain:
-            chain.append(reg)
-        if self.national and self.national not in chain:
-            chain.append(self.national)
-        return chain
-
-    def tier_factor_for_job(
-        self,
-        job: Place,
-        county_cf: str,
-        *,
-        w_regional: float,
-        w_national: float,
-    ) -> float:
-        """Location multiplier for one job given the user's county.
-
-        local (chain[0]) -> 1.0; national hub -> ``w_national``; any other in-chain (regional) hub ->
-        ``w_regional``; remote jobs -> 1.0 (always allowed); anything off-chain -> 0.0. Roles are keyed
-        by identity (local / national), NOT chain index, so a county whose chain skips the regional tier
-        (e.g. Kitui -> [kitui, nairobi]) still scores Nairobi at the national weight.
-        """
-        chain = self.chain_for(county_cf)
-        if not chain:
-            return 1.0  # no chain (unknown national hub) -> don't penalise; degrade to neutral
-        local = chain[0]
-        for region in chain:
-            if job_matches_user_location(job, Place.region(region)):
-                if region == local:
-                    return 1.0
-                if region == self.national:
-                    return float(w_national)
-                return float(w_regional)
-        return 0.0
-
-
-# --------------------------------------------------------------------------------------------------
 # retrieval
 #
 # Stage-1 retrieval: whitened concat-cosine shortlist per user, with the education gate and the
@@ -456,9 +280,7 @@ class IStage1Retriever(ABC):
         matcher: CosineSkillMatcher,
         whitener: ConcatWhitener,
         retrieve_top_k: int,
-        hub_chains: HubChains | None = None,
-        w_regional: float = 1.0,
-        w_national: float = 1.0,
+        location_keys: Sequence[UserLocationKeys] | None = None,
     ) -> list[list[Candidate]]:
         """
         Ranks the corpus per user and keeps the top ``retrieve_top_k`` eligible rows.
@@ -469,9 +291,8 @@ class IStage1Retriever(ABC):
         :param matcher: Per-skill matcher whose ``score_pair`` detail is attached to each candidate
         :param whitener: Concat whitening (a no-op when its artifact is unavailable)
         :param retrieve_top_k: Shortlist size per user
-        :param hub_chains: Location tiers to weight the ranking by, or None to skip tiering
-        :param w_regional: Tier weight of a regional hub
-        :param w_national: Tier weight of the national hub
+        :param location_keys: Per-user eligible location keys and tiers (aligned with ``users``) to
+            weight the ranking by and drop ineligible items with, or None to skip location tiering
         :return: One cosine-ranked shortlist per user
         """
         raise NotImplementedError()
@@ -518,9 +339,7 @@ class Stage1Retriever(IStage1Retriever):
         matcher: CosineSkillMatcher,
         whitener: ConcatWhitener,
         retrieve_top_k: int,
-        hub_chains: HubChains | None = None,
-        w_regional: float = 1.0,
-        w_national: float = 1.0,
+        location_keys: Sequence[UserLocationKeys] | None = None,
     ) -> list[list[Candidate]]:
         rt = max(1, int(retrieve_top_k))
         rows = corpus.rows
@@ -549,23 +368,17 @@ class Stage1Retriever(IStage1Retriever):
                 )
             j_used, u_used = j_norm, u_norm
 
-        places = [Place.of_item(jr) for jr in rows] if hub_chains is not None else []
         shortlists: list[list[Candidate]] = []
         for i, user in enumerate(users):
             sim_row = (u_used[i : i + 1] @ j_used.T).reshape(-1)
             # Location-tier weighting of the stage-1 ranking (urban-pull). Rank by cosine * tier so local
             # jobs are favoured for the shortlist; keep the RAW cosine for the stored similarity downstream.
+            # The pool holds every batch user's jobs, so items outside this user's keys (tier 0) are dropped.
             loc_tier_vec = None
-            if hub_chains is not None:
-                county = user.province or user.city or ""
+            if location_keys is not None:
+                user_keys = location_keys[i]
                 loc_tier_vec = np.array(
-                    [
-                        hub_chains.tier_factor_for_job(
-                            p, county, w_regional=w_regional, w_national=w_national
-                        )
-                        for p in places
-                    ],
-                    dtype=float,
+                    [user_keys.tier_for(jr.location_keys) for jr in rows], dtype=float
                 )
                 rank_row = sim_row * loc_tier_vec
             else:

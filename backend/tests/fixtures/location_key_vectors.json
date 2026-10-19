@@ -1,0 +1,20 @@
+{
+  "_comment": "Place strings -> location keys (app.location.keys.location_keys_for). The llm-reranker's copy of the key rule is tested against the same cases; change both together.",
+  "cases": [
+    {"values": ["Nairobi", null, "Nairobi"], "keys": ["nairobi"]},
+    {"values": ["  NAIROBI  ", "", ""], "keys": ["nairobi"]},
+    {"values": ["Thika", null, "Nairobi"], "keys": ["nairobi", "thika"]},
+    {"values": ["Taita Taveta", null, "Taita  Taveta"], "keys": ["taita taveta"]},
+    {"values": ["Nairobi, Busia, Kisumu", null, "Nairobi, Kakamega, Kisumu"], "keys": ["busia", "kakamega", "kisumu", "nairobi"]},
+    {"values": ["Remote", null, "National/Remote"], "keys": ["national", "remote"]},
+    {"values": ["Fully remote role", null, null], "keys": ["fully remote role", "remote"]},
+    {"values": [null, null, "Lusaka (Remote)"], "keys": ["lusaka (remote", "remote"]},
+    {"values": ["CABA)", null, "CABA"], "keys": ["caba"]},
+    {"values": ["en la Ciudad Autónoma de Buenos Aires.", null, "Unknown"], "keys": ["en la ciudad autónoma de buenos aires", "unknown"]},
+    {"values": ["Elgeyo Marakwet, Elgeyo Marakwet", null, "Elegeyo-Marakwet"], "keys": ["elegeyo-marakwet", "elgeyo marakwet"]},
+    {"values": ["Mpika; Lavushimanda", null, "Muchinga"], "keys": ["lavushimanda", "mpika", "muchinga"]},
+    {"values": [null, "Nairobi", null], "keys": ["nairobi"]},
+    {"values": [null, null, null], "keys": []},
+    {"values": ["", " , ", "."], "keys": []}
+  ]
+}

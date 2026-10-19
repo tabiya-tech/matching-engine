@@ -35,6 +35,10 @@ class Job(DomainModel):
     )
     city: str = Field(description="City/town of the job; empty when unknown.")
     province: str = Field(description="Province/county of the job; empty when unknown.")
+    location_keys: tuple[str, ...] = Field(
+        default=(),
+        description="Standardised location keys (``app.location.keys``); decides location eligibility.",
+    )
     employer: str | None = Field(default=None, description="Employer name.")
     employment_type: str | None = Field(
         default=None, description="Employment type as stated in the ad."

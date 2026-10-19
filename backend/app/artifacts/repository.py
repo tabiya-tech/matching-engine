@@ -15,7 +15,7 @@ import torch
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.artifacts.types import AttributeSchema, ConcatWhitening, HubChainsFile
-from app.ranking.retrieval import HubChains
+from app.location.keys import HubChains
 
 logger = logging.getLogger(__name__)
 
