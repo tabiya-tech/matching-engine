@@ -25,6 +25,10 @@ operational commentary; this document is the authoritative list of defaults and 
 | Env var | Field | Type | Default |
 |---|---|---|---|
 | `MONGO_JOBS_COLLECTION` | `mongo_jobs_collection` | str | `RankedJobsEnriched` |
+| `MONGO_OCCUPATIONS_COLLECTION` | `mongo_occupations_collection` | str | `occupations` |
+| `MONGO_OCCUPATION_GROUPS_COLLECTION` | `mongo_occupation_groups_collection` | str | `occupation_groups` (written by `scripts/ingest_occupations.py`; not read at runtime) |
+| `OCCUPATIONS_SOURCE` | `occupations_source` | `mongo` \| `file` | `mongo` |
+| `OCCUPATIONS_CACHE_TTL_S` | `occupations_cache_ttl_s` | float, `>= 0` (`0` = never re-read) | `3600` |
 | `JOBS_RETRIEVAL_FILTER` | `jobs_retrieval_filter` | bool | `true` |
 | `JOBS_RETRIEVAL_LIMIT` | `jobs_retrieval_limit` | int | `10000` |
 | `JOBS_FIND_USE_PROJECTION` | `jobs_find_use_projection` | bool | `true` |
@@ -158,13 +162,13 @@ value doesn't crash startup.
 | `MATCH_V4_FINAL_TOP_K` | `match_v4_final_top_k` | int | `50` |
 | `MATCH_V4_TOP_K_OCCUPATIONS` | `match_v4_top_k_occupations` | int | `10` |
 | `MATCH_V4_OCC_DEMAND_GAMMA` | `match_v4_occ_demand_gamma` | float, `>= 0` | `0.3` |
-| `OCCUPATION_CONCAT_EMBEDDINGS_PATH` | `occupation_concat_embeddings_path` | path | `resources/occupations/occupation_concat_embeddings.npz` |
+| `OCCUPATION_CONCAT_EMBEDDINGS_PATH` | `occupation_concat_embeddings_path` | path | `resources/occupations/occupation_concat_embeddings.npz` (read only when `OCCUPATIONS_SOURCE=file`) |
 
 ## Data files
 
 | Env var | `Settings` field | Type | Default |
 |---|---|---|---|
-| `OCCUPATION_JSON_PATH` | *(none — read live, see above)* | path | `resources/occupations/en/combined_occupation_database_with_wa.json` |
+| `OCCUPATION_JSON_PATH` | *(none — read live, see above)* | path | `resources/occupations/en/combined_occupation_database_with_wa.json` (read only when `OCCUPATIONS_SOURCE=file`) |
 | `EMBEDDING_MODEL_PATH` | `embedding_model_path` | path | `resources/models/skill_embedding_model_gemini.pt` |
 | `V4_FULL_EMBEDDING_MODEL_PATH` | `v4_full_embedding_model_path` | path | `resources/models/skill_embedding_model_gemini_whitened.pt` |
 | `SKILL_TO_ROW_PATH` | `skill_to_row_path` | path | `resources/models/skill_to_row.json` |
@@ -199,6 +203,13 @@ workflow, passed through to `pulumi up` and from there into the Cloud Run servic
 Every secret (`GEMINI_API_KEY`, `MONGO_URL`, `MONGO_DB_NAME`, `MONGO_JOBS_COLLECTION`, and for
 `argentina` also the Langfuse keys) is set per-environment, since each stack points at its own
 Mongo cluster and job collection.
+
+`MONGO_OCCUPATIONS_COLLECTION`, `OCCUPATIONS_SOURCE` and `OCCUPATIONS_CACHE_TTL_S` are optional
+`vars.*`; unset, `iac/backend/env_vars.py` passes `occupations`, `file` and `3600`. The deployed
+default source is `file` (unlike the code default, `mongo`), so a stack keeps serving the committed
+occupation file until its own database is loaded with `scripts/ingest_occupations.py` and its
+`OCCUPATIONS_SOURCE` var is set to `mongo`. A stack with no committed file for its language (e.g.
+`argentina`) must be ingested and set to `mongo` before it serves occupation recommendations.
 
 Repo-level variables currently set (applied to every stack except where an environment overrides
 them):

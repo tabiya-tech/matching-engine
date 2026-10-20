@@ -116,7 +116,7 @@ load time (`app/services/skill_label_packs.py`).
 | Cross-encoder checkpoint (stage-2 rerank on `/match`) | `cross_encoder_model` per language; `CROSS_ENCODER_MODEL_NAME_<LANG>` overrides |
 | BM25 / hybrid stopwords | `stopwords` per language |
 | Labels echoed back in the response | `SkillScorer.display_labels(language)` |
-| Occupation database labels | `resources/occupations/<lang>/`, falling back to `en` |
+| Occupation labels | the deployment's occupations collection, built from that language's taxonomy export (`scripts/build_occupation_file.py`) |
 
 An unset `TARGET_LANGUAGE` means `en`; an unregistered value falls back to `en` with a
 warning at startup rather than failing the deployment.
@@ -161,11 +161,42 @@ model load). English (`en`) is always included; it defines the id space.
 
 ## Data access
 
-The backend reads one MongoDB collection: the ranked jobs written by the llm-reranker
-(`MONGO_JOBS_COLLECTION`). A single client is created in the FastAPI lifespan and closed on
-shutdown. Routes receive an `IJobsRepository` (implemented by `MongoJobsRepository`) through `Depends(get_jobs_repository)`. Index creation
-and warmup run once at startup (`app/warmup.py`). Occupations come from local resource files, not
-Mongo.
+The backend reads two MongoDB collections from the deployment's database: the ranked jobs written
+by the llm-reranker (`MONGO_JOBS_COLLECTION`) and the occupations (careers) loaded by
+`scripts/ingest_occupations.py` (`MONGO_OCCUPATIONS_COLLECTION`). A single client is created in the
+FastAPI lifespan and closed on shutdown. Routes receive an `IJobsRepository` (implemented by
+`MongoJobsRepository`) through `Depends(get_jobs_repository)`; occupations are read through an
+`IOccupationsRepository` and cached in-process (`app/occupations/loader.py`). Index creation and
+warmup run once at startup (`app/warmup.py`).
+
+### Loading a deployment's occupations
+
+Occupations are data, not code: adding or updating a country's occupations needs no image rebuild
+or redeploy. Run from `backend/`, against the stack's database (an env file with its `MONGO_URL` /
+`MONGO_DB_NAME`, and `GEMINI_API_KEY` for new embeddings):
+
+```bash
+# 1. (new country) build the occupation file from the taxonomy export
+python -m scripts.build_occupation_file --taxonomy-dir ../../empujar/empujar-taxonomy \
+    --enrich-from resources/occupations/en/combined_occupation_database_with_wa.json \
+    --merge-skills --counties "Buenos Aires,Córdoba,…" \
+    --output resources/occupations/es/occupations_argentina.json
+
+# 2. load it (preview with --dry-run; --prune deletes occupations no longer in the file)
+python -m scripts.ingest_occupations --file resources/occupations/es/occupations_argentina.json \
+    --taxonomy-dir ../../empujar/empujar-taxonomy --env-file .env.argentina --dry-run
+
+# Kenya-style stacks: the committed file, embeddings seeded from the committed NPZ
+python -m scripts.ingest_occupations \
+    --file resources/occupations/en/combined_occupation_database_with_wa.json \
+    --embeddings-npz resources/occupations/occupation_concat_embeddings.npz --env-file .env.shp
+```
+
+The load is idempotent and reports what was added, updated and removed. Running instances pick up
+changes when their cache expires (`OCCUPATIONS_CACHE_TTL_S`, default 1 h). An empty or unreachable
+collection is logged and only empties `occupation_recommendations`; jobs are still matched.
+`scripts/occupation_parity_report.py` checks the engine returns the same occupations from the file
+and from the database.
 
 See [`backend/app/server_dependencies/README.md`](backend/app/server_dependencies/README.md) for the
 connection lifecycle, collections and indexes, and how to add a query.
@@ -179,7 +210,7 @@ field's type and default, and which variables each deployment stack overrides.
 
 Key settings include:
 
-- data source (`MONGO_URL`, `MONGO_DB_NAME`, `MONGO_JOBS_COLLECTION`) and retrieval controls (filters, projection, warmup)
+- data source (`MONGO_URL`, `MONGO_DB_NAME`, `MONGO_JOBS_COLLECTION`, `MONGO_OCCUPATIONS_COLLECTION`, `OCCUPATIONS_SOURCE`) and retrieval controls (filters, projection, warmup)
 - `GEMINI_API_KEY`, used to embed users' skills
 - language defaults (`TARGET_LANGUAGE`, `ENABLED_LANGUAGES`, `CROSS_ENCODER_MODEL_NAME_<LANG>`)
 - response sizes: `MATCH_V4_RETRIEVE_TOP_K` (shortlist, default 100), `MATCH_V4_FINAL_TOP_K` (opportunities returned, default 50), `MATCH_V4_TOP_K_OCCUPATIONS` (default 10), `MATCH_TOP_K_SKILL_GAPS` (default 5)
