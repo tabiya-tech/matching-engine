@@ -7,7 +7,12 @@ frontend/dist/
 .DS_Store
 .env
 .idea/
-backend/scripts/
+backend/scripts/*
+# Committed scripts (the rest of backend/scripts/ stays local).
+!backend/scripts/__init__.py
+!backend/scripts/build_occupation_file.py
+!backend/scripts/ingest_occupations.py
+!backend/scripts/occupation_parity_report.py
 output_results/
 output_results_*
 backend/runs/

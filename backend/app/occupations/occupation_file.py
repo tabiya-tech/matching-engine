@@ -1,8 +1,12 @@
-"""Shape of the committed occupation file (``OCCUPATION_JSON_PATH``).
+"""Shape of an occupation file, and of the occupation part of each stored occupation document.
 
 The file is a JSON list of ``OccupationFileEntry`` (one per occupation), exported from the taxonomy
-with per-county attribute estimates and expected demand. ``OCCUPATION_FILE`` validates the whole
-file at load time; ``app.occupations.flatten`` maps the entries to ``Occupation`` rows.
+with per-county attribute estimates and expected demand: the committed ``OCCUPATION_JSON_PATH``, or
+one built by ``scripts/build_occupation_file.py``. It is the input of
+``scripts/ingest_occupations.py`` (validated by ``app.occupations.ingest.parse_occupation_file``),
+and each document in ``MONGO_OCCUPATIONS_COLLECTION`` is an entry plus ingest fields
+(``app.occupations.occupation_document``). ``app.occupations.flatten`` maps the entries to
+``Occupation`` rows. This is the single definition of the contract.
 """
 
 from pydantic import Field, TypeAdapter

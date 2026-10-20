@@ -68,6 +68,11 @@ jobs:
           MONGO_URL: ${{ secrets.MONGO_URL }}
           MONGO_DB_NAME: ${{ secrets.MONGO_DB_NAME }}
           MONGO_JOBS_COLLECTION: ${{ secrets.MONGO_JOBS_COLLECTION }}
+          # Occupations collection loaded by backend/scripts/ingest_occupations.py (same database).
+          # Unset ⇒ occupations / file / 3600 s; set OCCUPATIONS_SOURCE=mongo once the stack is ingested.
+          MONGO_OCCUPATIONS_COLLECTION: ${{ vars.MONGO_OCCUPATIONS_COLLECTION }}
+          OCCUPATIONS_SOURCE: ${{ vars.OCCUPATIONS_SOURCE }}
+          OCCUPATIONS_CACHE_TTL_S: ${{ vars.OCCUPATIONS_CACHE_TTL_S }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # 'en' | 'es' — the language this deployment matches in. Unset ⇒ en.
           TARGET_LANGUAGE: ${{ vars.TARGET_LANGUAGE }}

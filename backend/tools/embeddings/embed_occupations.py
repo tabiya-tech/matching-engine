@@ -2,8 +2,10 @@
 
 One embedding per occupation CODE (skills are identical across counties), built from the
 ``essential ∪ optional`` skill labels in the occupations JSON, via ``gemini-embedding-001`` —
-the SAME model/space as the job embeddings used by ``/match_v4``. Output is loaded at runtime by
-``app.occupations.loader`` to feed the occupation arm of the ``/match_v4`` retrieval.
+the SAME model/space as the job embeddings used by ``/match_v4``. The text is
+``app.occupations.occupation_document.occupation_embedding_text``, the same one
+``scripts/ingest_occupations.py`` embeds. The NPZ is read by the file occupation source
+(``OCCUPATIONS_SOURCE=file``) and seeds an ingest (``--embeddings-npz``).
 
 Writes:
   * ``occupation_concat_embeddings.npz`` — ``codes`` (str), ``vectors`` (float32 [N, 3072], L2-normed)
@@ -37,20 +39,9 @@ from app.clients.gemini_embedding_client import (
     embed_text_list,
 )
 from app.config import OCCUPATION_CONCAT_EMBEDDINGS_PATH, OCCUPATION_JSON_PATH
-from app.occupations.occupation_file import OCCUPATION_FILE, OccupationFileEntry
-from app.ranking.retrieval import build_concat_embedding_text, l2_normalize_rows
-
-
-def _occupation_skill_labels(entry: OccupationFileEntry) -> List[str]:
-    """Essential ∪ optional skill labels for one occupation entry (from the JSON)."""
-    skills = entry.skills
-    out: List[str] = []
-    if skills is None:
-        return out
-    for block in (skills.essential, skills.optional):
-        if block is not None:
-            out.extend(lab for lab in block.labels if lab)
-    return out
+from app.occupations.occupation_document import occupation_embedding_text
+from app.occupations.occupation_file import OCCUPATION_FILE
+from app.ranking.retrieval import l2_normalize_rows
 
 
 def build_occupation_texts(occupations_path: Path) -> tuple[List[str], List[str]]:
@@ -68,9 +59,8 @@ def build_occupation_texts(occupations_path: Path) -> tuple[List[str], List[str]
         if not code or code in seen:
             continue
         seen.add(code)
-        text = build_concat_embedding_text(_occupation_skill_labels(entry))
         codes.append(code)
-        texts.append(text if text else " ")
+        texts.append(occupation_embedding_text(entry))
     return codes, texts
 
 

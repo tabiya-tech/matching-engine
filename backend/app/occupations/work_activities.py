@@ -1,19 +1,17 @@
-"""O*NET work-activity importance/level lookup built from the occupation file.
+"""O*NET work-activity importance/level lookup built from the occupation catalogue.
 
 Enriched job documents already carry ``onet_work_activities``, so this is only built at startup when
-``WARMUP_WA_LOOKUP`` is set.
+``WARMUP_WA_LOOKUP`` is set (from ``app.occupations.loader.get_occupation_entries``).
 """
 
-import json
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 
 from pydantic import Field
 
-from app.config import OCCUPATION_JSON_PATH
 from app.domain.base import DomainModel
 from app.domain.work_activities import WorkActivity
-from app.occupations.occupation_file import OCCUPATION_FILE
+from app.occupations.occupation_file import OccupationFileEntry
 
 logger = logging.getLogger(__name__)
 
@@ -38,17 +36,22 @@ _wa_lookup: WaLookup | None = None
 _wa_averages: WaAverages | None = None
 
 
-def load_wa_lookup() -> tuple[WaLookup, WaAverages]:
-    """Build (once) the WA importance/level lookup from the occupation file.
+def load_wa_lookup(
+    entries: Sequence[OccupationFileEntry] | None = None,
+) -> tuple[WaLookup, WaAverages]:
+    """Build (once) the WA importance/level lookup from the occupation entries.
 
+    :param entries: The catalogue; needed on the first call, ignored once the lookup is built
     :return: ``(per_occupation_lookup, cross_occupation_averages)``
+    :raises RuntimeError: If the lookup is not built yet and no entries are given
     """
     global _wa_lookup, _wa_averages
     if _wa_lookup is not None and _wa_averages is not None:
         return _wa_lookup, _wa_averages
-
-    with open(OCCUPATION_JSON_PATH, "r", encoding="utf-8") as f:
-        entries = OCCUPATION_FILE.validate_python(json.load(f))
+    if entries is None:
+        raise RuntimeError(
+            "WA lookup not built: call load_wa_lookup(entries) first (see app.warmup)"
+        )
 
     per_occ: WaLookup = {}
     sums: dict[str, list[float]] = {}  # code -> [importance_sum, level_sum, n]

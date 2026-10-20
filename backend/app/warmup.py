@@ -11,7 +11,10 @@ import time
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.occupations.loader import get_all_occupations_with_timing
+from app.occupations.loader import (
+    get_all_occupations_with_timing,
+    get_occupation_entries,
+)
 from app.occupations.work_activities import load_wa_lookup
 from app.server_dependencies.db_dependencies import (
     MatchingDBProvider,
@@ -60,8 +63,8 @@ async def warmup_on_startup(jobs_db: AsyncIOMotorDatabase) -> None:
     if _env_warmup_flag("WARMUP_OCCUPATIONS_CACHE", True):
         t0 = time.perf_counter()
         try:
-            await get_all_occupations_with_timing()
-            logger.info("Occupation cache warmup: ok (%.2f ms)", _ms(t0))
+            occ, _timing = await get_all_occupations_with_timing()
+            logger.info("Occupation cache warmup: %d rows (%.2f ms)", len(occ), _ms(t0))
         except Exception:
             logger.exception("Occupation cache warmup failed")
     else:
@@ -69,7 +72,7 @@ async def warmup_on_startup(jobs_db: AsyncIOMotorDatabase) -> None:
 
     if _env_warmup_flag("WARMUP_WA_LOOKUP", False):
         try:
-            load_wa_lookup()
+            load_wa_lookup(await get_occupation_entries())
             logger.info("WA taxonomy lookup: built at startup")
         except Exception:
             logger.exception("WA lookup warmup failed")

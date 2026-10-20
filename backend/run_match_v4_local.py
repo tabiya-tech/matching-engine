@@ -277,6 +277,13 @@ def main() -> None:
         "Needs 'motor' installed and network access to the DB.",
     )
     parser.add_argument(
+        "--live-occupations",
+        action="store_true",
+        help="Read occupations from the live MongoDB in backend/.env "
+        "(MONGO_OCCUPATIONS_COLLECTION, loaded by scripts/ingest_occupations.py) instead of the "
+        "committed occupation file + NPZ.",
+    )
+    parser.add_argument(
         "--jobs-location-filter",
         action="store_true",
         help="With --live-jobs, apply the per-user Mongo location prefilter "
@@ -416,9 +423,11 @@ def main() -> None:
     from app.jobs.get_jobs_repository import standalone_jobs_repository
     from app.jobs.repository import IJobsRepository, JobsLoadTiming
     from app.matching.get_matching_service import create_matching_service
+    from app.occupations.get_occupations_repository import file_occupations_repository
     from app.occupations.loader import (
         attach_occupation_embeddings,
         get_all_occupations_with_timing,
+        set_occupations_repository,
     )
     from app.ranking.retrieval import (
         job_requires_post_secondary,
@@ -630,7 +639,10 @@ def main() -> None:
         )
 
     # ── 6. Run the chosen endpoint's code path — mirrors the matching app.routes EXACTLY ──────
-    # Occupations load from local resource files via app.occupations (works offline and with --live-jobs).
+    # Occupations load from the committed file + NPZ (works offline), or with --live-occupations
+    # from the deployment's collection (OCCUPATIONS_SOURCE=mongo, as the live service).
+    if not args.live_occupations:
+        set_occupations_repository(file_occupations_repository())
     occ_corpus: list[Occupation]
     occ_corpus, _occ_timing = asyncio.run(get_all_occupations_with_timing())
 

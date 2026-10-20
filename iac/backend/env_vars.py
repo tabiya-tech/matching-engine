@@ -22,6 +22,9 @@ class EnvKeys:
     MONGO_URL = "MONGO_URL"
     MONGO_DB_NAME = "MONGO_DB_NAME"
     MONGO_JOBS_COLLECTION = "MONGO_JOBS_COLLECTION"
+    MONGO_OCCUPATIONS_COLLECTION = "MONGO_OCCUPATIONS_COLLECTION"
+    OCCUPATIONS_SOURCE = "OCCUPATIONS_SOURCE"
+    OCCUPATIONS_CACHE_TTL_S = "OCCUPATIONS_CACHE_TTL_S"
     TARGET_LANGUAGE = "TARGET_LANGUAGE"
     SCORING_MODE = "SCORING_MODE"
     ADDITIVE_W1_SKILLS = "ADDITIVE_W1_SKILLS"
@@ -82,6 +85,11 @@ class EnvVars:
     mongodb_uri: str
     mongodb_name: str
     mongo_jobs_collection: str
+    # Occupations: the per-deployment collection written by backend/scripts/ingest_occupations.py,
+    # where the engine reads them from ('mongo' | 'file'), and how long they are cached in-process.
+    mongo_occupations_collection: str
+    occupations_source: str
+    occupations_cache_ttl_s: str
     # The language this deployment matches in ('en' | 'es'): the cross-encoder checkpoint,
     # the BM25 stopwords and the labels echoed back. Nothing on the request selects it.
     target_language: str
@@ -145,6 +153,12 @@ class EnvVars:
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MONGO_DB_NAME, value=self.mongodb_name),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MONGO_JOBS_COLLECTION,
                                                            value=self.mongo_jobs_collection),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MONGO_OCCUPATIONS_COLLECTION,
+                                                           value=self.mongo_occupations_collection),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.OCCUPATIONS_SOURCE,
+                                                           value=self.occupations_source),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.OCCUPATIONS_CACHE_TTL_S,
+                                                           value=self.occupations_cache_ttl_s),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.TARGET_LANGUAGE,
                                                            value=self.target_language),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.SCORING_MODE, value=self.scoring_mode),
@@ -252,6 +266,14 @@ class EnvVars:
             mongodb_uri=get_env(EnvKeys.MONGO_URL),
             mongodb_name=get_env(EnvKeys.MONGO_DB_NAME),
             mongo_jobs_collection=get_env(EnvKeys.MONGO_JOBS_COLLECTION),
+            # Defaults mirror app/config.py, so a stack that sets nothing reads `occupations`,
+            # except the source: a stack reads the committed file until it sets
+            # OCCUPATIONS_SOURCE=mongo after its collection is loaded (scripts/ingest_occupations.py).
+            mongo_occupations_collection=get_env_or_default(
+                EnvKeys.MONGO_OCCUPATIONS_COLLECTION, "occupations"
+            ),
+            occupations_source=get_env_or_default(EnvKeys.OCCUPATIONS_SOURCE, "file"),
+            occupations_cache_ttl_s=get_env_or_default(EnvKeys.OCCUPATIONS_CACHE_TTL_S, "3600"),
             # Stacks that predate multi-language support set nothing and stay English.
             target_language=get_env_or_default(EnvKeys.TARGET_LANGUAGE, "en"),
             scoring_mode=get_env(EnvKeys.SCORING_MODE),

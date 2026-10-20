@@ -93,6 +93,8 @@ The client is closed when the block exits. Never use this inside the app.
 | `Collections.` | Name | Written by | Read by |
 |---|---|---|---|
 | `JOBS` | `MONGO_JOBS_COLLECTION` (default `RankedJobsEnriched`) | llm-reranker | `JobsRepository` |
+| `OCCUPATIONS` | `MONGO_OCCUPATIONS_COLLECTION` (default `occupations`) | `scripts/ingest_occupations.py` | `MongoOccupationsRepository` |
+| `OCCUPATION_GROUPS` | `MONGO_OCCUPATION_GROUPS_COLLECTION` (default `occupation_groups`) | `scripts/ingest_occupations.py` | — (stored for later queries) |
 
 The document shape is the contract with the reranker. Only fields in `RANKED_JOB_FIND_PROJECTION`
 are read (when `JOBS_FIND_USE_PROJECTION` is on); `RankedJobDocument` validates them and
@@ -102,9 +104,20 @@ matching only if it is projected, declared and mapped there (tests in
 `tests/unit/test_build_job_from_ranked.py`; field sources in `app/domain/README.md`). A document
 that fails validation is logged and skipped, not raised.
 
-Occupations are **not** in Mongo. They come from `OCCUPATION_JSON_PATH` (validated by
-`app.occupations.occupation_file`) and the concat-embeddings NPZ, are flattened into `Occupation`
-models by `app.occupations.flatten`, and are cached in-process by `app.occupations.loader`.
+Occupations are one document per occupation, keyed by code (shape in
+`app/occupations/occupation_document.py`): the occupation-file entry as written (still validated
+by `OccupationFileEntry`, with `counties_data` nested), its group codes, and the concat embedding
+made at ingest — raw and whitened vectors as float32 BSON binary, with the embedding model, a hash
+of the embedded text and the whitening artifact's SHA-256. `MongoOccupationsRepository` reads them
+all (in file order, LLM rationale projected out); `app.occupations.loader` flattens them to
+occupation × county `Occupation` rows and caches them for `OCCUPATIONS_CACHE_TTL_S`. A whitened
+vector is used as-is only when its SHA-256 matches the deployed artifact; otherwise the raw one is
+whitened at load. `OCCUPATIONS_SOURCE=file` reads the committed JSON + NPZ instead
+(`FileOccupationsRepository`). The only index besides `_id` is `group_codes`, created by the
+ingest script.
+
+Occupation groups (from a taxonomy export's `occupation_groups.csv`) are one document per group
+code with its type, labels, parent and ancestor codes.
 
 ### Indexes
 

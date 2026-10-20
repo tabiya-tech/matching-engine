@@ -77,6 +77,15 @@ class Settings(BaseSettings):
     # -----------------------------------------------------------------------
     # Default: RankedJobsEnriched (see scripts/enrich_ranked_jobs_to_new_collection.py). Set to RankedJobs for legacy.
     mongo_jobs_collection: str = "RankedJobsEnriched"
+    # Occupations (careers) and their groups, loaded per deployment by scripts/ingest_occupations.py.
+    # Same database as the jobs (MONGO_DB_NAME).
+    mongo_occupations_collection: str = "occupations"
+    mongo_occupation_groups_collection: str = "occupation_groups"
+    # Where the matching engines read occupations from: "mongo" (the collection above) or "file"
+    # (OCCUPATION_JSON_PATH + OCCUPATION_CONCAT_EMBEDDINGS_PATH; tests and offline tools).
+    occupations_source: Literal["mongo", "file"] = "mongo"
+    # How long the in-process occupation cache is served before it is re-read; 0 = never re-read.
+    occupations_cache_ttl_s: float = Field(default=3600.0, ge=0.0)
 
     # HTTP /match: when set, load at most N jobs with is_active + (remote OR per-user location),
     # as a superset of matching_service._job_matches_user_location. Set to 0 to disable
@@ -389,6 +398,7 @@ class Settings(BaseSettings):
         "final_score_combiner",
         "preference_scorer_mode",
         "bws_integration_mode",
+        "occupations_source",
         mode="before",
     )
     @classmethod
@@ -435,6 +445,10 @@ settings = Settings()
 # sites need to change.
 # ---------------------------------------------------------------------------
 MONGO_JOBS_COLLECTION = settings.mongo_jobs_collection
+MONGO_OCCUPATIONS_COLLECTION = settings.mongo_occupations_collection
+MONGO_OCCUPATION_GROUPS_COLLECTION = settings.mongo_occupation_groups_collection
+OCCUPATIONS_SOURCE = settings.occupations_source
+OCCUPATIONS_CACHE_TTL_S = settings.occupations_cache_ttl_s
 
 JOBS_RETRIEVAL_FILTER = settings.jobs_retrieval_filter
 JOBS_RETRIEVAL_LIMIT = settings.jobs_retrieval_limit
