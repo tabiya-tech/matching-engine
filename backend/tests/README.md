@@ -144,7 +144,7 @@ See `tests/AI_MATCHING_TEST_PLAN.md` for full scope.
 python -m pytest tests/unit/ -v
 ```
 
-Runs `pytest tests/unit/` which validates `build_job_from_ranked()` — the Mongo ranked-job document → `Job` mapper used by every match endpoint — plus the occupation-file flattening and the jobs repository.
+Runs `pytest tests/unit/` which validates `build_job_from_ranked()` — the Mongo ranked-job document → `Job` mapper used by every match endpoint — plus the jobs repository and the occupation catalogue: flattening, the ingest (file → document, add/update/remove plan), the loader and both occupation repositories, and the taxonomy-export builder. `tests/integration/test_occupation_source_parity.py` checks the committed file and the same file ingested into Mongo give the engine identical rows and bit-identical vectors.
 
 **Coverage strategy** (not every field gets its own test):
 
@@ -186,7 +186,10 @@ tests/
 │   ├── test_job_retrieval.py            # /match location prefilter policy
 │   ├── test_jobs_indexes.py             # Index definitions + startup index creation
 │   ├── test_jobs_pagination.py          # /jobs cursor codec + endpoint contract
-│   └── test_occupation_flatten.py       # Occupation JSON → per-county rows
+│   ├── test_occupation_flatten.py       # Occupation JSON → per-county rows
+│   ├── test_occupation_ingest.py        # File validation, file → document mapping, ingest plan, idempotent re-run
+│   ├── test_occupation_loader.py        # Loader cache/TTL, empty & unreachable source, embeddings; file + Mongo repositories
+│   └── test_occupation_taxonomy_export.py  # Taxonomy CSV export → occupation file + group documents
 ├── ml_logic/                            # Matching invariants (education, location, skill gaps, ZQF)
 ├── components/                          # Skill scorer + metamorphic tests
 ├── integration/                         # Mocked-embedding v3 pipeline tests

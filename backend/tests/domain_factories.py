@@ -123,8 +123,8 @@ def occupations_load_timing(**overrides: Any) -> OccupationsLoadTiming:
     """A cache-hit occupation load timing."""
     fields: dict[str, Any] = {
         "occupation_cache_hit": True,
-        "occupation_file_read_ms": 0.0,
-        "occupation_json_parse_and_flatten_ms": 0.0,
+        "occupation_source_read_ms": 0.0,
+        "occupation_flatten_ms": 0.0,
         "n_occupation_rows": 0,
         "get_all_occupations_total_ms": 0.0,
     }

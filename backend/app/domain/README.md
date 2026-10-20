@@ -5,7 +5,7 @@ The matching service works on four kinds of values, each a strict pydantic model
 | Model | Module | Built from | Built by |
 |---|---|---|---|
 | `Job` | `job.py` | ranked-job documents in MongoDB (`MONGO_JOBS_COLLECTION`) | `app.jobs.job_document.build_job_from_ranked` |
-| `Occupation` | `occupation.py` | the occupation file (`OCCUPATION_JSON_PATH`) and the occupation-embeddings NPZ | `app.occupations.flatten.flatten_occupations`, `app.occupations.loader.attach_occupation_embeddings` |
+| `Occupation` | `occupation.py` | occupation documents in MongoDB (`MONGO_OCCUPATIONS_COLLECTION`), or the occupation file + embeddings NPZ when `OCCUPATIONS_SOURCE=file` | `app.occupations.flatten.flatten_occupations`, `app.occupations.loader.attach_occupation_embeddings` |
 | `UserProfile` | `user.py` | one item of the `POST /match` body (`MatchRequest`) | `UserProfile.from_request` |
 | `ScoreBreakdown` | `scores.py` | the ranking stages' output | `app.matching.formatting` |
 

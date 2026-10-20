@@ -1,4 +1,4 @@
-"""Occupation: one taxonomy occupation in one county, from the committed occupation file."""
+"""Occupation: one taxonomy occupation in one county, from the deployment's occupation catalogue."""
 
 import numpy as np
 from pydantic import ConfigDict, Field
@@ -12,8 +12,9 @@ from app.domain.work_activities import WorkActivity
 class Occupation(DomainModel):
     """One occupation × county row of the occupation corpus.
 
-    Built by ``app.occupations.flatten.flatten_occupations`` from the occupation file
-    (``OCCUPATION_JSON_PATH``): every occupation is repeated once per county it has data for,
+    Built by ``app.occupations.flatten.flatten_occupations`` from the occupation entries (stored
+    in ``MONGO_OCCUPATIONS_COLLECTION``, or the file ``OCCUPATION_JSON_PATH``): every occupation is
+    repeated once per county it has data for,
     because the attribute levels and expected demand vary by county. Skills and work activities
     are the same on every county row of an occupation.
     """
@@ -23,7 +24,7 @@ class Occupation(DomainModel):
     uuid: str = Field(
         description="Row id: ``<code>_<county>``, or ``<code>`` when the occupation has no county data."
     )
-    originUuid: str = Field(description="Occupation code from the occupation file.")
+    originUuid: str = Field(description="Occupation code (the document ``_id``).")
     occupation_label: str = Field(
         description="Preferred label of the occupation; ``Unknown`` when absent."
     )
@@ -54,13 +55,16 @@ class Occupation(DomainModel):
         default=None,
         repr=False,
         description=(
-            "Concat skill embedding from the occupation-embeddings NPZ, shared by every county "
+            "Concat skill embedding stored with the occupation, shared by every county "
             "row of the occupation; None until attached by ``attach_occupation_embeddings``."
         ),
     )
     embedding_whitened: bool = Field(
         default=False,
-        description="True when ``embedding`` was whitened once at load (used as-is by stage-1 retrieval).",
+        description=(
+            "True when ``embedding`` is in the whitened space (whitened at ingest or once at load; "
+            "used as-is by stage-1 retrieval)."
+        ),
     )
 
     @property
