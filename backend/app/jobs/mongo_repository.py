@@ -10,14 +10,31 @@ from app.config import JOBS_FIND_USE_PROJECTION
 from app.domain.job import Job
 from app.jobs.browse_filter import build_jobs_browse_filter
 from app.jobs.job_document import (
+    JOB_EMBEDDING_FIELD,
+    JOB_WHITENING_SHA256_FIELD,
     RANKED_JOB_FIND_PROJECTION,
+    RANKED_JOB_SEARCH_PROJECTION,
     RANKED_JOBS_ACTIVE_FILTER,
     build_job_from_ranked,
 )
 from app.jobs.pagination import JOBS_PAGE_SORT, decode_jobs_cursor, encode_jobs_cursor
-from app.jobs.repository import IJobsRepository, JobsLoadTiming, JobsPageTiming
+from app.jobs.repository import (
+    IJobsRepository,
+    JobSearchHit,
+    JobsLoadTiming,
+    JobsPageTiming,
+    JobsSearchResult,
+)
 from app.schemas import JobListItem, JobsStats
 from app.server_dependencies.database_collections import Collections
+from app.server_dependencies.vector_search import (
+    JOBS_VECTOR_INDEX,
+    Stage1Coverage,
+    VectorSearchQuery,
+    count_stage1_coverage,
+    score_to_cosine,
+    vector_search_pipeline,
+)
 
 
 def _ms(t0: float) -> float:
@@ -38,6 +55,19 @@ class MongoJobsRepository(IJobsRepository):
             return self._collection.find(query_filter, RANKED_JOB_FIND_PROJECTION)
         return self._collection.find(query_filter)
 
+    def _build_job(self, rd: Mapping[str, Any]) -> Job | ValidationError | None:
+        """The job of a stored document; None when inactive, the error when invalid (logged)."""
+        try:
+            return build_job_from_ranked(rd)
+        except ValidationError as e:
+            self._logger.warning(
+                "Skipping invalid job document _id=%s job_id=%s: %s",
+                rd.get("_id"),
+                rd.get("job_id"),
+                e,
+            )
+            return e
+
     def _build_jobs(
         self, raw_docs: Iterable[Mapping[str, Any]]
     ) -> tuple[list[Job], int, int]:
@@ -50,21 +80,13 @@ class MongoJobsRepository(IJobsRepository):
         skipped_inactive = 0
         skipped_invalid = 0
         for rd in raw_docs:
-            try:
-                built = build_job_from_ranked(rd)
-            except ValidationError as e:
+            built = self._build_job(rd)
+            if isinstance(built, ValidationError):
                 skipped_invalid += 1
-                self._logger.warning(
-                    "Skipping invalid job document _id=%s job_id=%s: %s",
-                    rd.get("_id"),
-                    rd.get("job_id"),
-                    e,
-                )
-                continue
-            if built is None:
+            elif built is None:
                 skipped_inactive += 1
-                continue
-            jobs.append(built)
+            else:
+                jobs.append(built)
         return jobs, skipped_inactive, skipped_invalid
 
     async def find_jobs_with_timing(
@@ -217,3 +239,39 @@ class MongoJobsRepository(IJobsRepository):
                     platforms_set.add(str(p).strip().lower())
 
         return JobsStats(total=total, sectors=sectors, platforms=len(platforms_set))
+
+    async def search_stage1(self, query: VectorSearchQuery) -> JobsSearchResult:
+        t0 = time.perf_counter()
+        pipeline = vector_search_pipeline(
+            JOBS_VECTOR_INDEX, query, RANKED_JOB_SEARCH_PROJECTION
+        )
+        raw_docs = [d async for d in self._collection.aggregate(pipeline)]
+        hits: list[JobSearchHit] = []
+        skipped_inactive = 0
+        skipped_invalid = 0
+        for rd in raw_docs:
+            built = self._build_job(rd)
+            if isinstance(built, ValidationError):
+                skipped_invalid += 1
+            elif built is None:
+                skipped_inactive += 1
+            else:
+                hits.append(
+                    JobSearchHit(job=built, cosine=score_to_cosine(rd["score"]))
+                )
+        return JobsSearchResult(
+            hits=hits,
+            n_returned=len(raw_docs),
+            n_skipped_inactive=skipped_inactive,
+            n_skipped_invalid=skipped_invalid,
+            search_ms=_ms(t0),
+        )
+
+    async def count_stage1_coverage(self, artifact_sha256: str) -> Stage1Coverage:
+        return await count_stage1_coverage(
+            self._collection,
+            base_filter=RANKED_JOBS_ACTIVE_FILTER,
+            vector_path=JOB_EMBEDDING_FIELD,
+            whitening_sha256_path=JOB_WHITENING_SHA256_FIELD,
+            artifact_sha256=artifact_sha256,
+        )

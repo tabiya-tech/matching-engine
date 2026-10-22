@@ -7,7 +7,10 @@ frontend/dist/
 .DS_Store
 .env
 .idea/
-backend/scripts/
+backend/scripts/*
+# Committed scripts (the rest of backend/scripts/ stays local).
+!backend/scripts/vector_search_indexes.py
+!backend/scripts/whiten_jobs.py
 output_results/
 output_results_*
 backend/runs/
