@@ -6,6 +6,7 @@ from pydantic import Field
 from app.domain.base import DomainModel
 from app.domain.job import Job
 from app.schemas import JobListItem, JobsStats
+from app.server_dependencies.vector_search import Stage1Coverage, VectorSearchQuery
 
 
 class JobsLoadTiming(DomainModel):
@@ -60,6 +61,29 @@ class JobsPageTiming(DomainModel):
     get_jobs_page_total_ms: float = Field(description="Total time of the call.")
 
 
+class JobSearchHit(DomainModel):
+    """One job returned by the stage-1 vector search."""
+
+    job: Job = Field(description="The job, without its embedding.")
+    cosine: float = Field(
+        description="Whitened concat cosine between the query and the job's ``job_embedding``."
+    )
+
+
+class JobsSearchResult(DomainModel):
+    """The hits of one ``search_stage1`` call, best first, with what was dropped and how long it took."""
+
+    hits: list[JobSearchHit] = Field(description="Valid active jobs, best first.")
+    n_returned: int = Field(description="Documents the search returned.")
+    n_skipped_inactive: int = Field(
+        description="Documents skipped because ``is_active`` is False."
+    )
+    n_skipped_invalid: int = Field(
+        description="Documents skipped because they failed validation."
+    )
+    search_ms: float = Field(description="Time running the search and reading hits.")
+
+
 class IJobsRepository(ABC):
     """
     Interface for the Jobs Repository.
@@ -111,4 +135,35 @@ class IJobsRepository(ABC):
     @abstractmethod
     async def get_jobs_stats(self) -> JobsStats:
         """Aggregate counts over the active jobs catalog."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def search_stage1(self, query: VectorSearchQuery) -> JobsSearchResult:
+        """
+        Stage-1 vector search over the whitened ``job_embedding`` (``JOBS_VECTOR_INDEX``).
+
+        ``query.filter`` is applied inside the search; the caller composes it (``is_active``, the
+        whitening artifact, location and education). Hits are mapped through
+        ``build_job_from_ranked`` without the embedding; invalid documents are logged and skipped.
+
+        Args:
+            query: The whitened user vector, the pre-filter and how many jobs to return.
+
+        Returns:
+            The hits, best first (at most ``query.limit``).
+
+        Raises:
+            pymongo.errors.OperationFailure: If the index is missing or the filter uses an
+                undeclared field.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_stage1_coverage(self, artifact_sha256: str) -> Stage1Coverage:
+        """
+        Count active jobs by vector-search eligibility for the given whitening artifact.
+
+        Args:
+            artifact_sha256: SHA-256 of the service's ``V4_FULL_CONCAT_WHITENING_PATH``.
+        """
         raise NotImplementedError

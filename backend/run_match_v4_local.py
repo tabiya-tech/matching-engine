@@ -461,6 +461,12 @@ def main() -> None:
         async def get_jobs_stats(self) -> JobsStats:
             raise NotImplementedError("stats are not used by this script")
 
+        async def search_stage1(self, query):  # noqa: ANN001, ANN201
+            raise NotImplementedError("this script ranks the loaded jobs in-process")
+
+        async def count_stage1_coverage(self, artifact_sha256):  # noqa: ANN001, ANN201
+            raise NotImplementedError("this script ranks the loaded jobs in-process")
+
     # v3/v4/v5 all run the Gemini concat → CE engine (need user embedding + cross-encoder +
     # occupation embeddings + retrieve/final top-k). HAS_PREF is the narrower v4/v5 family that
     # adds the u_hat/p_hat preference layer + final_score_combiner (v3 has no preference signal).
