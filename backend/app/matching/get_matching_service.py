@@ -3,12 +3,22 @@
 from fastapi import Depends
 
 from app.artifacts.repository import get_artifacts_repository
-from app.config import V4_FULL_WHITENED_GATE
+from app.config import (
+    STAGE1_NUM_CANDIDATES_FACTOR,
+    STAGE1_RETRIEVAL_BACKEND,
+    STAGE1_VECTOR_SEARCH_CONCURRENCY,
+    STAGE1_VECTOR_SEARCH_EXACT,
+    V4_FULL_WHITENED_GATE,
+)
 from app.jobs.get_jobs_repository import get_jobs_repository
 from app.jobs.repository import IJobsRepository
 from app.matching.service import IMatchingService, MatchingService
 from app.ranking.rerank import CrossEncoderRerank
 from app.ranking.retrieval import Stage1Retriever
+from app.ranking.vector_retrieval import (
+    IDbStage1Retriever,
+    VectorSearchStage1Retriever,
+)
 from app.server_dependencies.model_dependencies import (
     get_concat_whitener,
     get_cross_encoder_client,
@@ -20,11 +30,26 @@ from app.server_dependencies.model_dependencies import (
 )
 
 
-def create_matching_service(jobs_repository: IJobsRepository) -> IMatchingService:
+def create_db_stage1_retriever(jobs_repository: IJobsRepository) -> IDbStage1Retriever:
+    """The database stage-1 job retriever over ``jobs_repository``."""
+    return VectorSearchStage1Retriever(
+        jobs_repository=jobs_repository,
+        num_candidates_factor=STAGE1_NUM_CANDIDATES_FACTOR,
+        exact=STAGE1_VECTOR_SEARCH_EXACT,
+        concurrency=STAGE1_VECTOR_SEARCH_CONCURRENCY,
+    )
+
+
+def create_matching_service(
+    jobs_repository: IJobsRepository, *, stage1_backend: str | None = None
+) -> IMatchingService:
     """A MatchingService wired to the given jobs repository and the process-wide model providers.
 
     Models are not loaded here; each loads on first use. Scripts call this directly.
+
+    :param stage1_backend: ``memory`` or ``db``; None = ``STAGE1_RETRIEVAL_BACKEND``
     """
+    backend = stage1_backend or STAGE1_RETRIEVAL_BACKEND
     embedding_client = get_gemini_embedding_client()
     return MatchingService(
         jobs_repository=jobs_repository,
@@ -40,6 +65,9 @@ def create_matching_service(jobs_repository: IJobsRepository) -> IMatchingServic
         preference_scorer_provider=get_preference_scorer,
         retriever=Stage1Retriever(embedding_dim=embedding_client.embedding_dim),
         rerank=CrossEncoderRerank(),
+        db_retriever=(
+            create_db_stage1_retriever(jobs_repository) if backend == "db" else None
+        ),
     )
 
 

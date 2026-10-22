@@ -86,6 +86,20 @@ class Settings(BaseSettings):
     # Mongo find() inclusion projection (fields read by app.jobs.job_document.RankedJobDocument). Set 0 to load full documents.
     jobs_find_use_projection: bool = True
 
+    # Stage-1 retrieval for POST /match (see app.ranking.vector_retrieval):
+    # - memory: load the location-filtered pool with its embeddings and rank it in-process (today).
+    # - db: one Atlas $vectorSearch per user (and location tier) over the pre-whitened job_embedding;
+    #   only the top-K come back. Occupations keep the in-process stage 1. Needs the vector index of
+    #   scripts/vector_search_indexes.py and jobs whitened with V4_FULL_CONCAT_WHITENING_PATH.
+    stage1_retrieval_backend: Literal["memory", "db"] = "memory"
+    # numCandidates = factor x limit (Atlas caps it at 10000). Higher = closer to exact, slower.
+    stage1_num_candidates_factor: int = Field(default=15, ge=1)
+    # Exact (ENN) search instead of approximate: full parity with memory, cost grows with the pool.
+    stage1_vector_search_exact: bool = False
+    # Searches in flight at once per request (users x tiers share the Mongo pool).
+    stage1_vector_search_concurrency: int = Field(default=16, ge=1)
+    jobs_vector_index_name: str = "job_embedding_whitened"
+
     # GET /jobs cursor-paginated browse endpoint: default and hard-cap page sizes.
     jobs_page_default_limit: int = 20
     jobs_page_max_limit: int = 100
@@ -390,6 +404,7 @@ class Settings(BaseSettings):
         "final_score_combiner",
         "preference_scorer_mode",
         "bws_integration_mode",
+        "stage1_retrieval_backend",
         mode="before",
     )
     @classmethod
@@ -440,6 +455,12 @@ MONGO_JOBS_COLLECTION = settings.mongo_jobs_collection
 JOBS_RETRIEVAL_FILTER = settings.jobs_retrieval_filter
 JOBS_RETRIEVAL_LIMIT = settings.jobs_retrieval_limit
 JOBS_FIND_USE_PROJECTION = settings.jobs_find_use_projection
+
+STAGE1_RETRIEVAL_BACKEND = settings.stage1_retrieval_backend
+STAGE1_NUM_CANDIDATES_FACTOR = settings.stage1_num_candidates_factor
+STAGE1_VECTOR_SEARCH_EXACT = settings.stage1_vector_search_exact
+STAGE1_VECTOR_SEARCH_CONCURRENCY = settings.stage1_vector_search_concurrency
+JOBS_VECTOR_INDEX_NAME = settings.jobs_vector_index_name
 
 JOBS_PAGE_DEFAULT_LIMIT = settings.jobs_page_default_limit
 JOBS_PAGE_MAX_LIMIT = settings.jobs_page_max_limit

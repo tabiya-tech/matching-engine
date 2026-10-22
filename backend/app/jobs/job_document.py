@@ -41,6 +41,17 @@ PROVINCE_FIELD = "classifier_metadata.province"
 # Standardised location keys (app.location.keys), written by the llm-reranker; the /match location filter.
 LOCATION_KEYS_FIELD = "location_keys"
 
+# Stage-1 vector search (``app.server_dependencies.vector_search``). With
+# ``RERANKER_CONCAT_WHITENING_ENABLED`` the llm-reranker writes the whitened, unit-length concat
+# embedding to ``job_embedding`` and the SHA-256 of the artifact that whitened it to
+# ``JOB_WHITENING_SHA256_FIELD``; without it ``job_embedding`` is raw and the SHA-256 is absent.
+JOB_EMBEDDING_FIELD = "job_embedding"
+JOB_WHITENING_SHA256_FIELD = "llm_reranker_meta.embedding.whitening.artifact_sha256"
+# Education pre-filter field for the vector search (location uses ``LOCATION_KEYS_FIELD``). Until
+# the documents carry it the pre-filter matches everything; the retriever's in-process education
+# check still applies.
+JOB_REQUIRES_POST_SECONDARY_FIELD = "requires_post_secondary"
+
 
 # Inclusion projection for job find (must stay aligned with RankedJobDocument / build_job_from_ranked).
 RANKED_JOB_FIND_PROJECTION: dict[str, int] = {
@@ -98,6 +109,14 @@ RANKED_JOB_FIND_PROJECTION: dict[str, int] = {
     "classifier_metadata.min_zqf_label": 1,
     "classifier_metadata.max_zqf_label": 1,
 }
+
+RANKED_JOB_SEARCH_PROJECTION: dict[str, int] = {
+    k: v
+    for k, v in RANKED_JOB_FIND_PROJECTION.items()
+    if k not in ("concat_skill_embedding_gemini", JOB_EMBEDDING_FIELD)
+}
+"""Projection of a stage-1 vector-search hit: the find projection without the 3072-float vectors
+(the search score replaces them)."""
 
 
 class ClassifierMetadata(SourceRecord):

@@ -225,7 +225,7 @@ class RankOverrides:
         self,
         user: UserProfile,
         candidates: Sequence[Candidate],
-        concat_by_uuid: Mapping[str, tuple[np.ndarray, bool]],
+        concat_by_uuid: Mapping[str, tuple[np.ndarray, bool]] | None,
         u_white_vec: np.ndarray | None,
     ) -> RankOverrideSet:
         """Phase-2 inputs for one user's reranked slate.
@@ -236,8 +236,11 @@ class RankOverrides:
 
         :param user: The user
         :param candidates: The user's reranked slate
-        :param concat_by_uuid: uuid -> (stage-1 vector, is already whitened), snapshotted before retrieval
+        :param concat_by_uuid: uuid -> (stage-1 vector, is already whitened), snapshotted before
+            retrieval; None when stage 1 ran in the database, whose candidates carry the whitened
+            cosine already (``concat_cosine_similarity``), so no vector is needed
         :param u_white_vec: The user's whitened embedding, or None to skip the p_hat override
+            (ignored when ``concat_by_uuid`` is None)
         """
         p_over: dict[str, float] = {}
         cov_over: dict[str, float] = {}
@@ -251,8 +254,10 @@ class RankOverrides:
             uuid = c.uuid
             if not uuid or uuid in details:
                 continue
-            jrec = concat_by_uuid.get(uuid)
-            if jrec is not None and u_white_vec is not None and target > 0:
+            jrec = concat_by_uuid.get(uuid) if concat_by_uuid is not None else None
+            if concat_by_uuid is None and target > 0:
+                p_over[uuid] = min(1.0, max(0.0, c.concat_cosine_similarity) / target)
+            elif jrec is not None and u_white_vec is not None and target > 0:
                 jv, jv_is_white = jrec
                 # DB-whitened jobs are already in whitened space (same artifact) -> use directly (with
                 # an L2-norm guard); raw vectors (occupations, offline, not-yet-whitened jobs) are
