@@ -11,14 +11,24 @@ import time
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.config import JOBS_RETRIEVAL_FILTER
+from app.config import (
+    JOBS_RETRIEVAL_FILTER,
+    STAGE1_RETRIEVAL_BACKEND,
+)
 from app.jobs.job_document import LOCATION_KEYS_FIELD, RANKED_JOBS_ACTIVE_FILTER
+from app.jobs.mongo_repository import MongoJobsRepository
 from app.occupations.loader import get_all_occupations_with_timing
 from app.occupations.work_activities import load_wa_lookup
 from app.server_dependencies.database_collections import Collections
 from app.server_dependencies.db_dependencies import (
     MatchingDBProvider,
     check_mongo_health,
+)
+from app.server_dependencies.vector_search import (
+    JOBS_VECTOR_INDEX,
+    Stage1Coverage,
+    VectorIndexSpec,
+    vector_index_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,12 +67,112 @@ async def _warn_jobs_without_location_keys(jobs_db: AsyncIOMotorDatabase) -> Non
         )
 
 
+def log_stage1_coverage(coverage: Stage1Coverage) -> None:
+    """Log how many documents the stage-1 vector search can see, and loudly what it cannot."""
+    logger.info(
+        "stage-1 vector search coverage of %s: %d/%d searchable "
+        "(other whitening artifact %d, not whitened %d, no embedding %d; artifact %s)",
+        coverage.collection,
+        coverage.n_searchable,
+        coverage.n_total,
+        coverage.n_other_artifact,
+        coverage.n_not_whitened,
+        coverage.n_no_embedding,
+        coverage.artifact_sha256[:12],
+    )
+    if coverage.n_other_artifact:
+        logger.error(
+            "%d documents in %s were whitened with another artifact than this service's (%s); "
+            "they are excluded from matching, never mixed in. Re-whiten them with the deployed "
+            "artifact, or deploy the artifact they were made with.",
+            coverage.n_other_artifact,
+            coverage.collection,
+            coverage.artifact_sha256[:12],
+        )
+    if coverage.n_not_whitened or coverage.n_no_embedding:
+        logger.warning(
+            "%d documents in %s are excluded from matching until backfilled "
+            "(%d not whitened, %d without an embedding).",
+            coverage.n_not_whitened + coverage.n_no_embedding,
+            coverage.collection,
+            coverage.n_not_whitened,
+            coverage.n_no_embedding,
+        )
+
+
+async def _check_vector_index(db: AsyncIOMotorDatabase, spec: VectorIndexSpec) -> None:
+    try:
+        status = await vector_index_status(db, spec)
+    except Exception as e:
+        logger.error(
+            "stage-1 vector index %s on %s could not be checked (%s: %s); is Atlas Vector "
+            "Search available on this cluster?",
+            spec.name,
+            spec.collection,
+            type(e).__name__,
+            e,
+        )
+        return
+    if not status.exists:
+        logger.error(
+            "stage-1 vector index %s is missing on %s; /match will fail. Create it with "
+            "`python -m scripts.vector_search_indexes --apply`.",
+            spec.name,
+            spec.collection,
+        )
+    elif not status.queryable:
+        logger.error(
+            "stage-1 vector index %s on %s is not queryable yet (status %s).",
+            spec.name,
+            spec.collection,
+            status.status,
+        )
+    elif not status.definition_matches:
+        logger.warning(
+            "stage-1 vector index %s on %s differs from the definition in code; update it with "
+            "`python -m scripts.vector_search_indexes --apply`.",
+            spec.name,
+            spec.collection,
+        )
+    else:
+        logger.info(
+            "stage-1 vector index %s on %s: %s",
+            spec.name,
+            spec.collection,
+            status.status,
+        )
+
+
+async def check_stage1_vector_search(jobs_db: AsyncIOMotorDatabase) -> None:
+    """``STAGE1_RETRIEVAL_BACKEND=db``: check the jobs vector index and the whitening version.
+
+    Hashes the whitening artifact (cached for every request after), checks the index exists and is
+    queryable, and logs how many active jobs are searchable and how many are excluded because they
+    were whitened with another artifact, not whitened, or not embedded.
+    """
+    from app.server_dependencies.model_dependencies import (
+        get_concat_whitening_sha256,
+    )
+
+    artifact_sha256 = await asyncio.to_thread(get_concat_whitening_sha256)
+    if artifact_sha256 is None:
+        logger.error(
+            "STAGE1_RETRIEVAL_BACKEND=db but the concat whitening artifact is unreadable; "
+            "/match cannot whiten users and will fail."
+        )
+        return
+    await _check_vector_index(jobs_db, JOBS_VECTOR_INDEX)
+    log_stage1_coverage(
+        await MongoJobsRepository(jobs_db).count_stage1_coverage(artifact_sha256)
+    )
+
+
 async def warmup_on_startup(jobs_db: AsyncIOMotorDatabase) -> None:
     """Ping Mongo, ensure indexes, and preload heavy one-time caches.
 
     Toggle with ``MONGO_WARMUP_ON_STARTUP``, ``ENSURE_INDEXES_ON_STARTUP``, ``WARMUP_OCCUPATIONS_CACHE``,
-    ``WARMUP_WA_LOOKUP``, ``WARMUP_MATCH_V3_MODELS``. WA lookup defaults to off — jobs use pre-enriched
-    ``onet_work_activities``.
+    ``WARMUP_WA_LOOKUP``, ``WARMUP_MATCH_V3_MODELS``, ``CHECK_STAGE1_VECTOR_SEARCH``. WA lookup
+    defaults to off — jobs use pre-enriched ``onet_work_activities``.
     """
     if _env_warmup_flag("MONGO_WARMUP_ON_STARTUP", True):
         t0 = time.perf_counter()
@@ -82,6 +192,14 @@ async def warmup_on_startup(jobs_db: AsyncIOMotorDatabase) -> None:
             logger.warning("Ensuring jobs indexes failed; continuing startup")
     else:
         logger.info("Index creation skipped (ENSURE_INDEXES_ON_STARTUP=0)")
+
+    if STAGE1_RETRIEVAL_BACKEND == "db" and _env_warmup_flag(
+        "CHECK_STAGE1_VECTOR_SEARCH", True
+    ):
+        try:
+            await check_stage1_vector_search(jobs_db)
+        except Exception:
+            logger.exception("Stage-1 vector search check failed")
 
     if _env_warmup_flag("WARMUP_OCCUPATIONS_CACHE", True):
         t0 = time.perf_counter()
