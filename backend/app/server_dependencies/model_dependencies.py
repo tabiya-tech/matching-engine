@@ -172,6 +172,36 @@ def get_concat_whitener() -> ConcatWhitener:
     return _concat_whitener
 
 
+_concat_white_sha_lock = threading.Lock()
+_concat_white_sha_loaded = False
+_concat_white_sha256: str | None = None
+
+
+def get_concat_whitening_sha256() -> str | None:
+    """SHA-256 of ``V4_FULL_CONCAT_WHITENING_PATH``, hashed once per process; None if unreadable.
+
+    The whitening version the service uses on the user side: stage-1 vector search only matches
+    documents whitened with the same artifact (``app.ranking.vector_retrieval``).
+    """
+    global _concat_white_sha_loaded, _concat_white_sha256
+    if not _concat_white_sha_loaded:
+        with _concat_white_sha_lock:
+            if not _concat_white_sha_loaded:
+                try:
+                    _concat_white_sha256 = get_artifacts_repository().file_sha256(
+                        V4_FULL_CONCAT_WHITENING_PATH
+                    )
+                except OSError as e:
+                    logger.warning(
+                        "concat whitening artifact not readable at %s (%s)",
+                        V4_FULL_CONCAT_WHITENING_PATH,
+                        e,
+                    )
+                    _concat_white_sha256 = None
+                _concat_white_sha_loaded = True
+    return _concat_white_sha256
+
+
 _cross_encoder_lock = threading.Lock()
 # One cross-encoder per language: the checkpoint has to understand the label text it scores.
 _cross_encoder_instances: dict[str, ICrossEncoderClient] = {}
@@ -249,15 +279,15 @@ def preload_models() -> dict[str, float]:
         # Log the in-process artifact's sha256 + target so ops can confirm they MATCH the DB's recorded
         # whitening.artifact_sha256 / target. If they ever diverge, whitened-user (in-process) vs
         # job_embedding (DB) would be an inconsistent cosine — this is the one hard dependency.
-        try:
-            _sha = get_artifacts_repository().file_sha256(V4_FULL_CONCAT_WHITENING_PATH)
+        _sha = get_concat_whitening_sha256()
+        if _sha is not None:
             logger.info(
                 "concat whitening artifact: path=%s sha256=%s target=%.6f (must match DB job whitening)",
                 V4_FULL_CONCAT_WHITENING_PATH,
                 _sha,
                 whitener.rescale_target(),
             )
-        except OSError:
+        else:
             logger.warning(
                 "concat whitening artifact not readable at %s; DB-whitened jobs will be degraded.",
                 V4_FULL_CONCAT_WHITENING_PATH,
