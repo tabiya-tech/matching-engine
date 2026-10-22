@@ -28,8 +28,18 @@ operational commentary; this document is the authoritative list of defaults and 
 | `JOBS_RETRIEVAL_FILTER` | `jobs_retrieval_filter` | bool | `true` |
 | `JOBS_RETRIEVAL_LIMIT` | `jobs_retrieval_limit` | int | `10000` |
 | `JOBS_FIND_USE_PROJECTION` | `jobs_find_use_projection` | bool | `true` |
+| `STAGE1_RETRIEVAL_BACKEND` | `stage1_retrieval_backend` | `memory` \| `db` | `memory` |
+| `STAGE1_NUM_CANDIDATES_FACTOR` | `stage1_num_candidates_factor` | int, `>= 1` | `15` |
+| `STAGE1_VECTOR_SEARCH_EXACT` | `stage1_vector_search_exact` | bool | `false` |
+| `STAGE1_VECTOR_SEARCH_CONCURRENCY` | `stage1_vector_search_concurrency` | int, `>= 1` | `16` |
+| `JOBS_VECTOR_INDEX_NAME` | `jobs_vector_index_name` | str | `job_embedding_whitened` |
 | `JOBS_PAGE_DEFAULT_LIMIT` | `jobs_page_default_limit` | int | `20` |
 | `JOBS_PAGE_MAX_LIMIT` | `jobs_page_max_limit` | int | `100` |
+
+`STAGE1_RETRIEVAL_BACKEND=db` runs /match stage-1 job retrieval as Atlas vector searches
+(`app/ranking/vector_retrieval.py`) instead of loading the job pool with its embeddings; occupations
+keep the in-process stage 1.
+`JOBS_RETRIEVAL_LIMIT` and `JOBS_FIND_USE_PROJECTION` only apply to the `memory` backend.
 
 Mongo connection settings themselves (`MONGO_URL`, `MONGO_DB_NAME`, `MONGO_*_POOL_SIZE`, TLS
 options) are read in `app/database.py`, not `app/config.py` — out of scope for this model.

@@ -9,6 +9,7 @@ per-feature repositories).
 app/
 ├── server_dependencies/
 │   ├── db_dependencies.py       MatchingDBProvider: the one client; settings; JOBS_INDEX_MODELS
+│   ├── vector_search.py         stage-1 jobs vector index, $vectorSearch query, index status, coverage
 │   └── database_collections.py  Collections: collection names
 ├── jobs/
 │   ├── repository.py            IJobsRepository: the interface routes and services depend on (and tests mock)
@@ -20,6 +21,7 @@ app/
 ├── services/
 │   ├── location_query.py        /match location filter: users' location keys + the indexed $in query
 │   └── job_retrieval.py         retrieve_jobs_with_timing: location filter policy + repository read
+├── ranking/vector_retrieval.py  STAGE1_RETRIEVAL_BACKEND=db: per-user/tier job vector-search pre-filters
 ├── occupations/                 occupation corpus (local JSON/NPZ files, not Mongo)
 ├── warmup.py                    startup work: ping, indexes, caches, models
 └── main.py                      lifespan: creates and closes the client
@@ -69,6 +71,7 @@ it is installed.
 |---|---|---|
 | `MONGO_WARMUP_ON_STARTUP` | on | Ping Mongo |
 | `ENSURE_INDEXES_ON_STARTUP` | on | Create `JOBS_INDEX_MODELS` |
+| `CHECK_STAGE1_VECTOR_SEARCH` | on | With `STAGE1_RETRIEVAL_BACKEND=db`: check the jobs vector index, log search coverage |
 | `WARMUP_OCCUPATIONS_CACHE` | on | Load + flatten the occupation corpus |
 | `WARMUP_WA_LOOKUP` | off | Build the O*NET work-activity lookup |
 | `WARMUP_MATCH_V3_MODELS` | off | Preload the /match_v3 matcher + cross-encoder |
@@ -125,6 +128,25 @@ leads with `is_active`, because every query filters on it:
 | `is_active_source_platform` | `is_active, source_platform` | /jobs/stats `distinct` |
 
 Regex filters (title, location, skills) cannot use these and run as residual filters.
+
+### Vector indexes (stage-1 retrieval)
+
+With `STAGE1_RETRIEVAL_BACKEND=db`, /match retrieves its stage-1 job shortlists with Atlas
+`$vectorSearch` instead of loading the job pool (`app/ranking/vector_retrieval.py`); occupations keep
+the in-process stage 1. The index is defined in `vector_search.py` and created per stack with
+`python -m scripts.vector_search_indexes --env-file … --apply` (not at startup: a rebuild is slow);
+the warmup checks it exists and is queryable.
+
+| Index (default name) | Collection | Vector | Filter fields |
+|---|---|---|---|
+| `job_embedding_whitened` | jobs | `job_embedding` (3072, cosine) | `is_active`, `llm_reranker_meta.embedding.whitening.artifact_sha256`, `location_keys`, `requires_post_secondary` |
+
+Every query pins the whitening artifact's SHA-256 to the service's `V4_FULL_CONCAT_WHITENING_PATH`,
+so vectors whitened with another artifact are never mixed in. Documents the search cannot see
+(other artifact, not whitened, no embedding) are counted at startup and by the script.
+`location_keys` is the same array the in-memory location filter uses (`app.location.keys`); the
+top-level `requires_post_secondary` is not written yet, so until it is the education pre-filter
+matches every job and the in-process check does the gating. Every filter a query uses must be declared on the index, or Atlas rejects the query.
 
 ## Adding a query
 
