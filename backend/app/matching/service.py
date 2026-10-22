@@ -23,6 +23,7 @@ from app.clients.cross_encoder_client import ICrossEncoderClient
 from app.clients.gemini_embedding_client import IGeminiEmbeddingClient
 from app.config import (
     FINAL_SCORE_COMBINER,
+    JOBS_RETRIEVAL_FILTER,
     MATCH_TOP_K_SKILL_GAPS,
     MATCH_V2_MAX_USERS_PER_REQUEST,
     MATCH_V4_DISABLE_OCCUPATIONS,
@@ -79,6 +80,12 @@ from app.ranking.types import (
     RetrievalSummary,
     UserShortlist,
 )
+from app.ranking.vector_retrieval import (
+    DbStage1,
+    IDbStage1Retriever,
+    Stage1Hit,
+    Stage1SearchResult,
+)
 from app.schemas import (
     MatchRequest,
     MatchResponse,
@@ -95,13 +102,19 @@ def _ms(t0: float) -> float:
     return (time.perf_counter() - t0) * 1000.0
 
 
+_STAGE1_DB = "concat_gemini_cosine_atlas_vector_search"
+_STAGE1_MEMORY = "concat_gemini_cosine_mongo_job_vectors"
+
+
 def _retrieval_trace_meta(
     jobs: Sequence[Job],
-    jobs_timing: JobsLoadTiming,
+    jobs_timing: JobsLoadTiming | None,
     occ: Sequence[Occupation],
     occ_timing: OccupationsLoadTiming | None,
+    stage1: DbStage1 | None = None,
 ) -> dict[str, float | int | bool]:
-    """Counts + Mongo / occupation-cache timings for the ``retrieval`` trace span (no job content)."""
+    """Counts + Mongo / occupation-cache / vector-search timings for the ``retrieval`` trace span
+    (no job content)."""
     meta: dict[str, float | int | bool] = {
         "n_jobs": len(jobs),
         "n_occupation_rows": len(occ),
@@ -112,7 +125,22 @@ def _retrieval_trace_meta(
         for k, v in timing.model_dump().items():
             if isinstance(v, (int, float, bool)):
                 meta[k] = v
+    if stage1 is not None:
+        stats = stage1.jobs.stats
+        for k, v in stats.model_dump(exclude={"corpus"}).items():
+            meta[f"stage1_{stats.corpus}_{k}"] = v
     return meta
+
+
+def _occupation_breadth(retrieve_top_k: int, final_top_k: int) -> int:
+    """Occupation shortlist and CE slate size.
+
+    Occupations are flattened into identical-embedding county rows per code (the fixed sample
+    counties Kilifi/Kitui/Mombasa/Nairobi). The per-user location filter keeps only the user's own
+    county row per code, so the shortlist/CE slate must be wide enough that ~top_k distinct codes
+    survive: size at top_k * 4 (counties) * 2 (buffer). De-dup by code remains a safety net.
+    """
+    return max(retrieve_top_k, final_top_k, MATCH_V4_TOP_K_OCCUPATIONS * 8)
 
 
 class IMatchingService(ABC):
@@ -148,12 +176,14 @@ class IMatchingService(ABC):
         skill_gap_top_k: int = MATCH_TOP_K_SKILL_GAPS,
         mongo_timing: JobsLoadTiming | None = None,
         location_keys: Sequence[UserLocationKeys] | None = None,
+        stage1: DbStage1 | None = None,
     ) -> list[MatchResponse]:
         """
         Ranks already-loaded jobs and occupations for each user (CPU-bound; call off the event loop).
 
         :param users: The users to match, in response order
-        :param jobs: The job pool (already location-filtered for the batch by the database)
+        :param jobs: The job pool (already location-filtered for the batch by the database); unused
+            when ``stage1`` is given
         :param occupations: The occupation corpus with embeddings attached; ignored when
             ``MATCH_V4_DISABLE_OCCUPATIONS`` is set
         :param retrieve_top_k: Stage-1 shortlist size per user
@@ -163,6 +193,9 @@ class IMatchingService(ABC):
         :param mongo_timing: Timing of the job load, echoed into the retrieval summary
         :param location_keys: The users' eligible location keys (aligned with ``users``), as used for
             the job load; resolved here if omitted
+        :param stage1: Job shortlists already retrieved by the database vector search (with the user
+            embeddings they were made from); None runs job stage 1 in-process over ``jobs``.
+            Skill gaps then come from each user's job shortlist instead of the pool.
         :return: One MatchResponse per user, in input order
         :raises ValueError: If ``final_score_combiner`` is invalid or the engine rejects an input
         """
@@ -234,7 +267,13 @@ class MatchingService(IMatchingService):
         preference_scorer_provider: Callable[[], IPreferenceScorer],
         retriever: IStage1Retriever,
         rerank: ICrossEncoderRerank,
+        db_retriever: IDbStage1Retriever | None = None,
     ):
+        """
+        :param retriever: In-process stage 1 (``STAGE1_RETRIEVAL_BACKEND=memory``, offline tools)
+        :param db_retriever: Database job stage 1 (``STAGE1_RETRIEVAL_BACKEND=db``); when set,
+            ``match`` searches the database instead of loading the job pool
+        """
         self._jobs_repository = jobs_repository
         self._artifacts_repository = artifacts_repository
         self._embedding_client = embedding_client
@@ -248,6 +287,7 @@ class MatchingService(IMatchingService):
         self._preference_scorer_provider = preference_scorer_provider
         self._retriever = retriever
         self._rerank = rerank
+        self._db_retriever = db_retriever
         self._embedding_dim = embedding_client.embedding_dim
         self._logger = logging.getLogger(self.__class__.__name__)
 
@@ -373,7 +413,7 @@ class MatchingService(IMatchingService):
             )
 
         summary = RetrievalSummary(
-            stage1="concat_gemini_cosine_mongo_job_vectors",
+            stage1=_STAGE1_MEMORY,
             stage2="cross_encoder_rerank",
             gemini_user_embed_model=embedding_model,
             cross_encoder_model=reranker.model_name,
@@ -385,6 +425,21 @@ class MatchingService(IMatchingService):
             n_jobs_active_loaded=n_active,
             **timing_fields,
         )
+        return self._rerank_shortlists(
+            users, shortlists, summary=summary, reranker=reranker, corpus=corpus
+        )
+
+    def _rerank_shortlists(
+        self,
+        users: Sequence[UserProfile],
+        shortlists: Sequence[list[Candidate]],
+        *,
+        summary: RetrievalSummary,
+        reranker: ICrossEncoderClient,
+        corpus: Corpus,
+    ) -> list[UserShortlist]:
+        """Stage 2: cross-encoder rerank of each user's stage-1 shortlist (shared by both backends)."""
+        fk = summary.final_top_k or 1
         out_results: list[UserShortlist] = []
         with observability.stage(
             "rerank", corpus=corpus, n_users=len(users), model=reranker.model_name
@@ -396,8 +451,8 @@ class MatchingService(IMatchingService):
                 out_results.append(
                     UserShortlist(
                         user_id=user.user_id or "",
-                        n_jobs_scored=n_with_emb,
-                        n_jobs_active_loaded=n_active,
+                        n_jobs_scored=summary.n_jobs_with_stage1_embedding,
+                        n_jobs_active_loaded=summary.n_jobs_active_loaded,
                         candidates=self._rerank.apply(
                             shortlist, scores, final_top_k=fk
                         ),
@@ -406,6 +461,111 @@ class MatchingService(IMatchingService):
                 )
 
         return out_results
+
+    def _rerank_hits(
+        self,
+        users: Sequence[UserProfile],
+        result: Stage1SearchResult,
+        *,
+        retrieve_top_k: int,
+        final_top_k: int,
+        corpus: Corpus,
+    ) -> list[UserShortlist]:
+        """Stage 2 over database stage-1 hits: attach the per-skill detail, then rerank."""
+        rt = max(1, int(retrieve_top_k))
+        fk = max(1, int(final_top_k))
+        with observability.stage("shortlist", corpus=corpus, n_users=len(users)) as sl:
+            matcher = self._retrieval_matcher_provider()
+            reranker = self._cross_encoder_provider()
+            shortlists = [
+                self._candidates_from_hits(user, hits[:rt], matcher)
+                for user, hits in zip(users, result.shortlists, strict=True)
+            ]
+            n_items = result.n_distinct_items
+            observability.update_observation(
+                sl,
+                metadata={
+                    "n_candidates_with_embedding": n_items,
+                    "n_candidates_loaded": n_items,
+                },
+            )
+        summary = RetrievalSummary(
+            stage1=_STAGE1_DB,
+            stage2="cross_encoder_rerank",
+            gemini_user_embed_model=self._embedding_client.model_name,
+            cross_encoder_model=reranker.model_name,
+            language=default_language(),
+            embedding_dim=self._embedding_client.embedding_dim,
+            retrieve_top_k=rt,
+            final_top_k=fk,
+            n_jobs_with_stage1_embedding=n_items,
+            n_jobs_active_loaded=n_items,
+        )
+        return self._rerank_shortlists(
+            users, shortlists, summary=summary, reranker=reranker, corpus=corpus
+        )
+
+    @staticmethod
+    def _candidates_from_hits(
+        user: UserProfile, hits: Sequence[Stage1Hit], matcher: CosineSkillMatcher
+    ) -> list[Candidate]:
+        """Stage-1 candidates of one user, as ``Stage1Retriever.shortlist`` builds them."""
+        return [
+            Candidate(
+                item=hit.item,
+                rank=rank,
+                concat_cosine_similarity=round(float(hit.concat_cosine_similarity), 6),
+                per_job_skill=matcher.score_pair(user, hit.item).per_job_skill,
+            )
+            for rank, hit in enumerate(hits, start=1)
+        ]
+
+    def _prepare_db_queries(
+        self, users: Sequence[UserProfile]
+    ) -> tuple[np.ndarray, np.ndarray, str]:
+        """Embed and whiten the users for the vector search (CPU / network; off the event loop).
+
+        :return: ``(unit vectors, whitened unit vectors, whitening artifact SHA-256)``
+        :raises RuntimeError: If the whitening artifact is unavailable (the stored vectors are
+            whitened, so an unwhitened query would be meaningless)
+        """
+        from app.server_dependencies.model_dependencies import (
+            get_concat_whitening_sha256,
+        )
+
+        whitener = self._whitener_provider()
+        artifact_sha256 = get_concat_whitening_sha256()
+        if whitener.rescale_target() <= 0 or artifact_sha256 is None:
+            raise RuntimeError(
+                "STAGE1_RETRIEVAL_BACKEND=db needs the concat whitening artifact "
+                "(V4_FULL_CONCAT_WHITENING_PATH); it is unavailable."
+            )
+        u_norm = self.embed_users(users)
+        return u_norm, whitener.whiten_rows(u_norm), artifact_sha256
+
+    async def _search_stage1(
+        self,
+        db_retriever: IDbStage1Retriever,
+        users: Sequence[UserProfile],
+        *,
+        retrieve_top_k: int,
+        location_keys: Sequence[UserLocationKeys] | None,
+    ) -> DbStage1:
+        """Job stage 1 in the database: one search per user (and location tier).
+
+        :param location_keys: Per-user keys to search and tier by, or None for no location step
+        """
+        u_norm, u_white, artifact_sha256 = await asyncio.to_thread(
+            self._prepare_db_queries, users
+        )
+        jobs = await db_retriever.shortlist_jobs(
+            users,
+            u_white,
+            artifact_sha256=artifact_sha256,
+            retrieve_top_k=retrieve_top_k,
+            location_keys=location_keys,
+        )
+        return DbStage1(user_unit_vectors=u_norm, jobs=jobs)
 
     async def match(
         self, payload: list[MatchRequest], options: MatchOptions
@@ -446,19 +606,41 @@ class MatchingService(IMatchingService):
             skill_gap_top_k=skill_gap_top_k,
         )
 
-        location_keys = resolve_location_keys(
-            users, location_hub_chains(self._artifacts_repository)
-        )
+        hub_chains = location_hub_chains(self._artifacts_repository)
+        location_keys = resolve_location_keys(users, hub_chains)
 
         t_fetch = time.perf_counter()
+        stage1: DbStage1 | None = None
+        mongo_timing: JobsLoadTiming | None = None
+        jobs: list[Job] = []
         with observability.stage("retrieval") as span:
-            (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
-                retrieve_jobs_with_timing(self._jobs_repository, location_keys),
-                self._load_occupations(),
-            )
+            if self._db_retriever is None:
+                (jobs, mongo_timing), (occ, occ_timing) = await asyncio.gather(
+                    retrieve_jobs_with_timing(self._jobs_repository, location_keys),
+                    self._load_occupations(),
+                )
+            else:
+                # Same location step as the in-memory path: the users' keys restrict the search
+                # when the retrieval filter or location tiers are on.
+                search_keys = (
+                    location_keys
+                    if JOBS_RETRIEVAL_FILTER or hub_chains is not None
+                    else None
+                )
+                stage1, (occ, occ_timing) = await asyncio.gather(
+                    self._search_stage1(
+                        self._db_retriever,
+                        users,
+                        retrieve_top_k=rt,
+                        location_keys=search_keys,
+                    ),
+                    self._load_occupations(),
+                )
             observability.update_observation(
                 span,
-                metadata=_retrieval_trace_meta(jobs, mongo_timing, occ, occ_timing),
+                metadata=_retrieval_trace_meta(
+                    jobs, mongo_timing, occ, occ_timing, stage1
+                ),
             )
         fetch_wall_ms = _ms(t_fetch)
 
@@ -476,14 +658,16 @@ class MatchingService(IMatchingService):
             else MATCH_TOP_K_SKILL_GAPS,
             mongo_timing=mongo_timing,
             location_keys=location_keys,
+            stage1=stage1,
         )
         score_ms = _ms(t_score)
 
         log_match_step(
             "http /match",
             "request (summary)",
+            stage1_backend="memory" if stage1 is None else "db",
             n_users=len(users),
-            n_jobs=len(jobs),
+            n_jobs=len(jobs) if stage1 is None else stage1.jobs.n_distinct_items,
             n_occupation_rows=len(occ),
             fetch_parallel_wall_ms=fetch_wall_ms,
             scoring_thread_pool_ms=score_ms,
@@ -521,6 +705,7 @@ class MatchingService(IMatchingService):
         skill_gap_top_k: int = MATCH_TOP_K_SKILL_GAPS,
         mongo_timing: JobsLoadTiming | None = None,
         location_keys: Sequence[UserLocationKeys] | None = None,
+        stage1: DbStage1 | None = None,
     ) -> list[MatchResponse]:
         combiner = (final_score_combiner or FINAL_SCORE_COMBINER).strip().lower()
         if combiner not in ("product", "geometric_mean"):
@@ -545,7 +730,10 @@ class MatchingService(IMatchingService):
         if not occupations_enabled:
             occupations = []
 
-        u_norm = self.embed_users(users)  # embed users ONCE, reuse for both corpora
+        # Embed users ONCE, reuse for both corpora (the database stage 1 already embedded them).
+        u_norm = (
+            stage1.user_unit_vectors if stage1 is not None else self.embed_users(users)
+        )
         pref_scorer = self._preference_scorer_provider()
         # Per-skill GATE matcher: whitened (default) or — via the kill-switch — the legacy raw matcher.
         matcher = self._gate_matcher_provider()
@@ -564,8 +752,11 @@ class MatchingService(IMatchingService):
                 "V4_FULL_RANK_DEMOTE is on but the concat-whitening artifact is unavailable; "
                 "falling back to Phase-1 (no demotion, raw p_hat). Build/ship the artifact to enable Phase 2."
             )
-        # uuid -> (stage1_vector, is_already_whitened)
-        job_concat: dict[str, tuple[np.ndarray, bool]] = {}
+        # uuid -> (stage1_vector, is_already_whitened). Jobs: None when job stage 1 ran in the
+        # database: its candidates carry the whitened cosine, so Phase 2 needs no job vectors.
+        job_concat: dict[str, tuple[np.ndarray, bool]] | None = (
+            {} if stage1 is None else None
+        )
         occ_concat: dict[str, tuple[np.ndarray, bool]] = {}
         u_white_by_uid: dict[str, np.ndarray] = {}
         rank_overrides: RankOverrides | None = None
@@ -583,10 +774,13 @@ class MatchingService(IMatchingService):
                 # raw vectors are whitened in-process. Same artifact => identical result either way.
                 # Occupations are whitened once at cache-load (consumed directly) or raw (whitened
                 # in-process) — the flag set by attach_occupation_embeddings tells which.
-                for concat, corpus_items in (
-                    (job_concat, jobs),
-                    (occ_concat, occupations),
-                ):
+                corpora: list[
+                    tuple[dict[str, tuple[np.ndarray, bool]], Sequence[MatchItem]]
+                ]
+                corpora = [(occ_concat, occupations)]
+                if job_concat is not None:
+                    corpora.append((job_concat, jobs))
+                for concat, corpus_items in corpora:
                     for it in corpus_items:
                         v = stage1_vector(it, dim=self._embedding_dim)
                         if v is not None:
@@ -596,23 +790,28 @@ class MatchingService(IMatchingService):
                     u.user_id or "": u_white[i] for i, u in enumerate(users)
                 }
 
-        job_slates = self.shortlist_and_rerank(
-            users,
-            jobs,
-            retrieve_top_k=retrieve_top_k,
-            final_top_k=final_top_k,
-            mongo_timing=mongo_timing,
-            user_unit_vectors=u_norm,
-            # Urban-pull: weight the stage-1 cosine by location tier so relevant local jobs survive the
-            # retrieve_top_k cutoff (occupations keep their own county scoping, so not applied there).
-            location_keys=tier_keys,
-        )
-        # Occupations are flattened into 4 identical-embedding county-rows per code (the fixed sample
-        # counties Kilifi/Kitui/Mombasa/Nairobi). The per-user location filter (below) keeps only the
-        # user's own county row per code, so the shortlist/CE slate must be wide enough that ~top_k
-        # distinct codes survive: size at top_k * 4 (counties) * 2 (buffer). De-dup by code remains a
-        # safety net.
-        occ_breadth = max(retrieve_top_k, final_top_k, MATCH_V4_TOP_K_OCCUPATIONS * 8)
+        if stage1 is not None:
+            job_slates = self._rerank_hits(
+                users,
+                stage1.jobs,
+                retrieve_top_k=retrieve_top_k,
+                final_top_k=final_top_k,
+                corpus="jobs",
+            )
+        else:
+            job_slates = self.shortlist_and_rerank(
+                users,
+                jobs,
+                retrieve_top_k=retrieve_top_k,
+                final_top_k=final_top_k,
+                mongo_timing=mongo_timing,
+                user_unit_vectors=u_norm,
+                # Urban-pull: weight the stage-1 cosine by location tier so relevant local jobs
+                # survive the retrieve_top_k cutoff (occupations keep their own county scoping, so
+                # not applied there).
+                location_keys=tier_keys,
+            )
+        occ_breadth = _occupation_breadth(retrieve_top_k, final_top_k)
         occ_slates = (
             self.shortlist_and_rerank(
                 users,
@@ -750,9 +949,16 @@ class MatchingService(IMatchingService):
                             break
 
             with observability.stage("skill_gaps"):
+                # The database stage 1 never loads the pool: skill gaps come from the user's own
+                # stage-1 job shortlist (retrieve_top_k jobs) instead.
+                gap_items: Sequence[MatchItem] = (
+                    jobs
+                    if stage1 is None
+                    else [h.item for h in stage1.jobs.shortlists[i_user]]
+                )
                 skill_gaps = skill_gaps_for(
                     user,
-                    jobs,
+                    gap_items,
                     skill_gap_top_k,
                     scorer=self._skill_scorer_provider(),
                     rescale_target=SKILL_RESCALE_TARGET,
@@ -774,7 +980,7 @@ class MatchingService(IMatchingService):
         rank_overrides: RankOverrides | None,
         user: UserProfile,
         slate: UserShortlist | None,
-        concat_by_uuid: dict[str, tuple[np.ndarray, bool]],
+        concat_by_uuid: dict[str, tuple[np.ndarray, bool]] | None,
         u_white_vec: np.ndarray | None,
     ) -> RankOverrideSet:
         """Phase-2 overrides of one user's slate; empty when Phase 2 is off or there is no slate."""
