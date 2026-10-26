@@ -15,6 +15,7 @@ from app.config import (
     LOCATION_TIER_ENABLED,
     LOCATION_TIER_W_NATIONAL,
     LOCATION_TIER_W_REGIONAL,
+    MATCH_V4_DISABLE_LOCATION,
 )
 from app.domain.user import UserProfile
 from app.jobs.job_document import LOCATION_KEYS_FIELD, RANKED_JOBS_ACTIVE_FILTER
@@ -45,6 +46,26 @@ def resolve_location_keys(
         )
         for u in users
     ]
+
+
+def resolve_location_step(
+    users: Sequence[UserProfile],
+    artifacts_repository: IArtifactsRepository,
+    *,
+    location_keys: Sequence[UserLocationKeys] | None = None,
+) -> tuple[HubChains | None, Sequence[UserLocationKeys] | None]:
+    """The whole location step for one request: ``(hub_chains, location_keys)``.
+
+    MATCH_V4_DISABLE_LOCATION takes priority over everything else: no hub chains, no location
+    keys at all, regardless of ``location_keys``. Otherwise reuses ``location_keys`` if already
+    resolved by the caller, else resolves it from ``hub_chains``.
+    """
+    if MATCH_V4_DISABLE_LOCATION:
+        return None, None
+    hub_chains = location_hub_chains(artifacts_repository)
+    if location_keys is None:
+        location_keys = resolve_location_keys(users, hub_chains)
+    return hub_chains, location_keys
 
 
 def build_location_filter(location_keys: Sequence[UserLocationKeys]) -> dict[str, Any]:
