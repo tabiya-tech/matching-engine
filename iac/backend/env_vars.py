@@ -63,6 +63,7 @@ class EnvKeys:
     JOBS_RETRIEVAL_FILTER="JOBS_RETRIEVAL_FILTER"
     MATCH_V4_DISABLE_OCCUPATIONS = "MATCH_V4_DISABLE_OCCUPATIONS"
     MATCH_APPLY_LOCATION_FILTER = "MATCH_APPLY_LOCATION_FILTER"
+    MATCH_V4_DISABLE_LOCATION = "MATCH_V4_DISABLE_LOCATION"
     LOCATION_TIER_ENABLED = "LOCATION_TIER_ENABLED"
     JOBS_RETRIEVAL_LIMIT = "JOBS_RETRIEVAL_LIMIT"
     LOCATION_TIER_W_REGIONAL = "LOCATION_TIER_W_REGIONAL"
@@ -125,6 +126,7 @@ class EnvVars:
     jobs_retrieval_filter: str
     match_v4_disable_occupations: str
     match_apply_location_filter: str
+    match_v4_disable_location: str
     location_tier_enabled: str
     jobs_retrieval_limit: str
     location_tier_w_regional: str
@@ -220,6 +222,8 @@ class EnvVars:
                                                            value=self.match_v4_disable_occupations),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCH_APPLY_LOCATION_FILTER,
                                                            value=self.match_apply_location_filter),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.MATCH_V4_DISABLE_LOCATION,
+                                                           value=self.match_v4_disable_location),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.LOCATION_TIER_ENABLED,
                                                            value=self.location_tier_enabled),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name=EnvKeys.JOBS_RETRIEVAL_LIMIT,
@@ -300,6 +304,10 @@ class EnvVars:
             # Both default true in app/config.py; keep that when a stack sets nothing.
             match_apply_location_filter=get_env_or_default(
                 EnvKeys.MATCH_APPLY_LOCATION_FILTER, "true"
+            ),
+            # Kill-switch; defaults false (current behaviour) in app/config.py.
+            match_v4_disable_location=get_env_or_default(
+                EnvKeys.MATCH_V4_DISABLE_LOCATION, "false"
             ),
             location_tier_enabled=get_env_or_default(EnvKeys.LOCATION_TIER_ENABLED, "true"),
             # Retrieval breadth / tier weights: defaults mirror app/config.py, so a stack that

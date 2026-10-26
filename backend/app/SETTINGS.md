@@ -85,6 +85,7 @@ registry (`app/languages/`), not a `Settings` field.
 
 | Env var | Field | Type | Default |
 |---|---|---|---|
+| `MATCH_V4_DISABLE_LOCATION` | `match_v4_disable_location` | bool | `false` |
 | `LOCATION_TIER_ENABLED` | `location_tier_enabled` | bool | `true` |
 | `LOCATION_TIER_W_REGIONAL` | `location_tier_w_regional` | float, range `[0, 1]` | `0.70` |
 | `LOCATION_TIER_W_NATIONAL` | `location_tier_w_national` | float, range `[0, 1]` | `0.50` |

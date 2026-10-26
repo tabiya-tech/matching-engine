@@ -19,6 +19,7 @@ from app.ranking.preference import UnifiedPreferenceScorer
 from app.ranking.retrieval import ConcatWhitener
 from app.ranking.types import RetrievalSummary, SkillMatchDetail, UserShortlist
 from app.schemas import MatchResponse
+from app.services import location_query
 from tests.domain_factories import (
     make_attributes,
     make_candidate,
@@ -148,7 +149,9 @@ def _slates(users, items, **_kwargs):
     ]
 
 
-def _rank(whitening: ConcatWhitening | None) -> list[MatchResponse]:
+def _rank(
+    whitening: ConcatWhitening | None, *, disable_location: bool = False
+) -> list[MatchResponse]:
     service = _service(whitening)
     user = make_user(
         user_id="u1",
@@ -158,7 +161,9 @@ def _rank(whitening: ConcatWhitening | None) -> list[MatchResponse]:
     )
     with (
         patch.object(svc, "MATCH_V4_DISABLE_OCCUPATIONS", False),
-        patch.object(svc, "location_hub_chains", return_value=None),
+        patch.object(svc, "MATCH_V4_DISABLE_LOCATION", disable_location),
+        patch.object(location_query, "MATCH_V4_DISABLE_LOCATION", disable_location),
+        patch.object(location_query, "location_hub_chains", return_value=None),
         patch.object(svc, "skill_gaps_for", return_value=[]),
         patch.object(
             service, "embed_users", return_value=_vec(0)[None, :].astype(np.float64)
@@ -210,3 +215,54 @@ def test_phase1_keeps_stage1_cosine_without_demotion():
     assert near.p_hat == pytest.approx(0.9)
     assert near.p_hat_source == "concat_cosine_similarity"
     assert near.coverage_factor is None
+
+
+def test_disable_location_drops_occupation_county_filter():
+    """MATCH_V4_DISABLE_LOCATION=True: a user still only gets one row per occupation code (the
+    existing dedupe), but it's no longer restricted to their own county first — the
+    better-ranked row (first in _OCCUPATIONS, so ranked first by _slates) survives instead of
+    being filtered out before scoring even runs."""
+    (response,) = _rank(None, disable_location=True)
+
+    assert [o.uuid for o in response.occupation_recommendations] == ["occ_Nairobi"]
+
+
+def test_disable_location_bypasses_county_filter_for_non_local_best_match():
+    """With the filter off, a county row that isn't the user's own can still surface as the
+    (only, deduped) occupation recommendation when it ranks first."""
+    service = _service(None)
+    user = make_user(
+        user_id="u1",
+        city="Nairobi",
+        province="Nairobi",
+        preference_vector={"earnings_per_month": 0.9},
+    )
+    kitui_first = list(
+        reversed(_OCCUPATIONS)
+    )  # occ_Kitui ranks first via _slates' cosine order
+
+    with (
+        patch.object(svc, "MATCH_V4_DISABLE_OCCUPATIONS", False),
+        patch.object(svc, "MATCH_V4_DISABLE_LOCATION", True),
+        patch.object(location_query, "MATCH_V4_DISABLE_LOCATION", True),
+        patch.object(location_query, "location_hub_chains", return_value=None),
+        patch.object(svc, "skill_gaps_for", return_value=[]),
+        patch.object(
+            service, "embed_users", return_value=_vec(0)[None, :].astype(np.float64)
+        ),
+        patch.object(service, "shortlist_and_rerank", side_effect=_slates),
+    ):
+        (response,) = service.rank(
+            [user], _JOBS, kitui_first, retrieve_top_k=10, final_top_k=10
+        )
+
+    # Without MATCH_V4_DISABLE_LOCATION this would be filtered out before the user's own
+    # county row is even considered, since the county check runs before scoring/dedupe.
+    assert [o.uuid for o in response.occupation_recommendations] == ["occ_Kitui"]
+
+
+def test_disable_location_nulls_out_location_tier_factor():
+    (response,) = _rank(None, disable_location=True)
+    near = response.opportunity_recommendations[0].score_breakdown
+
+    assert near.location_tier_factor is None
