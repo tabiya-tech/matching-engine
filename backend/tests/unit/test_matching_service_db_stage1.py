@@ -125,6 +125,7 @@ def _match(
     gaps: list | None = None,
     hub_chains: HubChains | None = None,
     retrieval_filter: bool = True,
+    disable_location: bool = False,
 ):
     jobs_repository = AsyncMock(spec=IJobsRepository)
     service = _service(retriever, jobs_repository)
@@ -139,6 +140,8 @@ def _match(
 
     with (
         patch.object(svc, "MATCH_V4_DISABLE_OCCUPATIONS", False),
+        patch.object(svc, "MATCH_V4_DISABLE_LOCATION", disable_location),
+        patch.object(location_query, "MATCH_V4_DISABLE_LOCATION", disable_location),
         patch.object(svc, "JOBS_RETRIEVAL_FILTER", retrieval_filter),
         patch.object(location_query, "LOCATION_TIER_ENABLED", hub_chains is not None),
         patch.object(svc, "skill_gaps_for", side_effect=skill_gaps),
@@ -192,6 +195,23 @@ def test_search_gets_the_whitened_user_vector_and_the_artifact_sha():
     assert call["location_keys"] == [
         UserLocationKeys(tiers=(("remote", 1.0), ("nairobi", 1.0)))
     ]
+
+
+def test_disable_location_passes_no_location_keys_to_the_db_search():
+    """MATCH_V4_DISABLE_LOCATION=True: the db stage-1 search gets no location restriction at
+    all, and the response carries no location_tier_factor."""
+    retriever = FakeDbRetriever()
+
+    (response,), jobs_repository = _match(
+        retriever, hub_chains=HubChains("nairobi", None, None), disable_location=True
+    )
+
+    jobs_repository.find_jobs_with_timing.assert_not_awaited()
+    (call,) = retriever.job_calls
+    assert call["location_keys"] is None
+    for rec in response.opportunity_recommendations:
+        assert rec.score_breakdown.location_tier_factor is None
+    assert [o.uuid for o in response.occupation_recommendations] == ["occ_Nairobi"]
 
 
 def test_phase2_p_hat_is_the_search_cosine_rescaled():
