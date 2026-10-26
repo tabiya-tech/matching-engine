@@ -163,6 +163,12 @@ class Settings(BaseSettings):
     # behaviour.
     match_v4_disable_occupations: bool = False
 
+    # Per-deployment kill-switch: when true, the /match v4 engine ignores location entirely for
+    # opportunities AND occupations — no Mongo pool restriction, no urban-pull tiering/ranking, no
+    # occupation county filter. location_tier_factor is never applied (stays null in the
+    # response). Takes priority over location_tier_enabled. Default false keeps current behaviour.
+    match_v4_disable_location: bool = False
+
     # --- /match tiered urban-pull location matching (see app.location.keys) ---
     # Kenyan job supply is heavily Nairobi-concentrated, so strict same-county filtering leaves non-hub
     # users (e.g. Kitui ~2 jobs, Kilifi ~10) with near-empty lists. When enabled, a user's eligible location
@@ -487,6 +493,7 @@ MATCH_V2_MAX_USERS_PER_REQUEST = settings.match_v2_max_users_per_request
 
 MATCH_APPLY_LOCATION_FILTER = settings.match_apply_location_filter
 MATCH_V4_DISABLE_OCCUPATIONS = settings.match_v4_disable_occupations
+MATCH_V4_DISABLE_LOCATION = settings.match_v4_disable_location
 
 LOCATION_TIER_ENABLED = settings.location_tier_enabled
 LOCATION_TIER_W_REGIONAL = settings.location_tier_w_regional

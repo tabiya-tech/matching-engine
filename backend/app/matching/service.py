@@ -26,6 +26,7 @@ from app.config import (
     JOBS_RETRIEVAL_FILTER,
     MATCH_TOP_K_SKILL_GAPS,
     MATCH_V2_MAX_USERS_PER_REQUEST,
+    MATCH_V4_DISABLE_LOCATION,
     MATCH_V4_DISABLE_OCCUPATIONS,
     MATCH_V4_FINAL_TOP_K,
     MATCH_V4_OCC_DEMAND_GAMMA,
@@ -93,7 +94,7 @@ from app.schemas import (
     OpportunityRecommendation,
 )
 from app.services.job_retrieval import retrieve_jobs_with_timing
-from app.services.location_query import location_hub_chains, resolve_location_keys
+from app.services.location_query import resolve_location_step
 
 logger = logging.getLogger(__name__)
 
@@ -606,8 +607,9 @@ class MatchingService(IMatchingService):
             skill_gap_top_k=skill_gap_top_k,
         )
 
-        hub_chains = location_hub_chains(self._artifacts_repository)
-        location_keys = resolve_location_keys(users, hub_chains)
+        hub_chains, location_keys = resolve_location_step(
+            users, self._artifacts_repository
+        )
 
         t_fetch = time.perf_counter()
         stage1: DbStage1 | None = None
@@ -717,9 +719,11 @@ class MatchingService(IMatchingService):
 
         # Location tiers apply only with hub chains (LOCATION_TIER_ENABLED and the file loaded); without
         # them the database filter on the users' own city/province keys is the whole location step.
-        hub_chains = location_hub_chains(self._artifacts_repository)
-        if location_keys is None:
-            location_keys = resolve_location_keys(users, hub_chains)
+        # MATCH_V4_DISABLE_LOCATION takes priority over everything, including an explicit
+        # location_keys argument: no hub chains, no location keys at all.
+        hub_chains, location_keys = resolve_location_step(
+            users, self._artifacts_repository, location_keys=location_keys
+        )
         tier_keys = location_keys if hub_chains is not None else None
 
         # Per-deployment kill-switch: with MATCH_V4_DISABLE_OCCUPATIONS every user gets an empty
@@ -829,8 +833,12 @@ class MatchingService(IMatchingService):
 
         # Available occupation counties (Kilifi/Kitui/Mombasa/Nairobi). Safety net: if a user's province
         # matches none of them, fall back to a random available county so occupations still return.
-        occ_counties = sorted({o.county for o in occupations if o.county})
-        occ_keys = {k for o in occupations for k in o.location_keys}
+        # Unused (and left uncomputed) when MATCH_V4_DISABLE_LOCATION skips the county filter below.
+        occ_counties: list[str] = []
+        occ_keys: set[str] = set()
+        if not MATCH_V4_DISABLE_LOCATION:
+            occ_counties = sorted({o.county for o in occupations if o.county})
+            occ_keys = {k for o in occupations for k in o.location_keys}
 
         out: list[MatchResponse] = []
         cov_gamma = V4_FULL_COVERAGE_GAMMA if demote_active else 0.0
@@ -887,7 +895,9 @@ class MatchingService(IMatchingService):
             # Occupations: filter to the user's county; if the user's province matches no occupation
             # county, fall back to a random available county (location filter only — the user's real
             # preferences still drive u_hat). Then dedupe by code, keep best-ranked, take top-k.
-            # Skipped entirely (empty list) when MATCH_V4_DISABLE_OCCUPATIONS is set.
+            # Skipped entirely (empty list) when MATCH_V4_DISABLE_OCCUPATIONS is set. The county filter
+            # itself is skipped (no location step) when MATCH_V4_DISABLE_LOCATION is set; the existing
+            # dedupe-by-code below then keeps whichever county's row ranks best for the user.
             occupations_out: list[OccupationRecommendation] = []
             if occupations_enabled:
                 occ_slate = occ_slate_by_uid.get(uid)
@@ -899,16 +909,18 @@ class MatchingService(IMatchingService):
                         occ_concat,
                         u_white_by_uid.get(uid),
                     )
-                    loc_keys = frozenset(user_home_keys(user))
-                    if occ_counties and not loc_keys & occ_keys:
-                        fallback = random.choice(occ_counties)
-                        loc_keys = frozenset({canonical_location(fallback)})
-                        logger.warning(
-                            "User %r matches no occupation county %s; using random fallback county %r.",
-                            uid,
-                            occ_counties,
-                            fallback,
-                        )
+                    loc_keys: frozenset[str] | None = None
+                    if not MATCH_V4_DISABLE_LOCATION:
+                        loc_keys = frozenset(user_home_keys(user))
+                        if occ_counties and not loc_keys & occ_keys:
+                            fallback = random.choice(occ_counties)
+                            loc_keys = frozenset({canonical_location(fallback)})
+                            logger.warning(
+                                "User %r matches no occupation county %s; using random fallback county %r.",
+                                uid,
+                                occ_counties,
+                                fallback,
+                            )
                     occ_recs = enriched_recommendations(
                         user,
                         occ_slate.candidates if occ_slate else [],
