@@ -65,8 +65,8 @@ def add_jobs_routes(router: APIRouter) -> None:
         employment_type: str | None = Query(
             None, description="Filter by employment type (exact match)."
         ),
-        location: str | None = Query(
-            None, description="Case-insensitive filter on city/county/province."
+        location: list[str] | None = Query(
+            None, description="Filter by location; repeat to match any of several."
         ),
         skills: str | None = Query(
             None,

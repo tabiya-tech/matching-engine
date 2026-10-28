@@ -119,7 +119,7 @@ class IJobsRepository(ABC):
         search: str | None = None,
         category: str | None = None,
         employment_type: str | None = None,
-        location: str | None = None,
+        location: list[str] | None = None,
         skills: str | None = None,
         days: int | None = None,
         include_total: bool = False,
