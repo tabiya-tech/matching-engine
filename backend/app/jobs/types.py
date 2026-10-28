@@ -21,8 +21,9 @@ class JobsBrowseQuery(BaseModel):
     employment_type: str | None = Field(
         default=None, description="Employment type (exact match)."
     )
-    location: str | None = Field(
-        default=None, description="Case-insensitive filter on city/county/province."
+    location: list[str] | None = Field(
+        default=None,
+        description="Filter by location (city/county/province); any of several qualifies.",
     )
     skills: str | None = Field(
         default=None, description="Case-insensitive filter on a skill label."
