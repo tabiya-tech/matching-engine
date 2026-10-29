@@ -252,6 +252,7 @@ RANKED_JOB_FIND_PROJECTION: Dict[str, int] = {
     "is_active": 1,
     "classifier_metadata.city": 1,
     "classifier_metadata.county": 1,
+    "classifier_metadata.province": 1,
     "classifier_metadata.title": 1,
     "classifier_metadata.employer": 1,
     "classifier_metadata.employment_type": 1,
@@ -364,19 +365,23 @@ def _location_or_clauses_for_one_user(user: dict) -> List[Dict[str, Any]]:
     Part A), it is widened to also include the user's hub-chain regions (regional + national hub) so
     hub jobs become candidates in the pool; the per-user soft tier re-rank (match_v4_full_service)
     then keeps local jobs preferred. Strictly additive — remote clauses always come first.
+
+    Returns ``[]`` when the user has neither city nor province: there is nothing to filter on, so
+    the caller must not restrict that user's jobs by location (see
+    ``build_mongo_filter_active_and_location``). A user with only one of them is matched on it alone.
     """
     uc = _norm_loc_value(user.get("city"))
     up = _norm_loc_value(user.get("province"))
+    needles = {n for n in (uc, up) if n}
+    if not needles:
+        return []
     ors: List[Dict[str, Any]] = list(_remote_substring_ors())
-    if not uc or not up:
-        return ors
-    needles = {uc, up}
     if LOCATION_TIER_ENABLED:
         from app.services.location_tiers import load_hub_chains
 
         hc = load_hub_chains(LOCATION_HUB_CHAINS_PATH)
         if hc is not None:
-            needles.update(hc.chain_for(up))  # local + regional + national hub regions
+            needles.update(hc.chain_for(up or uc))  # local + regional + national hub regions
     for needle in sorted(n for n in needles if n):
         for field in (_M_CITY, _M_COUNTY, _M_PROVINCE):
             f = _field_contains_substr_regex(field, needle)
@@ -399,12 +404,18 @@ def build_mongo_filter_active_and_location(
     """
     is_active and (OR of all per-user location clauses). None if the caller should
     use active-only (no user context or empty list).
+
+    If any user has no location at all, active-only is returned: that user's jobs must not be
+    narrowed, and the OR across users can only widen, never restrict, per-user results.
     """
     if not users:
         return None
     parts: List[Dict[str, Any]] = []
     for u in users:
-        parts.extend(_location_or_clauses_for_one_user(u))
+        user_parts = _location_or_clauses_for_one_user(u)
+        if not user_parts:
+            return RANKED_JOBS_ACTIVE_FILTER
+        parts.extend(user_parts)
     if not parts:
         return RANKED_JOBS_ACTIVE_FILTER
     return {"$and": [RANKED_JOBS_ACTIVE_FILTER, {"$or": parts}]}
