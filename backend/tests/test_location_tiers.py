@@ -20,14 +20,14 @@ def _fake_matches(job, user):
     up = str(user.get("province") or "").casefold()
     if "remote" in jc or "remote" in jp or "remote" in jl:
         return True
-    if not uc or not up:
-        return False
-    if jc and (uc in jc or jc in uc):
+    if not uc and not up:
         return True
-    if jp and (up in jp or up in jp):
-        return True
+    for u in (uc, up):
+        for j in (jc, jp):
+            if u and j and (u in j or j in u):
+                return True
     if jl:
-        return uc in jl or up in jl
+        return bool((uc and uc in jl) or (up and up in jl))
     return False
 
 

@@ -67,8 +67,15 @@ def _index_by_uuid(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
 
 
 def _user_matches_any_county(user: Dict[str, Any], counties: List[str]) -> bool:
-    """True if the user's location matches at least one of the given occupation counties."""
+    """True if the user's location matches at least one of the given occupation counties.
+
+    A user with no city/province matches none, so callers keep the random-county fallback
+    (one county's rows per occupation code) promised by ``MatchRequest``.
+    """
     from app.services.matching_service import _job_matches_user_location
+
+    if not str(user.get("city") or "").strip() and not str(user.get("province") or "").strip():
+        return False
 
     for c in counties:
         if _job_matches_user_location({"city": c, "province": c, "location": c}, user):
@@ -154,6 +161,9 @@ def _location_tier_overrides(
     if hc is None:
         return {}
     county = user.get("province") or user.get("city") or ""
+    if not str(county).strip():
+        # No user location: chain_for("") is [national hub], which would zero every non-hub job.
+        return {}
     tiers: Dict[str, float] = {}
     for r in (v3_row or {}).get("concat_gemini_ce_recommendations") or []:
         if not isinstance(r, dict):
