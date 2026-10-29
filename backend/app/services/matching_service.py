@@ -93,7 +93,10 @@ def _filter_skill_gap_recommendations(
 def _job_matches_user_location(job: Dict[str, Any], user: Dict[str, Any]) -> bool:
     """Lenient location match.
     - Always matches 'Remote' jobs
-    - Matches if city or province match (case-insensitive, substring)
+    - Matches if any user {city, province} matches any job {city, province}
+      (city==city, city==province, province==province, province==city; case-insensitive, substring)
+    - A user with neither city nor province set matches every job (no location to filter by);
+      a user with only one of them is matched on that one alone
     """
     user_city = _norm(user.get("city"))
     user_province = _norm(user.get("province"))
@@ -106,22 +109,26 @@ def _job_matches_user_location(job: Dict[str, Any], user: Dict[str, Any]) -> boo
     if "remote" in job_city or "remote" in job_province or "remote" in job_loc:
         return True
 
-    if not user_city or not user_province:
-        return False
-
-    # Check City Match (Lenient)
-    if job_city and (user_city in job_city or job_city in user_city):
+    # No user location → nothing to filter on (MatchRequest contract: "" relaxes the filter)
+    if not user_city and not user_province:
         return True
 
-    # Check Province Match (Lenient)
-    if job_province and (
-        user_province in job_province or job_province in user_province
-    ):
-        return True
+    # Cross match (Lenient): either user value against either job value, since sources disagree on
+    # which field holds the town vs the region (e.g. "Lusaka" as a city in one, a province in another).
+    # Empty values are skipped: "" is a substring of every string.
+    for user_value in (user_city, user_province):
+        if not user_value:
+            continue
+        for job_value in (job_city, job_province):
+            if job_value and (user_value in job_value or job_value in user_value):
+                return True
 
     # Fallback to location string match
     if job_loc:
-        return user_city in job_loc or user_province in job_loc
+        return bool(
+            (user_city and user_city in job_loc)
+            or (user_province and user_province in job_loc)
+        )
 
     return False
 
