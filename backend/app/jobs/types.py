@@ -14,12 +14,13 @@ class JobsBrowseQuery(BaseModel):
     search: str | None = Field(
         default=None, description="Case-insensitive search on the job title."
     )
-    category: str | None = Field(
+    category: list[str] | None = Field(
         default=None,
-        description="Sector/category (matches category, sector or ISCO group).",
+        description="Sector/category (matches category, sector or ISCO group); any of several qualifies.",
     )
-    employment_type: str | None = Field(
-        default=None, description="Employment type (exact match)."
+    employment_type: list[str] | None = Field(
+        default=None,
+        description="Employment type (case/separator-insensitive); any of several qualifies.",
     )
     location: list[str] | None = Field(
         default=None,
