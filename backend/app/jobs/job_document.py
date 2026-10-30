@@ -38,6 +38,11 @@ RANKED_JOBS_ACTIVE_FILTER: dict[str, Any] = {"is_active": True}
 CITY_FIELD = "classifier_metadata.city"
 COUNTY_FIELD = "classifier_metadata.county"
 PROVINCE_FIELD = "classifier_metadata.province"
+EMPLOYMENT_TYPE_FIELD = "classifier_metadata.employment_type"
+# ``contract_type`` (the jobs-board display field) falls back to this literal when a job has no
+# ``employment_type`` of its own; the /jobs browse filter mirrors this fallback (see
+# ``build_jobs_browse_filter``) so that filtering by this value also surfaces those documents.
+DEFAULT_EMPLOYMENT_TYPE = "full_time"
 # Standardised location keys (app.location.keys), written by the llm-reranker; the /match location filter.
 LOCATION_KEYS_FIELD = "location_keys"
 
@@ -437,7 +442,7 @@ def job_from_document(doc: RankedJobDocument) -> Job | None:
         location_keys=location_keys,
         employer=meta.employer,
         employment_type=meta.employment_type,
-        contract_type=meta.employment_type or "full_time",
+        contract_type=meta.employment_type or DEFAULT_EMPLOYMENT_TYPE,
         salary_text=meta.salary,
         closing_date=meta.closing_date or "",
         posted_date=_strip(meta.posted_date or meta.date_posted or meta.posted_at)

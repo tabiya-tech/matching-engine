@@ -176,15 +176,16 @@ class TestGetJobsPage:
 
         asyncio.run(
             _repository(collection).get_jobs_page_with_timing(
-                cursor=encode_jobs_cursor(oid), employment_type="full_time"
+                cursor=encode_jobs_cursor(oid), employment_type=["full_time"]
             )
         )
 
         query_filter = collection.find_calls[0][0]
         assert query_filter["$and"][1] == {"_id": {"$lt": oid}}
-        assert {"classifier_metadata.employment_type": "full_time"} in query_filter[
-            "$and"
-        ][0]["$and"]
+        employment_type_clause = query_filter["$and"][0]["$and"][1]
+        assert employment_type_clause["$or"][0]["classifier_metadata.employment_type"][
+            "$regex"
+        ]
 
     def test_total_counts_the_filter_without_the_cursor(self):
         collection = _FakeCollection([_doc("a")])

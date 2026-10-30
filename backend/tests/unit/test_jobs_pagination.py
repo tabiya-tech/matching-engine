@@ -129,8 +129,8 @@ class TestJobsEndpoint:
         )
         assert resp.status_code == 200
         assert captured["search"] == "nurse"
-        assert captured["category"] == "Health"
-        assert captured["employment_type"] == "full_time"
+        assert captured["category"] == ["Health"]
+        assert captured["employment_type"] == ["full_time"]
         assert captured["location"] == ["Lusaka"]
         assert captured["skills"] == "care"
         assert captured["days"] == 30
@@ -148,6 +148,24 @@ class TestJobsEndpoint:
         resp = test_client.get("/jobs?location=Lusaka&location=Ndola", **self.AUTH)
         assert resp.status_code == 200
         assert captured["location"] == ["Lusaka", "Ndola"]
+
+    def test_repeated_category_and_employment_type_forwarded_as_list(
+        self, test_client, mocked_jobs_repository
+    ):
+        captured = {}
+
+        async def _impl(cursor=None, limit=20, **kwargs):
+            captured.update(kwargs)
+            return [], None, None, jobs_page_timing(limit=limit)
+
+        mocked_jobs_repository.get_jobs_page_with_timing.side_effect = _impl
+        resp = test_client.get(
+            "/jobs?category=Health&category=IT&employment_type=full_time&employment_type=contract",
+            **self.AUTH,
+        )
+        assert resp.status_code == 200
+        assert captured["category"] == ["Health", "IT"]
+        assert captured["employment_type"] == ["full_time", "contract"]
 
 
 class TestJobsStatsEndpoint:
