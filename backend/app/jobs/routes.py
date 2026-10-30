@@ -58,12 +58,13 @@ def add_jobs_routes(router: APIRouter) -> None:
         search: str | None = Query(
             None, description="Case-insensitive search on the job title."
         ),
-        category: str | None = Query(
+        category: list[str] | None = Query(
             None,
-            description="Filter by sector/category (matches category, sector, or ISCO group).",
+            description="Filter by sector/category (matches category, sector, or ISCO group); repeat to match any of several.",
         ),
-        employment_type: str | None = Query(
-            None, description="Filter by employment type (exact match)."
+        employment_type: list[str] | None = Query(
+            None,
+            description="Filter by employment type (case/separator-insensitive); repeat to match any of several.",
         ),
         location: list[str] | None = Query(
             None, description="Filter by location; repeat to match any of several."
