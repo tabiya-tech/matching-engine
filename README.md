@@ -14,9 +14,10 @@ The backend supports multi-user requests, Mongo-backed job retrieval, and config
 
 ## Related Repositories
 
-The Tabiya Matching Engine is a component of [Compass Connect](https://github.com/tabiya-tech/compass-connect), Tabiya's open-source career
-guidance platform. The Job Matching module of Compass Connect calls this service's API (`MATCHING_SERVICE_URL` in the
-Compass Connect configuration). The Compass Connect README lists the other components of the platform.
+The Tabiya Matching Engine is a standalone service. [Compass Connect](https://github.com/tabiya-tech/compass-connect), Tabiya's open-source
+career guidance platform, is one of the applications that use it: its Job Matching module calls this service's API
+(`MATCHING_SERVICE_URL` in the Compass Connect configuration). The Compass Connect README lists the other Tabiya tools
+it uses.
 
 ## Core Capabilities
 
