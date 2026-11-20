@@ -18,7 +18,10 @@ def _filter(*users):
 
 
 def test_no_location_user_gets_active_only_filter():
-    assert _filter(make_user(user_id="u", city="", province="")) == RANKED_JOBS_ACTIVE_FILTER
+    assert (
+        _filter(make_user(user_id="u", city="", province=""))
+        == RANKED_JOBS_ACTIVE_FILTER
+    )
 
 
 def test_province_only_user_is_filtered_on_province():

@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from app.location.keys import (
-    REMOTE_KEY,
     HubChains,
     canonical_location,
     location_keys_for,
