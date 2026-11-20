@@ -50,6 +50,24 @@ class TestLocationMatching:
 
     def test_cross_field_matches(self):
         # A user value matches the job's city or province, whichever field the source used.
-        assert _matches(make_job(city="Lusaka", province=""), make_user(user_id="u", city="", province="Lusaka")) is True
-        assert _matches(make_job(city="", province="Lusaka"), make_user(user_id="u", city="Lusaka", province="")) is True
-        assert _matches(make_job(city="Ndola", province=""), make_user(user_id="u", city="", province="Lusaka")) is False
+        assert (
+            _matches(
+                make_job(city="Lusaka", province=""),
+                make_user(user_id="u", city="", province="Lusaka"),
+            )
+            is True
+        )
+        assert (
+            _matches(
+                make_job(city="", province="Lusaka"),
+                make_user(user_id="u", city="Lusaka", province=""),
+            )
+            is True
+        )
+        assert (
+            _matches(
+                make_job(city="Ndola", province=""),
+                make_user(user_id="u", city="", province="Lusaka"),
+            )
+            is False
+        )
