@@ -143,7 +143,11 @@ class TestMatchConcatMockedEmbeddings:
 
         assert {c.uuid for c in out[0].candidates} == {"kitui-ok", "nairobi-best"}
         # No location: nothing to filter on, every job is eligible at full tier.
-        assert {c.uuid for c in out[1].candidates} == {"nairobi-best", "kitui-ok", "mombasa"}
+        assert {c.uuid for c in out[1].candidates} == {
+            "nairobi-best",
+            "kitui-ok",
+            "mombasa",
+        }
 
     def test_no_embeddings_returns_empty_recommendations(self):
         user = make_user(user_id="u1")

@@ -103,9 +103,8 @@ RANKED_JOB_FIND_PROJECTION: dict[str, int] = {
     # ZQF education annotation (Zambia); root-level fields set by scrape-time enrichment / backfill.
     "zqf_min": 1,
     "zqf_max": 1,
-    # Zambia: ZQF and province under classifier_metadata.
+    # Zambia: ZQF under classifier_metadata (province is projected above).
     # TestZambiaJobs uses zqf_min/zqf_max; TestAutomatedDemandside uses min_zqf_level/max_zqf_level.
-    "classifier_metadata.province": 1,
     "classifier_metadata.zqf_min": 1,
     "classifier_metadata.zqf_max": 1,
     "classifier_metadata.zqf_min_label": 1,
