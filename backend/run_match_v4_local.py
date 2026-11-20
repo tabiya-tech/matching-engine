@@ -60,6 +60,10 @@ Datasets / toggling input:
   auto-adapts: required only if the chosen dataset actually contains BWS (kenya yes, njila no);
   force it with --require-bws / --no-require-bws.
 
+  The users files (data/kenya_match_input.jsonl, data/njila_match_input.jsonl) hold real user
+  data. Generate them locally from the database (e.g. data/prep_njila_for_matching.py) and never
+  commit them: .gitignore excludes data/*.jsonl and CI fails if either path is in the tree.
+
 Usage (from backend/ directory):
     python run_match_v4_local.py                          # v4 (default), kenya: 38 complete users, full corpus
     python run_match_v4_local.py --version match          # legacy /match engine (no Gemini/cross-encoder)

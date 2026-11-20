@@ -1,0 +1,71 @@
+name: Data guard
+
+# Stops user data and secrets from entering the repository (CORE-887).
+
+on:
+  pull_request:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+
+jobs:
+  purged-paths:
+    name: Purged files are absent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Fail if a purged path exists in the tree
+        # These files were removed from history. An old clone can bring them back with a merge.
+        run: |
+          found=0
+          while IFS= read -r path; do
+            [ -z "$path" ] && continue
+            if [ -e "$path" ]; then
+              echo "::error file=$path::Purged file is in the tree. Delete it and reclone from GitHub."
+              found=1
+            fi
+          done <<'PATHS'
+          data/njila_match_input.jsonl
+          data/njila_n2v_vs_gemini_raw_dashboard.html
+          data/njila_gemini_raw_vs_whitened_dashboard.html
+          data/njila_n2v_vs_gemini_whitened_dashboard.html
+          data/kenya_match_input.jsonl
+          data/kenya_match_input_old.jsonl
+          logs.json
+          downloaded-logs-20260613-171118.json
+          comparison_dashboard (5).html
+          results_bm25_cosine_hybrid_njila_full_corpus_dashboard.html
+          backend/experiments/two_step_reterival_skills_graphs/data/njila_users.jsonl
+          backend/experiments/two_step_reterival_skills_graphs/data/ranked_jobs_v2.json
+          PATHS
+          exit "$found"
+
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.30.1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+      - name: Scan new commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            range="$HEAD_SHA"
+          else
+            range="$BASE_SHA..$HEAD_SHA"
+          fi
+          gitleaks git --redact --verbose --log-opts="$range" .

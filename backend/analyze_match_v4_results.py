@@ -37,7 +37,7 @@ Usage (from backend/):
     python analyze_match_v4_results.py <run_dir> --top-k 5
     python analyze_match_v4_results.py --explain "Full stack developer"
     python analyze_match_v4_results.py --explain 6a27a1d40c73458a0b453373
-    python analyze_match_v4_results.py --user REDACTED_FIREBASE_ID_1 --item "developer"
+    python analyze_match_v4_results.py --user <user_id> --item "developer"
 """
 
 import argparse

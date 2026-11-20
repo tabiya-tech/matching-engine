@@ -32,6 +32,11 @@ Stitching pipeline per session:
 
 Output: ``njila_match_input.jsonl`` (default ``data/njila_match_input.jsonl`` under repo root;
 override with ``NJILA_OUTPUT_JSONL``).
+
+The inputs and the output hold real user data (Firebase user IDs, session IDs, skills,
+preferences). Generate them locally from the database and never commit them: ``.gitignore``
+excludes ``data/*.jsonl`` and CI fails if ``data/njila_match_input.jsonl`` is in the tree. Keep
+the JSON exports outside the repository, or delete them after the run.
 """
 
 import argparse

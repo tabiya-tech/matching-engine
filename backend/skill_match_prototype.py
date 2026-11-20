@@ -25,7 +25,8 @@ Relatedness proxy for off-diagonal: ISCO major group = first digit of the occupa
   "related"   = different occupation, same major group (should stay moderate)
   "unrelated" = different major group (should collapse to ~0)
 
-Run from backend/:  KMP_DUPLICATE_LIB_OK=TRUE python skill_match_prototype.py
+Run from backend/:
+  KMP_DUPLICATE_LIB_OK=TRUE python skill_match_prototype.py --drill-down-user <user_id>
 """
 
 import os
@@ -269,11 +270,13 @@ def analyze_real_users(matcher, raw_W, white_W, target, name, path, jobs, rng, a
     )
 
     umap = dict(users)
-    pick = (
-        "REDACTED_FIREBASE_ID_2"
-        if "REDACTED_FIREBASE_ID_2" in umap
-        else max(users, key=lambda x: len(x[1]))[0]
-    )
+    pick = args.drill_down_user
+    if pick not in umap:
+        print(
+            f"  -- Drill-down skipped: user {pick[:14]}.. not in {name} "
+            f"(or has < {args.min_skills} resolved skills) --"
+        )
+        return
     urows = umap[pick]
     scored = sorted(
         ((score(urows, jr, "white", "assign"), title) for _, title, jr in jobs),
@@ -712,6 +715,11 @@ def main():
         type=float,
         default=0.5,
         help="whitened-cosine ≥ this ⇒ near-duplicate user skill (collapsed)",
+    )
+    ap.add_argument(
+        "--drill-down-user",
+        required=True,
+        help="user_id of the real user to drill down on (whitened+assign coverage over jobs)",
     )
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()

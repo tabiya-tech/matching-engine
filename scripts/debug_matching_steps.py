@@ -26,6 +26,10 @@ Optional:
   --step4-top-k N    skill-gap rows before response filter (default: MATCH_TOP_K_SKILL_GAPS)
 
 Step 5 recomputes the full endpoint payload via ``match_user_with_data`` (sanity check vs steps 3+4).
+
+The default ``--supply`` file holds real user data. Generate it locally from the database with
+``data/prep_njila_for_matching.py`` and never commit it: ``.gitignore`` excludes ``data/*.jsonl``
+and CI fails if the path is in the tree.
 """
 
 from __future__ import annotations

@@ -17,3 +17,12 @@ index_based_matching/
 # --live-jobs, or keep this file locally / in object storage rather than committing it.
 data/kenya_jobs_for_pipeline.json
 backend/resources/models/cross-encoder/
+
+# User data and logs must never be committed (CORE-887). Generate inputs locally from the
+# database. The synthetic fixtures below are the only data files that stay tracked.
+data/*.jsonl
+data/*.html
+*logs*.json
+backend/experiments/**/data/
+!data/supply.jsonl
+!data/demand.jsonl
